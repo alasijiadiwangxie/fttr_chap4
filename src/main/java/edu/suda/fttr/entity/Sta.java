@@ -5,20 +5,26 @@ import edu.suda.fttr.simulator.SimulationContext;
 /** 以唯一 ID 标识终端，并统计实际交付给该终端的下行报文。 */
 public final class Sta {
     private final int id;
+    private final int sfuId;
     private int receivedPackets;
     private long receivedBytes;
     // 单包时延由微秒时钟精确计算，累加用 double 避免跨报文累计时溢出 long。
     private double delaySumUs;
 
-    public Sta(int id) {
+    public Sta(int id, int sfuId) {
         if (id < 1) {
             throw new IllegalArgumentException("STA ID must be positive");
         }
         this.id = id;
+        this.sfuId = sfuId;
     }
 
     public int id() {
         return id;
+    }
+
+    public int sfuId() {
+        return sfuId;
     }
 
     public void receive(Packet packet, SimulationContext context) {
@@ -28,7 +34,7 @@ public final class Sta {
         receivedPackets++;
         receivedBytes += packet.bytes();
         delaySumUs += context.nowUs() - packet.mfuArrivalUs();
-        context.recordDelivery(packet, id);
+        context.recordDelivery(packet, this);
     }
 
     public int receivedPackets() {

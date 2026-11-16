@@ -5,16 +5,18 @@ import edu.suda.fttr.entity.Packet;
 import java.util.List;
 import java.util.stream.Collectors;
 
-/** 单 SFU 场景的已校验输入。时间统一使用整数微秒，长度使用字节。 */
+/** 下行场景的已校验输入。时间统一使用整数微秒，长度使用字节。 */
 public final class SimulationConfig {
     private final List<Packet> packets;
-    private final int staCount;
+    private final int sfuCount;
+    private final List<Integer> staSfuIds;
     private final long fiberDelayUs;
     private final long wifiDelayUs;
 
-    SimulationConfig(List<Packet> packets, int staCount, long fiberDelayUs, long wifiDelayUs) {
+    SimulationConfig(List<Packet> packets, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs, long wifiDelayUs) {
         this.packets = List.copyOf(packets);
-        this.staCount = staCount;
+        this.sfuCount = sfuCount;
+        this.staSfuIds = List.copyOf(staSfuIds);
         this.fiberDelayUs = fiberDelayUs;
         this.wifiDelayUs = wifiDelayUs;
     }
@@ -38,7 +40,16 @@ public final class SimulationConfig {
     }
 
     public int staCount() {
-        return staCount;
+        return staSfuIds.size();
+    }
+
+    public int sfuCount() {
+        return sfuCount;
+    }
+
+    /** 列表按 STA ID 排列，STA 1 的关联位于下标 0。 */
+    public List<Integer> staSfuIds() {
+        return staSfuIds;
     }
 
     public long fiberDelayUs() {

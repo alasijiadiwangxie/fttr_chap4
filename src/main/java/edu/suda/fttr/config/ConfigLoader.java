@@ -22,8 +22,9 @@ import java.util.regex.Pattern;
 public final class ConfigLoader {
     private static final String DEFAULT_SCENARIO = "/phase1-minimal-downlink.properties";
     private static final Set<String> KEYS = Set.of(
-            "packet.bytes", "packet.arrival.us", "fiber.delay.us", "wifi.delay.us", "sta.count");
+            "packet.bytes", "packet.arrival.us", "fiber.delay.us", "wifi.delay.us", "sta.count", "sfu.count");
     private static final Pattern PACKET_OVERRIDE = Pattern.compile("packet\\.([1-9][0-9]*)\\.(bytes|type|sta\\.id)");
+    private static final Pattern STA_ASSOCIATION = Pattern.compile("sta\\.([1-9][0-9]*)\\.sfu\\.id");
 
     private ConfigLoader() {
     }
@@ -49,40 +50,63 @@ public final class ConfigLoader {
         properties.load(reader);
 
         List<Long> arrivalsUs = readArrivals(properties);
-        validateKeys(properties, arrivalsUs.size());
         int staCount = properties.containsKey("sta.count") ? readPositiveInt(properties, "sta.count") : 1;
+        int sfuCount = properties.containsKey("sfu.count") ? readPositiveInt(properties, "sfu.count") : 1;
+        validateKeys(properties, arrivalsUs.size(), staCount);
+        List<Integer> staSfuIds = readStaAssociations(properties, staCount, sfuCount);
         List<Packet> packets = readPackets(properties, arrivalsUs, staCount);
         long fiberUs = readNonNegativeLong(properties, "fiber.delay.us");
         long wifiUs = readNonNegativeLong(properties, "wifi.delay.us");
 
-        // 每包使用相同的固定 Wi-Fi 时长且有积压即发。优先级只改变报文次序，不改变忙闲边界。
-        // 因此按到达顺序即可预检最后完成时刻，避免积压在运行中造成时钟越界。
+        // 每台 SFU 独立预检最后完成时刻。固定服务时长下，优先级不改变同一台 SFU 的忙闲边界。
+        long[] completionUs = new long[sfuCount];
         try {
-            long previousCompletionUs = 0;
             for (Packet packet : packets) {
                 long sfuArrivalUs = Math.addExact(packet.mfuArrivalUs(), fiberUs);
-                previousCompletionUs = Math.addExact(Math.max(sfuArrivalUs, previousCompletionUs), wifiUs);
+                int sfuIndex = staSfuIds.get(packet.destinationStaId() - 1) - 1;
+                completionUs[sfuIndex] = Math.addExact(Math.max(sfuArrivalUs, completionUs[sfuIndex]), wifiUs);
             }
         } catch (ArithmeticException e) {
             throw new IllegalArgumentException("Packet arrival time plus link delays and queueing exceeds the clock range", e);
         }
-        return new SimulationConfig(packets, staCount, fiberUs, wifiUs);
+        return new SimulationConfig(packets, sfuCount, staSfuIds, fiberUs, wifiUs);
     }
 
-    private static void validateKeys(Properties properties, int packetCount) {
+    private static void validateKeys(Properties properties, int packetCount, int staCount) {
         // 拒绝拼错的键和超出到达列表的覆盖项，避免误把配置当作默认 BE。
         for (String key : properties.stringPropertyNames()) {
             if (KEYS.contains(key)) {
                 continue;
             }
-            Matcher matcher = PACKET_OVERRIDE.matcher(key);
-            if (!matcher.matches()) {
-                throw new IllegalArgumentException("Unknown property: " + key);
+            Matcher packet = PACKET_OVERRIDE.matcher(key);
+            if (packet.matches()) {
+                if (parseNonNegativeLong(packet.group(1), key) > packetCount) {
+                    throw new IllegalArgumentException("Packet index out of range: " + key);
+                }
+                continue;
             }
-            if (parseNonNegativeLong(matcher.group(1), key) > packetCount) {
-                throw new IllegalArgumentException("Packet index out of range: " + key);
+            Matcher station = STA_ASSOCIATION.matcher(key);
+            if (station.matches()) {
+                if (parseNonNegativeLong(station.group(1), key) > staCount) {
+                    throw new IllegalArgumentException("STA index out of range: " + key);
+                }
+                continue;
             }
+            throw new IllegalArgumentException("Unknown property: " + key);
         }
+    }
+
+    private static List<Integer> readStaAssociations(Properties properties, int staCount, int sfuCount) {
+        List<Integer> staSfuIds = new ArrayList<>(staCount);
+        for (int i = 0; i < staCount; i++) {
+            String key = "sta." + (i + 1) + ".sfu.id";
+            int sfuId = properties.containsKey(key) ? readPositiveInt(properties, key) : 1;
+            if (sfuId > sfuCount) {
+                throw new IllegalArgumentException(key + " must refer to a configured SFU (1 to " + sfuCount + ")");
+            }
+            staSfuIds.add(sfuId);
+        }
+        return staSfuIds;
     }
 
     private static List<Packet> readPackets(Properties properties, List<Long> arrivalsUs, int staCount) {

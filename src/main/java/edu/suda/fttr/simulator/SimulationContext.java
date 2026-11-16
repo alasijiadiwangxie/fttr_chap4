@@ -2,6 +2,7 @@ package edu.suda.fttr.simulator;
 
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.trace.TraceLogger;
 
@@ -20,6 +21,8 @@ public final class SimulationContext {
     private long deliveredBytes;
     private long lastDeliveryDelayUs;
     private long wifiBusyUs;
+    private long wifiBusySinceUs;
+    private int transmittingSfus;
 
     SimulationContext(TraceLogger trace, boolean multiPacket) {
         this.trace = trace;
@@ -34,15 +37,19 @@ public final class SimulationContext {
     }
 
     public void scheduleAfter(long delayUs, EventType type, Packet packet) {
+        scheduleAfter(delayUs, type, packet, 0);
+    }
+
+    public void scheduleAfter(long delayUs, EventType type, Packet packet, int sfuId) {
         if (delayUs < 0) {
             throw new IllegalArgumentException("Event delay must be non-negative");
         }
         // 以当前事件发生的时刻为基准安排下一跳。零时延允许，但时钟不能倒退。
-        events.add(new Event(Math.addExact(nowUs, delayUs), type, packet));
+        events.add(new Event(Math.addExact(nowUs, delayUs), type, packet, sfuId));
     }
 
-    public void scheduleWifiSelection() {
-        events.add(new Event(nowUs, EventType.WIFI_SELECT_NEXT, null));
+    public void scheduleWifiSelection(int sfuId) {
+        events.add(new Event(nowUs, EventType.WIFI_SELECT_NEXT, null, sfuId));
     }
 
     Event nextEvent() {
@@ -54,44 +61,59 @@ public final class SimulationContext {
         return event;
     }
 
-    public void recordDelivery(Packet packet, int staId) {
+    public void recordDelivery(Packet packet, Sta sta) {
         deliveredPackets++;
         deliveredBytes += packet.bytes();
         lastDeliveryDelayUs = nowUs - packet.mfuArrivalUs();
-        trace.recordDelivery(packet, staId, nowUs);
+        trace.recordDelivery(packet, sta, nowUs);
     }
 
-    public void recordWifiService(Packet packet, long sfuArrivalUs, long startUs) {
-        wifiBusyUs += nowUs - startUs;
+    public void recordWifiStart() {
+        if (transmittingSfus++ == 0) {
+            wifiBusySinceUs = nowUs;
+        }
+    }
+
+    public void recordWifiService(Packet packet, int sfuId, long sfuArrivalUs, long startUs) {
+        // 全局忙时按至少一台 SFU 正在发送的时间计算。并行区间只计一次。
+        if (--transmittingSfus == 0) {
+            wifiBusyUs += nowUs - wifiBusySinceUs;
+        }
         long queueWaitUs = startUs - sfuArrivalUs;
         long delayUs = nowUs - packet.mfuArrivalUs();
         byClass.get(packet.type()).add(queueWaitUs, delayUs);
         overallDelay.add(queueWaitUs, delayUs);
-        trace.recordWifiService(packet, sfuArrivalUs, startUs, nowUs);
+        trace.recordWifiService(packet, sfuId, sfuArrivalUs, startUs, nowUs);
     }
 
-    public void recordEnqueue(Packet packet, int queueDepth) {
-        trace.recordEnqueue(packet, nowUs, queueDepth);
+    public void recordEnqueue(Packet packet, int sfuId, int queueDepth) {
+        trace.recordEnqueue(packet, nowUs, sfuId, queueDepth);
     }
 
-    public void recordQueueSelection(Packet packet, int vo, int vi, int be, int bk) {
-        trace.recordQueueSelection(packet, nowUs, vo, vi, be, bk);
+    public void recordQueueSelection(Packet packet, int sfuId, int vo, int vi, int be, int bk) {
+        trace.recordQueueSelection(packet, nowUs, sfuId, vo, vi, be, bk);
     }
 
-    void recordSummary(List<Sta> stations) {
+    void recordSummary(List<Sfu> sfus, List<Sta> stations) {
         byClass.forEach((type, stats) -> trace.recordClassSummary(
                 type, stats.count, stats.averageWaitUs(), stats.averageDelayUs()));
         trace.recordGlobalDelay(overallDelay.count, overallDelay.averageWaitUs(), overallDelay.averageDelayUs());
+        for (Sfu sfu : sfus) {
+            trace.recordSfuSummary(sfu, throughputMbps(sfu.sentBytes()));
+        }
         for (Sta sta : stations) {
-            // 统一采用从 0 到最后事件的观察窗口。bit/μs 与 Mb/s 等值。
-            double throughputMbps = nowUs == 0 ? 0.0 : sta.receivedBytes() * 8.0 / nowUs;
-            trace.recordStaSummary(sta, throughputMbps);
+            trace.recordStaSummary(sta, throughputMbps(sta.receivedBytes()));
         }
         if (multiPacket) {
             trace.recordRunSummary(deliveredPackets, deliveredBytes, wifiBusyUs, nowUs);
         } else {
             trace.recordSinglePacketSummary(deliveredPackets, deliveredBytes, lastDeliveryDelayUs);
         }
+    }
+
+    private double throughputMbps(long bytes) {
+        // SFU 和 STA 统一采用 0 至最后事件的观察窗口。bit/μs 与 Mb/s 等值。
+        return nowUs == 0 ? 0.0 : bytes * 8.0 / nowUs;
     }
 
     private static final class DelayStats {

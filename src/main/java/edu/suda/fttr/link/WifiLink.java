@@ -12,7 +12,7 @@ public final class WifiLink {
         this.delayModel = delayModel;
     }
 
-    public void transmit(Packet packet, SimulationContext context) {
-        context.scheduleAfter(delayModel.delayUs(packet), EventType.PACKET_ARRIVAL_AT_STA, packet);
+    public void transmit(Packet packet, int sfuId, SimulationContext context) {
+        context.scheduleAfter(delayModel.delayUs(packet), EventType.PACKET_ARRIVAL_AT_STA, packet, sfuId);
     }
 }

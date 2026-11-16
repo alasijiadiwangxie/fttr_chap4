@@ -20,10 +20,11 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar
 
 ```text
 t_us=0 node=MFU event=ARRIVAL packet_id=1 bytes=1200 type=BE destination_sta_id=1
-t_us=100 node=SFU event=WIFI_TX_START packet_id=1 bytes=1200 type=BE destination_sta_id=1
-t_us=350 node=STA event=DELIVERED packet_id=1 bytes=1200 type=BE destination_sta_id=1 sta_id=1
+t_us=100 node=SFU event=WIFI_TX_START packet_id=1 bytes=1200 type=BE destination_sta_id=1 sfu_id=1
+t_us=350 node=STA event=DELIVERED packet_id=1 bytes=1200 type=BE destination_sta_id=1 sta_id=1 sfu_id=1
 summary=GLOBAL sent_packets=1 avg_queue_wait_us=0.00 avg_e2e_delay_us=350.00
-summary=STA sta_id=1 received_packets=1 received_bytes=1200 throughput_mbps=27.43 avg_e2e_delay_us=350.00
+summary=SFU sfu_id=1 sent_packets=1 sent_bytes=1200 throughput_mbps=27.43 avg_queue_wait_us=0.00
+summary=STA sta_id=1 sfu_id=1 received_packets=1 received_bytes=1200 throughput_mbps=27.43 avg_e2e_delay_us=350.00
 delivered_packets=1 delivered_bytes=1200 e2e_delay_us=350
 ```
 
@@ -66,6 +67,18 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/phase1-multi-sta-downlink
 `sta.count` 设置终端数量，ID 从 1 到该数量连续编号。`packet.N.sta.id` 指定到达列表中第 N 个报文的目的终端。两项省略时均取 1，所以旧配置默认投递给 STA 1。超出范围的目的 ID 会在启动仿真前报错。
 
 所有终端共用同一个 SFU 的四类队列和无线发送资源。轨迹的 `destination_sta_id` 是目标 ID，`DELIVERED` 中的 `sta_id` 是实际接收终端。每台 STA 有一行 `summary=STA`，记录收包数、收到的字节数、有效吞吐量和平均端到端时延。吞吐量用有效交付比特数除以从 0 到最后事件的公共时间窗口，单位为 Mb/s。窗口为零时吞吐量记为 0。没有收包的终端平均时延记为 0。
+
+### 多 SFU 独立下行发送
+
+```powershell
+java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/phase1-multi-sfu-downlink.properties
+```
+
+`sfu.count` 设置 SFU 数量，ID 从 1 连续编号。`sta.N.sfu.id` 把 STA N 固定关联到指定 SFU。例如 `sta.1.sfu.id=2` 表示发给 STA 1 的报文由 MFU 经第 2 条逻辑光链路转发。`sfu.count` 和未填写的关联均默认为 1，超出有效范围的关联在仿真启动前报错。
+
+每台 SFU 各自维护四类 FIFO 和无线发送状态。单台 SFU 串行、非抢占发送，不同 SFU 可以并行。各条逻辑光链路和无线链路使用同一组固定时延参数。轨迹从 `FIBER_TX_START` 起附带 `sfu_id`，可用 `packet_id` 串起 MFU、SFU 和实际收包的 STA。
+
+`summary=SFU` 给出逐 SFU 的发送量、吞吐量和平均排队时延。与 STA 一样，吞吐量以公共仿真窗口计算。全局 `wifi_busy_us` 是**至少一台 SFU 正在发送**的时长，重叠区间只计一次。`wifi_idle_us` 是所有 SFU 均未发送的时长。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。可复查各阶段的[验收用例](docs/04-validation-cases.md)。
 
