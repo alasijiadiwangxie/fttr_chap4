@@ -7,10 +7,20 @@ import edu.suda.fttr.trace.TraceLogger;
 public final class SimulationContext {
     private final EventQueue events = new EventQueue();
     private final TraceLogger trace;
+    private final boolean multiPacket;
     private long nowUs;
+    private int deliveredPackets;
+    private long deliveredBytes;
+    private long lastDeliveryDelayUs;
+    private long wifiBusyUs;
 
-    SimulationContext(TraceLogger trace) {
+    SimulationContext(TraceLogger trace, boolean multiPacket) {
         this.trace = trace;
+        this.multiPacket = multiPacket;
+    }
+
+    public long nowUs() {
+        return nowUs;
     }
 
     public void scheduleAfter(long delayUs, EventType type, Packet packet) {
@@ -31,6 +41,23 @@ public final class SimulationContext {
     }
 
     public void recordDelivery(Packet packet) {
-        trace.recordDelivery(packet, nowUs - packet.mfuArrivalUs());
+        deliveredPackets++;
+        deliveredBytes += packet.bytes();
+        lastDeliveryDelayUs = nowUs - packet.mfuArrivalUs();
+    }
+
+    public void recordWifiService(Packet packet, long sfuArrivalUs, long startUs) {
+        wifiBusyUs += nowUs - startUs;
+        if (multiPacket) {
+            trace.recordWifiService(packet, sfuArrivalUs, startUs, nowUs);
+        }
+    }
+
+    void recordSummary() {
+        if (multiPacket) {
+            trace.recordRunSummary(deliveredPackets, deliveredBytes, wifiBusyUs, nowUs);
+        } else {
+            trace.recordSinglePacketSummary(deliveredPackets, deliveredBytes, lastDeliveryDelayUs);
+        }
     }
 }

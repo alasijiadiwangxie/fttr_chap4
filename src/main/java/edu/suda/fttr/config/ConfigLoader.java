@@ -7,6 +7,8 @@ import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Properties;
 import java.util.Set;
 
@@ -50,24 +52,48 @@ public final class ConfigLoader {
         if (bytes == 0 || bytes > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("packet.bytes must be between 1 and " + Integer.MAX_VALUE);
         }
-        long arrivalUs = readNonNegativeLong(properties, "packet.arrival.us");
+        List<Long> arrivalsUs = readArrivals(properties);
         long fiberUs = readNonNegativeLong(properties, "fiber.delay.us");
         long wifiUs = readNonNegativeLong(properties, "wifi.delay.us");
 
-        // 提前检查最终到达时刻，确保输入越界时不会留下部分仿真记录。
+        // 以 FIFO 的最早完成时刻预检时钟范围。即使每条报文单独能发完，积压也可能越界。
         try {
-            Math.addExact(Math.addExact(arrivalUs, fiberUs), wifiUs);
+            long previousCompletionUs = 0;
+            for (long arrivalUs : arrivalsUs) {
+                long sfuArrivalUs = Math.addExact(arrivalUs, fiberUs);
+                previousCompletionUs = Math.addExact(Math.max(sfuArrivalUs, previousCompletionUs), wifiUs);
+            }
         } catch (ArithmeticException e) {
-            throw new IllegalArgumentException("Packet arrival time plus link delays exceeds the clock range", e);
+            throw new IllegalArgumentException("Packet arrival time plus link delays and queueing exceeds the clock range", e);
         }
-        return new SimulationConfig((int) bytes, arrivalUs, fiberUs, wifiUs);
+        return new SimulationConfig((int) bytes, arrivalsUs, fiberUs, wifiUs);
+    }
+
+    private static List<Long> readArrivals(Properties properties) {
+        String key = "packet.arrival.us";
+        String[] values = requireProperty(properties, key).split(",", -1);
+        List<Long> arrivalsUs = new ArrayList<>(values.length);
+        for (String value : values) {
+            arrivalsUs.add(parseNonNegativeLong(value, key));
+        }
+        // 按时刻分配报文 ID，并保留同刻报文在配置中的先后顺序。
+        arrivalsUs.sort(null);
+        return arrivalsUs;
     }
 
     private static long readNonNegativeLong(Properties properties, String key) {
+        return parseNonNegativeLong(requireProperty(properties, key), key);
+    }
+
+    private static String requireProperty(Properties properties, String key) {
         String value = properties.getProperty(key);
         if (value == null) {
             throw new IllegalArgumentException("Missing property: " + key);
         }
+        return value;
+    }
+
+    private static long parseNonNegativeLong(String value, String key) {
         try {
             long number = Long.parseLong(value.strip());
             if (number >= 0) {

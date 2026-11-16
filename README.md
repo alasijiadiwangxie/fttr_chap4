@@ -37,13 +37,23 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar path/to/scenario.properties
 
 自定义场景需包含 `packet.bytes`、`packet.arrival.us`、`fiber.delay.us` 和 `wifi.delay.us`。报文长度必须为正整数，到达时刻和链路时延为非负整数。链路的零时延可用于检验同一时刻的事件顺序。
 
+### 同一 SFU 的多报文串行发送
+
+```powershell
+java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/phase1-serial-downlink.properties
+```
+
+`packet.arrival.us` 也接受逗号分隔的 MFU 到达时刻，如 `0,0,250,1000`。程序按时间排序，同刻报文按配置顺序编号。每条报文共用 `packet.bytes` 和两段固定链路时延。光链路仅对每条报文引入固定到达时差。
+
+同一 SFU 按到达顺序排队。无线资源从 `WIFI_TX_START` 占用到 `WIFI_TX_END`，以 STA 完整接收为结束边界。前一包完成的同一微秒可以启动下一包。多报文轨迹逐包列出发送起点、排队时延、占用时长和端到端时延，汇总记录总无线忙时与空闲时间。空闲时间以仿真时间 0 至最后交付为窗口，包括首次无线发送前的时间。
+
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。可复查各阶段的[验收用例](docs/04-validation-cases.md)。
 
 ## 实施阶段
 
 | 阶段 | 模块和核对项 |
 | --- | --- |
-| 1. 仿真框架 | 读取配置，以固定时延验证 MFU 到 SFU 再到 STA 的事件顺序和 350 μs 端到端时延 |
+| 1. 仿真框架 | 用固定时延验证下行时序、350 μs 的单包端到端时延和同一 SFU 的多包串行占用 |
 | 2. AP 能耗 | 加入 LCM/HCM 和无线状态，核对状态时长、能耗分项及手算结果 |
 | 3. 信道与干扰 | 加入次信道占用、带宽回落、误包与重传，区分等待和重传的代价 |
 | 4. QoS 与切换 | 先检查截止时间，再比较预测能耗与切换代价，记录决策原因 |

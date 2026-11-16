@@ -41,8 +41,21 @@ public final class TraceLogger {
                 event.timeUs(), node, action, event.packet().id(), event.packet().bytes());
     }
 
-    public void recordDelivery(Packet packet, long delayUs) {
-        output.printf(Locale.ROOT, "delivered_packets=1 delivered_bytes=%d e2e_delay_us=%d%n",
-                packet.bytes(), delayUs);
+    public void recordWifiService(Packet packet, long sfuArrivalUs, long startUs, long endUs) {
+        output.printf(Locale.ROOT,
+                "t_us=%d node=SFU event=WIFI_TX_END packet_id=%d wifi_tx_start_us=%d wifi_queue_wait_us=%d "
+                        + "wifi_service_us=%d e2e_delay_us=%d%n",
+                endUs, packet.id(), startUs, startUs - sfuArrivalUs, endUs - startUs, endUs - packet.mfuArrivalUs());
+    }
+
+    public void recordSinglePacketSummary(int deliveredPackets, long deliveredBytes, long delayUs) {
+        output.printf(Locale.ROOT, "delivered_packets=%d delivered_bytes=%d e2e_delay_us=%d%n",
+                deliveredPackets, deliveredBytes, delayUs);
+    }
+
+    public void recordRunSummary(int deliveredPackets, long deliveredBytes, long busyUs, long endUs) {
+        output.printf(Locale.ROOT,
+                "delivered_packets=%d delivered_bytes=%d wifi_busy_us=%d wifi_idle_us=%d simulation_end_us=%d%n",
+                deliveredPackets, deliveredBytes, busyUs, endUs - busyUs, endUs);
     }
 }
