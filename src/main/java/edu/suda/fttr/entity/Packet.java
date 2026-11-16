@@ -8,16 +8,25 @@ public final class Packet {
     private final int bytes;
     private final long mfuArrivalUs;
     private final AccessCategory type;
+    private final int destinationStaId;
 
     public Packet(int id, int bytes, long mfuArrivalUs) {
         this(id, bytes, mfuArrivalUs, AccessCategory.BE);
     }
 
     public Packet(int id, int bytes, long mfuArrivalUs, AccessCategory type) {
+        this(id, bytes, mfuArrivalUs, type, 1);
+    }
+
+    public Packet(int id, int bytes, long mfuArrivalUs, AccessCategory type, int destinationStaId) {
+        if (destinationStaId < 1) {
+            throw new IllegalArgumentException("Destination STA ID must be positive");
+        }
         this.id = id;
         this.bytes = bytes;
         this.mfuArrivalUs = mfuArrivalUs;
         this.type = Objects.requireNonNull(type);
+        this.destinationStaId = destinationStaId;
     }
 
     public int id() {
@@ -34,5 +43,9 @@ public final class Packet {
 
     public AccessCategory type() {
         return type;
+    }
+
+    public int destinationStaId() {
+        return destinationStaId;
     }
 }

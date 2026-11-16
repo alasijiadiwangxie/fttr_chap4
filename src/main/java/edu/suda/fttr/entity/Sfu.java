@@ -6,10 +6,12 @@ import edu.suda.fttr.simulator.SimulationContext;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.List;
 
 /** 单个 SFU 的四类 FIFO 下行队列，共用一份非抢占式无线资源。 */
 public final class Sfu {
     private final WifiLink wifi;
+    private final List<Sta> stations;
     private final Deque<QueuedPacket> voQueue = new ArrayDeque<>();
     private final Deque<QueuedPacket> viQueue = new ArrayDeque<>();
     private final Deque<QueuedPacket> beQueue = new ArrayDeque<>();
@@ -18,8 +20,9 @@ public final class Sfu {
     private boolean selectionPending;
     private long txStartUs;
 
-    public Sfu(WifiLink wifi) {
+    public Sfu(WifiLink wifi, List<Sta> stations) {
         this.wifi = wifi;
+        this.stations = List.copyOf(stations);
     }
 
     public void receive(Packet packet, SimulationContext context) {
@@ -37,6 +40,8 @@ public final class Sfu {
 
     public void completeTransmission(Packet packet, SimulationContext context) {
         checkActive(packet);
+        // 终端以 ID 从 1 连续编号，完成事件只交付给该报文的目的终端。
+        stations.get(packet.destinationStaId() - 1).receive(packet, context);
         // 记录半开区间 [开始, 完成)。同刻启动的下一条报文不会与这一条重叠。
         context.recordWifiService(packet, active.arrivalUs, txStartUs);
         active = null;

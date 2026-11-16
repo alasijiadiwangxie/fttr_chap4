@@ -19,10 +19,11 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar
 默认场景包含一条 1200 字节的下行报文。仿真时钟统一以微秒计，光纤和无线链路使用固定时延。默认轨迹的关键行如下：
 
 ```text
-t_us=0 node=MFU event=ARRIVAL packet_id=1 bytes=1200 type=BE
-t_us=100 node=SFU event=WIFI_TX_START packet_id=1 bytes=1200 type=BE
-t_us=350 node=STA event=DELIVERED packet_id=1 bytes=1200 type=BE
+t_us=0 node=MFU event=ARRIVAL packet_id=1 bytes=1200 type=BE destination_sta_id=1
+t_us=100 node=SFU event=WIFI_TX_START packet_id=1 bytes=1200 type=BE destination_sta_id=1
+t_us=350 node=STA event=DELIVERED packet_id=1 bytes=1200 type=BE destination_sta_id=1 sta_id=1
 summary=GLOBAL sent_packets=1 avg_queue_wait_us=0.00 avg_e2e_delay_us=350.00
+summary=STA sta_id=1 received_packets=1 received_bytes=1200 throughput_mbps=27.43 avg_e2e_delay_us=350.00
 delivered_packets=1 delivered_bytes=1200 e2e_delay_us=350
 ```
 
@@ -55,6 +56,16 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/phase1-fixed-priority-dow
 `packet.N.type` 指定业务类型，省略时为 BE。`packet.N.bytes` 覆盖该包的长度。`N` 对应 `packet.arrival.us` 列表中的原始位置，从 1 开始，与排序后的报文 ID 区分。
 
 SFU 按 VO、VI、BE、BK 的顺序选择等待队列，正在发送的报文持续占用无线端直至完成。同一微秒先处理完到达、完成等报文事件，再选队。`SFU_ENQUEUE` 记录入队时刻，`QUEUE_SELECT` 记录选择前四条队列的长度。`summary=CLASS` 和 `summary=GLOBAL` 给出已完成的发送数量及平均时延，无样本类别显示计数 0 和均值 0.00。
+
+### 单 SFU 多 STA 下行单播
+
+```powershell
+java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/phase1-multi-sta-downlink.properties
+```
+
+`sta.count` 设置终端数量，ID 从 1 到该数量连续编号。`packet.N.sta.id` 指定到达列表中第 N 个报文的目的终端。两项省略时均取 1，所以旧配置默认投递给 STA 1。超出范围的目的 ID 会在启动仿真前报错。
+
+所有终端共用同一个 SFU 的四类队列和无线发送资源。轨迹的 `destination_sta_id` 是目标 ID，`DELIVERED` 中的 `sta_id` 是实际接收终端。每台 STA 有一行 `summary=STA`，记录收包数、收到的字节数、有效吞吐量和平均端到端时延。吞吐量用有效交付比特数除以从 0 到最后事件的公共时间窗口，单位为 Mb/s。窗口为零时吞吐量记为 0。没有收包的终端平均时延记为 0。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。可复查各阶段的[验收用例](docs/04-validation-cases.md)。
 

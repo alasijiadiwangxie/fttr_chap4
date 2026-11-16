@@ -10,6 +10,9 @@ import edu.suda.fttr.link.FixedDelayModel;
 import edu.suda.fttr.link.WifiLink;
 import edu.suda.fttr.trace.TraceLogger;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /** 建立单 SFU 下行拓扑，按事件类型调用对应的实体。 */
 public final class Simulator {
     private Simulator() {
@@ -18,8 +21,11 @@ public final class Simulator {
     public static void run(SimulationConfig config, TraceLogger trace) {
         SimulationContext context = new SimulationContext(trace, config.packets().size() > 1);
         Mfu mfu = new Mfu(new FiberLink(new FixedDelayModel(config.fiberDelayUs())));
-        Sfu sfu = new Sfu(new WifiLink(new FixedDelayModel(config.wifiDelayUs())));
-        Sta sta = new Sta();
+        List<Sta> stations = new ArrayList<>(config.staCount());
+        for (int i = 0; i < config.staCount(); i++) {
+            stations.add(new Sta(i + 1));
+        }
+        Sfu sfu = new Sfu(new WifiLink(new FixedDelayModel(config.wifiDelayUs())), stations);
 
         // 外部业务只安排 MFU 到达。后续的事件由节点和链路逐跳生成。
         for (Packet packet : config.packets()) {
@@ -42,8 +48,7 @@ public final class Simulator {
                     sfu.transmit(event.packet(), context);
                     break;
                 case PACKET_ARRIVAL_AT_STA:
-                    sta.receive(event.packet(), context);
-                    // 当前链路模型中，STA 完整接收就是此次无线服务的结束边界。
+                    // SFU 将报文交付给目的 STA，再释放所有终端共用的无线资源。
                     sfu.completeTransmission(event.packet(), context);
                     break;
                 case WIFI_SELECT_NEXT:
@@ -53,6 +58,6 @@ public final class Simulator {
                     throw new IllegalStateException("Unhandled event: " + event.type());
             }
         }
-        context.recordSummary();
+        context.recordSummary(stations);
     }
 }

@@ -1,10 +1,12 @@
 package edu.suda.fttr.simulator;
 
-import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.AccessCategory;
+import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.trace.TraceLogger;
 
 import java.util.EnumMap;
+import java.util.List;
 
 /** 每次运行使用独立的事件队列、微秒时钟和日志。 */
 public final class SimulationContext {
@@ -52,10 +54,11 @@ public final class SimulationContext {
         return event;
     }
 
-    public void recordDelivery(Packet packet) {
+    public void recordDelivery(Packet packet, int staId) {
         deliveredPackets++;
         deliveredBytes += packet.bytes();
         lastDeliveryDelayUs = nowUs - packet.mfuArrivalUs();
+        trace.recordDelivery(packet, staId, nowUs);
     }
 
     public void recordWifiService(Packet packet, long sfuArrivalUs, long startUs) {
@@ -75,10 +78,15 @@ public final class SimulationContext {
         trace.recordQueueSelection(packet, nowUs, vo, vi, be, bk);
     }
 
-    void recordSummary() {
+    void recordSummary(List<Sta> stations) {
         byClass.forEach((type, stats) -> trace.recordClassSummary(
                 type, stats.count, stats.averageWaitUs(), stats.averageDelayUs()));
         trace.recordGlobalDelay(overallDelay.count, overallDelay.averageWaitUs(), overallDelay.averageDelayUs());
+        for (Sta sta : stations) {
+            // 统一采用从 0 到最后事件的观察窗口。bit/μs 与 Mb/s 等值。
+            double throughputMbps = nowUs == 0 ? 0.0 : sta.receivedBytes() * 8.0 / nowUs;
+            trace.recordStaSummary(sta, throughputMbps);
+        }
         if (multiPacket) {
             trace.recordRunSummary(deliveredPackets, deliveredBytes, wifiBusyUs, nowUs);
         } else {

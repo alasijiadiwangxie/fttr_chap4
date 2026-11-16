@@ -11,10 +11,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Properties;
 import java.util.Set;
-import java.util.Comparator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -22,8 +22,8 @@ import java.util.regex.Pattern;
 public final class ConfigLoader {
     private static final String DEFAULT_SCENARIO = "/phase1-minimal-downlink.properties";
     private static final Set<String> KEYS = Set.of(
-            "packet.bytes", "packet.arrival.us", "fiber.delay.us", "wifi.delay.us");
-    private static final Pattern PACKET_OVERRIDE = Pattern.compile("packet\\.([1-9][0-9]*)\\.(bytes|type)");
+            "packet.bytes", "packet.arrival.us", "fiber.delay.us", "wifi.delay.us", "sta.count");
+    private static final Pattern PACKET_OVERRIDE = Pattern.compile("packet\\.([1-9][0-9]*)\\.(bytes|type|sta\\.id)");
 
     private ConfigLoader() {
     }
@@ -50,7 +50,8 @@ public final class ConfigLoader {
 
         List<Long> arrivalsUs = readArrivals(properties);
         validateKeys(properties, arrivalsUs.size());
-        List<Packet> packets = readPackets(properties, arrivalsUs);
+        int staCount = properties.containsKey("sta.count") ? readPositiveInt(properties, "sta.count") : 1;
+        List<Packet> packets = readPackets(properties, arrivalsUs, staCount);
         long fiberUs = readNonNegativeLong(properties, "fiber.delay.us");
         long wifiUs = readNonNegativeLong(properties, "wifi.delay.us");
 
@@ -65,7 +66,7 @@ public final class ConfigLoader {
         } catch (ArithmeticException e) {
             throw new IllegalArgumentException("Packet arrival time plus link delays and queueing exceeds the clock range", e);
         }
-        return new SimulationConfig(packets, fiberUs, wifiUs);
+        return new SimulationConfig(packets, staCount, fiberUs, wifiUs);
     }
 
     private static void validateKeys(Properties properties, int packetCount) {
@@ -84,7 +85,7 @@ public final class ConfigLoader {
         }
     }
 
-    private static List<Packet> readPackets(Properties properties, List<Long> arrivalsUs) {
+    private static List<Packet> readPackets(Properties properties, List<Long> arrivalsUs, int staCount) {
         // 覆盖项对应原始列表位置。报文 ID 仍按时刻编号，稳定排序保留同刻配置顺序。
         List<Integer> positions = new ArrayList<>(arrivalsUs.size());
         for (int i = 0; i < arrivalsUs.size(); i++) {
@@ -92,13 +93,13 @@ public final class ConfigLoader {
         }
         positions.sort(Comparator.comparingLong(arrivalsUs::get));
 
-        int defaultBytes = properties.containsKey("packet.bytes") ? readPacketBytes(properties, "packet.bytes") : 0;
+        int defaultBytes = properties.containsKey("packet.bytes") ? readPositiveInt(properties, "packet.bytes") : 0;
         List<Packet> packets = new ArrayList<>(arrivalsUs.size());
         for (int position : positions) {
             String prefix = "packet." + (position + 1);
             String bytesKey = prefix + ".bytes";
             int bytes = properties.containsKey(bytesKey) || defaultBytes == 0
-                    ? readPacketBytes(properties, bytesKey) : defaultBytes;
+                    ? readPositiveInt(properties, bytesKey) : defaultBytes;
             String typeKey = prefix + ".type";
             AccessCategory type = AccessCategory.BE;
             if (properties.containsKey(typeKey)) {
@@ -108,17 +109,22 @@ public final class ConfigLoader {
                     throw new IllegalArgumentException(typeKey + " must be VO, VI, BE or BK", e);
                 }
             }
-            packets.add(new Packet(packets.size() + 1, bytes, arrivalsUs.get(position), type));
+            String staKey = prefix + ".sta.id";
+            int staId = properties.containsKey(staKey) ? readPositiveInt(properties, staKey) : 1;
+            if (staId > staCount) {
+                throw new IllegalArgumentException(staKey + " must refer to a configured STA (1 to " + staCount + ")");
+            }
+            packets.add(new Packet(packets.size() + 1, bytes, arrivalsUs.get(position), type, staId));
         }
         return packets;
     }
 
-    private static int readPacketBytes(Properties properties, String key) {
-        long bytes = readNonNegativeLong(properties, key);
-        if (bytes == 0 || bytes > Integer.MAX_VALUE) {
+    private static int readPositiveInt(Properties properties, String key) {
+        long number = readNonNegativeLong(properties, key);
+        if (number == 0 || number > Integer.MAX_VALUE) {
             throw new IllegalArgumentException(key + " must be between 1 and " + Integer.MAX_VALUE);
         }
-        return (int) bytes;
+        return (int) number;
     }
 
     private static List<Long> readArrivals(Properties properties) {
