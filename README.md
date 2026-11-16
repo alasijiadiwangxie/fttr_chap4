@@ -4,7 +4,7 @@
 
 ## 模型范围与假设
 
-- 仿真以微秒为单位。报文按配置中的到达时刻进入 MFU，全部事件处理完毕后结束。
+- 仿真以微秒为单位。报文按手动配置或泊松生成的到达时刻进入 MFU，全部事件处理完毕后结束。
 - 每台 STA 在一次仿真中固定关联一台 SFU。光侧用固定时延表示，MFU 可立即转发，光路之间没有共享资源竞争或额外排队。
 - 每台 SFU 独立维护 VO、VI、BE、BK 四类 FIFO 队列和一个无线发送端。业务类别按固定优先级选队，已经开始发送的报文会发完。不同 SFU 的无线发送互不干扰。
 - 等待队列不设容量上限，无线传输按成功交付处理。**同一场景中的所有报文使用相同的 Wi-Fi 服务时长**。包长用于统计交付字节数和吞吐量。
@@ -41,7 +41,7 @@ delivered_packets=1 delivered_bytes=1200 e2e_delay_us=350
 java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar path/to/scenario.properties
 ```
 
-自定义场景需包含 `packet.arrival.us`、`fiber.delay.us` 和 `wifi.delay.us`，并提供共用 `packet.bytes` 或逐包长度。报文长度必须为正整数，到达时刻和链路时延为非负整数。链路的零时延可用于检验同一时刻的事件顺序。
+手动场景需包含 `packet.arrival.us`、`fiber.delay.us` 和 `wifi.delay.us`，并提供共用 `packet.bytes` 或逐包长度。报文长度必须为正整数，到达时刻和链路时延为非负整数。链路的零时延可用于检验同一时刻的事件顺序。
 
 ### 同一 SFU 的多报文串行发送
 
@@ -84,6 +84,29 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/phase1-multi-sfu-downlink
 每台 SFU 各自维护四类 FIFO 和无线发送状态。单台 SFU 串行、非抢占发送，不同 SFU 可以并行。各条逻辑光链路和无线链路使用同一组固定时延参数。轨迹从 `FIBER_TX_START` 起附带 `sfu_id`，可用 `packet_id` 串起 MFU、SFU 和实际收包的 STA。
 
 `summary=SFU` 给出逐 SFU 的发送量、吞吐量和平均排队时延。与 STA 一样，吞吐量以公共仿真窗口计算。全局 `wifi_busy_us` 是**至少一台 SFU 正在发送**的时长，重叠区间只计一次。`wifi_idle_us` 是所有 SFU 均未发送的时长。
+
+### 泊松下行业务
+
+```powershell
+java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/poisson-multi-sfu-downlink.properties
+```
+
+省略 `traffic.mode` 或设为 `manual` 时沿用手动报文列表。使用 `traffic.mode=poisson` 时，保留拓扑和链路配置，用下表中的参数替换 `packet.arrival.us` 和 `packet.*` 字段。`N` 是从 1 开始的 SFU ID。
+
+| 配置项 | 含义 |
+| --- | --- |
+| `traffic.duration.us` | 必填。所有 SFU 共用的最长生成窗口，单位为 μs，取正整数。 |
+| `traffic.sfu.N.rate.pps` | 该 SFU 的平均到达率，单位为包/s，可为小数。省略或设为 0 时该 SFU 不生成报文。 |
+| `traffic.sfu.N.packet.bytes` | 固定报文长度，正整数。到达率为正时必填。 |
+| `traffic.sfu.N.seed` | 随机种子，有符号 64 位整数。到达率为正时必填。 |
+| `traffic.sfu.N.duration.us` | 可选。该 SFU 的生成窗口，取不大于公共窗口的正整数。 |
+| `traffic.sfu.N.class.weights` | 可选。VO、VI、BE、BK 的四个非负相对权重，至少有一个为正。`1,2,6,1` 表示 10%、20%、60%、10%，默认 `0,0,1,0`。 |
+
+各 SFU 独立采样指数到达间隔。程序累计连续时刻后向下取整到微秒，同一微秒允许生成多包。报文按到达时刻全局编号，同一时刻按 SFU ID 排序。每包均匀随机选择该 SFU 关联的一台 STA，并按权重抽取业务类别。到达率为正但没有关联 STA 时，配置加载会报错并指出 SFU ID。
+
+每台 SFU 在自己的 `[0, duration)` 窗口内生成报文。窗口结束后仿真继续完成已生成的报文，`simulation_end_us` 记录最后的仿真事件时刻。固定种子和相同配置可复现报文序列。
+
+`summary=TRAFFIC_SFU` 和 `summary=TRAFFIC_CLASS` 分别给出 SFU 总量及其各业务类别的生成包数、字节数、实际到达率和平均输入负载。`actual_rate_pps` 按生成包数除以该 SFU 的窗口秒数计算，`offered_load_mbps` 按生成比特数除以该 SFU 的窗口微秒数计算。交付吞吐量仍按原有仿真窗口统计。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。
 

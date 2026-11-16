@@ -1,6 +1,7 @@
 package edu.suda.fttr.simulator;
 
 import edu.suda.fttr.config.SimulationConfig;
+import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.Sfu;
@@ -21,7 +22,8 @@ public final class Simulator {
     }
 
     public static void run(SimulationConfig config, TraceLogger trace) {
-        SimulationContext context = new SimulationContext(trace, config.packets().size() > 1);
+        boolean poisson = !config.poissonSources().isEmpty();
+        SimulationContext context = new SimulationContext(trace, poisson || config.packets().size() > 1);
         List<Map<Integer, Sta>> stationsBySfu = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             stationsBySfu.add(new HashMap<>());
@@ -75,6 +77,35 @@ public final class Simulator {
                     throw new IllegalStateException("Unhandled event: " + event.type());
             }
         }
+        if (poisson) {
+            recordGeneratedTraffic(config, trace);
+        }
         context.recordSummary(sfus, stations);
+    }
+
+    private static void recordGeneratedTraffic(SimulationConfig config, TraceLogger trace) {
+        AccessCategory[] categories = AccessCategory.values();
+        int[][] packetCounts = new int[config.sfuCount()][categories.length];
+        long[][] byteCounts = new long[config.sfuCount()][categories.length];
+        // 按实际进入 MFU 的报文统计供给负载。分母是生成窗口，与链路排队或清空时刻无关。
+        for (Packet packet : config.packets()) {
+            int sfu = config.staSfuIds().get(packet.destinationStaId() - 1) - 1;
+            int type = packet.type().ordinal();
+            packetCounts[sfu][type]++;
+            byteCounts[sfu][type] += packet.bytes();
+        }
+        for (int sfu = 0; sfu < config.sfuCount(); sfu++) {
+            long windowUs = config.poissonSources().get(sfu).durationUs();
+            int totalPackets = 0;
+            long totalBytes = 0;
+            for (AccessCategory type : categories) {
+                int packets = packetCounts[sfu][type.ordinal()];
+                long bytes = byteCounts[sfu][type.ordinal()];
+                trace.recordTrafficSummary(sfu + 1, type, packets, bytes, windowUs);
+                totalPackets += packets;
+                totalBytes += bytes;
+            }
+            trace.recordTrafficSummary(sfu + 1, null, totalPackets, totalBytes, windowUs);
+        }
     }
 }

@@ -82,6 +82,15 @@ public final class TraceLogger {
                 type, sentPackets, waitUs, delayUs);
     }
 
+    /** 汇总泊松输入。type 为空时统计该 SFU 的全部业务。 */
+    public void recordTrafficSummary(int sfuId, AccessCategory type, int packets, long bytes, long windowUs) {
+        String group = type == null ? "summary=TRAFFIC_SFU sfu_id=" + sfuId
+                : "summary=TRAFFIC_CLASS sfu_id=" + sfuId + " type=" + type;
+        output.printf(Locale.ROOT, "%s generated_packets=%d generated_bytes=%d window_us=%d "
+                        + "actual_rate_pps=%.6f offered_load_mbps=%.6f%n",
+                group, packets, bytes, windowUs, packets * 1_000_000.0 / windowUs, bytes * 8.0 / windowUs);
+    }
+
     public void recordGlobalDelay(int sentPackets, double waitUs, double delayUs) {
         output.printf(Locale.ROOT,
                 "summary=GLOBAL sent_packets=%d avg_queue_wait_us=%.2f avg_e2e_delay_us=%.2f%n",

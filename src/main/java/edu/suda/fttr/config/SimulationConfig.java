@@ -1,6 +1,7 @@
 package edu.suda.fttr.config;
 
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.traffic.TrafficGenerator;
 
 import java.util.List;
 import java.util.stream.Collectors;
@@ -12,13 +13,16 @@ public final class SimulationConfig {
     private final List<Integer> staSfuIds;
     private final long fiberDelayUs;
     private final long wifiDelayUs;
+    private final List<TrafficGenerator.Source> poissonSources;
 
-    SimulationConfig(List<Packet> packets, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs, long wifiDelayUs) {
+    SimulationConfig(List<Packet> packets, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs, long wifiDelayUs,
+                     List<TrafficGenerator.Source> poissonSources) {
         this.packets = List.copyOf(packets);
         this.sfuCount = sfuCount;
         this.staSfuIds = List.copyOf(staSfuIds);
         this.fiberDelayUs = fiberDelayUs;
         this.wifiDelayUs = wifiDelayUs;
+        this.poissonSources = List.copyOf(poissonSources);
     }
 
     /** 首个报文的长度，兼容原有单包调用。多包场景从各报文读取长度。 */
@@ -58,5 +62,10 @@ public final class SimulationConfig {
 
     public long wifiDelayUs() {
         return wifiDelayUs;
+    }
+
+    /** 泊松模式按 SFU ID 排列，包含零到达率的源。手动模式返回空列表。 */
+    public List<TrafficGenerator.Source> poissonSources() {
+        return poissonSources;
     }
 }
