@@ -69,6 +69,40 @@ class MultiSfuDownlinkTest {
     }
 
     @Test
+    void handlesPartiallyOverlappingSendsAndConservesPacketsAndBytes(@TempDir Path directory) throws IOException {
+        // STA 1 的三包同时到达，STA 2 间歇收包。SFU 3 没有关联的 STA。
+        List<Map<String, String>> trace = run(writeScenario(directory, List.of(
+                "sfu.count=3", "sta.count=2", "sta.1.sfu.id=1", "sta.2.sfu.id=2",
+                "fiber.delay.us=100", "wifi.delay.us=40", "packet.arrival.us=0,0,0,15,100",
+                "packet.1.bytes=100", "packet.2.bytes=200", "packet.3.bytes=300",
+                "packet.4.bytes=400", "packet.5.bytes=500", "packet.4.sta.id=2", "packet.5.sta.id=2")));
+
+        // 115 μs 时 SFU 1 仍有两包等待，SFU 2 收包后立即发送，第二次收包也独立开始发送。
+        assertQueueSnapshot(trace, 1, 100, "1", 0, 0, 3, 0);
+        assertEquals(List.of("1:BE@100", "2:BE@140", "3:BE@180"), timeline(trace, "WIFI_TX_START", 1));
+        assertEquals(List.of("1:BE@140", "2:BE@180", "3:BE@220"), timeline(trace, "WIFI_TX_END", 1));
+        assertEquals(List.of("4:BE@115", "5:BE@200"), timeline(trace, "WIFI_TX_START", 2));
+        assertEquals(List.of("4:BE@155", "5:BE@240"), timeline(trace, "WIFI_TX_END", 2));
+
+        // 逐包核对只交付一次、投递目标与字节量，再核对各统计层级与输入守恒。
+        List<Map<String, String>> deliveries = events(trace, "DELIVERED");
+        assertEquals(List.of("1:1>1", "4:2>2", "2:1>1", "3:1>1", "5:2>2"), routes(deliveries, "sta_id"));
+        assertEquals(List.of("100", "400", "200", "300", "500"),
+                deliveries.stream().map(row -> row.get("bytes")).collect(Collectors.toList()));
+        assertFields(summary(trace, "SFU", "sfu_id", 1), Map.of("sent_packets", "3", "sent_bytes", "600"));
+        assertFields(summary(trace, "SFU", "sfu_id", 2), Map.of("sent_packets", "2", "sent_bytes", "900"));
+        assertFields(summary(trace, "SFU", "sfu_id", 3), Map.of("sent_packets", "0", "sent_bytes", "0",
+                "throughput_mbps", "0.00", "avg_queue_wait_us", "0.00"));
+        assertFields(summary(trace, "STA", "sta_id", 1), Map.of("received_packets", "3", "received_bytes", "600"));
+        assertFields(summary(trace, "STA", "sta_id", 2), Map.of("received_packets", "2", "received_bytes", "900"));
+        assertFields(summary(trace, "GLOBAL", null, 0), Map.of("sent_packets", "5"));
+
+        // SFU 1 忙时为 [100,220)，SFU 2 为 [115,155) 和 [200,240)，重叠 60 μs。
+        assertFields(trace.get(trace.size() - 1), Map.of("delivered_packets", "5", "delivered_bytes", "1500",
+                "wifi_busy_us", "140", "wifi_idle_us", "100", "simulation_end_us", "240"));
+    }
+
+    @Test
     void explicitSingleSfuMatchesLegacyMultiStaScenario(@TempDir Path directory) throws IOException {
         Path legacy = Path.of("configs", "phase1-multi-sta-downlink.properties");
         List<String> explicit = new ArrayList<>(Files.readAllLines(legacy, StandardCharsets.UTF_8));
