@@ -1,4 +1,4 @@
-package fttr.chap4;
+package edu.suda.fttr.config;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -10,26 +10,17 @@ import java.nio.file.Path;
 import java.util.Properties;
 import java.util.Set;
 
-/** 单报文场景的输入。所有时刻和时延统一使用整数微秒。 */
-final class SimulationConfig {
-    private static final String DEFAULT_SCENARIO = "/scenarios/minimal.properties";
+/** 读取并校验完整的场景配置，再开始处理仿真事件。 */
+public final class ConfigLoader {
+    private static final String DEFAULT_SCENARIO = "/phase1-minimal-downlink.properties";
     private static final Set<String> KEYS = Set.of(
             "packet.bytes", "packet.arrival.us", "fiber.delay.us", "wifi.delay.us");
 
-    final int packetBytes;
-    final long packetArrivalUs;
-    final long fiberDelayUs;
-    final long wifiDelayUs;
-
-    private SimulationConfig(int packetBytes, long packetArrivalUs, long fiberDelayUs, long wifiDelayUs) {
-        this.packetBytes = packetBytes;
-        this.packetArrivalUs = packetArrivalUs;
-        this.fiberDelayUs = fiberDelayUs;
-        this.wifiDelayUs = wifiDelayUs;
+    private ConfigLoader() {
     }
 
-    static SimulationConfig loadDefault() throws IOException {
-        InputStream input = SimulationConfig.class.getResourceAsStream(DEFAULT_SCENARIO);
+    public static SimulationConfig loadDefault() throws IOException {
+        InputStream input = ConfigLoader.class.getResourceAsStream(DEFAULT_SCENARIO);
         if (input == null) {
             throw new IOException("Missing bundled scenario " + DEFAULT_SCENARIO);
         }
@@ -38,7 +29,7 @@ final class SimulationConfig {
         }
     }
 
-    static SimulationConfig load(Path path) throws IOException {
+    public static SimulationConfig load(Path path) throws IOException {
         try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
             return read(reader);
         }
