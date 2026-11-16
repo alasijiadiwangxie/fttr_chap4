@@ -2,7 +2,7 @@ package edu.suda.fttr.simulator;
 
 import edu.suda.fttr.entity.Packet;
 
-/** 队列中的事件不可变，携带发生时刻、动作和同一条下行报文。 */
+/** 事件不可变。报文事件携带原报文，选队事件只负责唤起 SFU 调度。 */
 public final class Event {
     private final long timeUs;
     private final EventType type;

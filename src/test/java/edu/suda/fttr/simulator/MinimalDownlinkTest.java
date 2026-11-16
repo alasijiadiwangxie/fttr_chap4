@@ -143,6 +143,12 @@ class MinimalDownlinkTest {
         try (PrintStream output = new PrintStream(buffer, false, StandardCharsets.UTF_8)) {
             Simulator.run(config, new TraceLogger(output));
         }
-        return buffer.toString(StandardCharsets.UTF_8).lines().collect(Collectors.toList());
+        // 原单 FIFO 用例继续断言时序与交付量，新增字段和日志由优先级用例单独核对。
+        return buffer.toString(StandardCharsets.UTF_8).lines()
+                .filter(line -> !line.startsWith("summary="))
+                .filter(line -> !line.contains("event=SFU_ENQUEUE") && !line.contains("event=QUEUE_SELECT"))
+                .filter(line -> config.packets().size() > 1 || !line.contains("event=WIFI_TX_END"))
+                .map(line -> line.split(" type=", 2)[0])
+                .collect(Collectors.toList());
     }
 }

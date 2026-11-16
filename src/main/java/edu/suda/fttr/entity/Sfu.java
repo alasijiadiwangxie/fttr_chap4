@@ -7,11 +7,15 @@ import edu.suda.fttr.simulator.SimulationContext;
 import java.util.ArrayDeque;
 import java.util.Deque;
 
-/** 单个 SFU 的 FIFO 下行队列和独占的无线发送资源。 */
+/** 单个 SFU 的四类 FIFO 下行队列，共用一份非抢占式无线资源。 */
 public final class Sfu {
     private final WifiLink wifi;
-    private final Deque<QueuedPacket> waiting = new ArrayDeque<>();
+    private final Deque<QueuedPacket> voQueue = new ArrayDeque<>();
+    private final Deque<QueuedPacket> viQueue = new ArrayDeque<>();
+    private final Deque<QueuedPacket> beQueue = new ArrayDeque<>();
+    private final Deque<QueuedPacket> bkQueue = new ArrayDeque<>();
     private QueuedPacket active;
+    private boolean selectionPending;
     private long txStartUs;
 
     public Sfu(WifiLink wifi) {
@@ -19,8 +23,10 @@ public final class Sfu {
     }
 
     public void receive(Packet packet, SimulationContext context) {
-        waiting.addLast(new QueuedPacket(packet, context.nowUs()));
-        scheduleNext(context);
+        Deque<QueuedPacket> queue = queueFor(packet.type());
+        queue.addLast(new QueuedPacket(packet, context.nowUs()));
+        context.recordEnqueue(packet, queue.size());
+        requestSelection(context);
     }
 
     public void transmit(Packet packet, SimulationContext context) {
@@ -34,16 +40,52 @@ public final class Sfu {
         // 记录半开区间 [开始, 完成)。同刻启动的下一条报文不会与这一条重叠。
         context.recordWifiService(packet, active.arrivalUs, txStartUs);
         active = null;
-        scheduleNext(context);
+        requestSelection(context);
     }
 
-    private void scheduleNext(SimulationContext context) {
-        if (active != null || waiting.isEmpty()) {
+    private void requestSelection(SimulationContext context) {
+        if (active != null || selectionPending
+                || (voQueue.isEmpty() && viQueue.isEmpty() && beQueue.isEmpty() && bkQueue.isEmpty())) {
             return;
         }
-        // 先预留资源，再安排开始事件。其他同刻到达会看到已有报文占用，只能排队。
-        active = waiting.removeFirst();
+        // 同刻到达和完成事件处理完毕后统一选队。一次只安排一个选队事件。
+        selectionPending = true;
+        context.scheduleWifiSelection();
+    }
+
+    public void selectNext(SimulationContext context) {
+        selectionPending = false;
+        Deque<QueuedPacket> queue = highestPriorityQueue();
+        context.recordQueueSelection(queue.getFirst().packet,
+                voQueue.size(), viQueue.size(), beQueue.size(), bkQueue.size());
+        // 先出队并预留资源，再安排发送。预留持续到 STA 完整接收该报文。
+        active = queue.removeFirst();
         context.scheduleAfter(0, EventType.WIFI_TX_START, active.packet);
+    }
+
+    private Deque<QueuedPacket> highestPriorityQueue() {
+        if (!voQueue.isEmpty()) {
+            return voQueue;
+        }
+        if (!viQueue.isEmpty()) {
+            return viQueue;
+        }
+        return beQueue.isEmpty() ? bkQueue : beQueue;
+    }
+
+    private Deque<QueuedPacket> queueFor(AccessCategory type) {
+        switch (type) {
+            case VO:
+                return voQueue;
+            case VI:
+                return viQueue;
+            case BE:
+                return beQueue;
+            case BK:
+                return bkQueue;
+            default:
+                throw new IllegalArgumentException("Unknown access category: " + type);
+        }
     }
 
     private void checkActive(Packet packet) {

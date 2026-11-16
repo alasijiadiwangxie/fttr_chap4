@@ -16,16 +16,14 @@ public final class Simulator {
     }
 
     public static void run(SimulationConfig config, TraceLogger trace) {
-        SimulationContext context = new SimulationContext(trace, config.packetArrivalsUs().size() > 1);
+        SimulationContext context = new SimulationContext(trace, config.packets().size() > 1);
         Mfu mfu = new Mfu(new FiberLink(new FixedDelayModel(config.fiberDelayUs())));
         Sfu sfu = new Sfu(new WifiLink(new FixedDelayModel(config.wifiDelayUs())));
         Sta sta = new Sta();
 
         // 外部业务只安排 MFU 到达。后续的事件由节点和链路逐跳生成。
-        int packetId = 1;
-        for (long arrivalUs : config.packetArrivalsUs()) {
-            Packet packet = new Packet(packetId++, config.packetBytes(), arrivalUs);
-            context.scheduleAfter(arrivalUs, EventType.PACKET_ARRIVAL_AT_MFU, packet);
+        for (Packet packet : config.packets()) {
+            context.scheduleAfter(packet.mfuArrivalUs(), EventType.PACKET_ARRIVAL_AT_MFU, packet);
         }
 
         Event event;
@@ -47,6 +45,9 @@ public final class Simulator {
                     sta.receive(event.packet(), context);
                     // 当前链路模型中，STA 完整接收就是此次无线服务的结束边界。
                     sfu.completeTransmission(event.packet(), context);
+                    break;
+                case WIFI_SELECT_NEXT:
+                    sfu.selectNext(context);
                     break;
                 default:
                     throw new IllegalStateException("Unhandled event: " + event.type());

@@ -3,15 +3,16 @@ package edu.suda.fttr.simulator;
 import java.util.Comparator;
 import java.util.PriorityQueue;
 
-/** 按时间取出事件。同一微秒发生的事件按先入先出处理。 */
+/** 按时间取出事件。同刻先处理报文事件，再选队，各组内保持先入先出。 */
 final class EventQueue {
     private final PriorityQueue<Entry> pending = new PriorityQueue<>(
             Comparator.comparingLong((Entry entry) -> entry.event.timeUs())
+                    .thenComparingInt(entry -> entry.event.type() == EventType.WIFI_SELECT_NEXT ? 1 : 0)
                     .thenComparingLong(entry -> entry.sequence));
     private long nextSequence;
 
     void add(Event event) {
-        // 时间相同时，处理期间新加入的事件排在原有同刻事件之后。
+        // 同刻新生成的报文事件也先于选队，例如零光纤时延下的 SFU 到达。
         pending.add(new Entry(event, nextSequence++));
     }
 
