@@ -6,6 +6,7 @@ import edu.suda.fttr.link.WifiFrameExchange;
 import edu.suda.fttr.mac.EdcaParameters;
 import edu.suda.fttr.mac.EdcaParameters.AcParameters;
 import edu.suda.fttr.mac.WifiAccessMode;
+import edu.suda.fttr.mac.WifiRetryPolicy;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 import edu.suda.fttr.traffic.TrafficGenerator;
@@ -36,10 +37,13 @@ public final class ConfigLoader {
     private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
     private static final String MAC_SLOT_US = "wifi.mac.slot.us";
     private static final String MAC_ACK_RATE_MBPS = "wifi.mac.ack.rate.mbps";
+    private static final String MAC_ACK_TIMEOUT_US = "wifi.mac.ack.timeout.us";
+    private static final String MAC_MAX_RETRIES = "wifi.mac.retry.max";
     private static final String EDCA_SEED = "wifi.mac.edca.seed";
     private static final Set<String> KEYS = Set.of(
             "fiber.delay.us", "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
-            MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, EDCA_SEED);
+            MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
+            MAC_MAX_RETRIES, EDCA_SEED);
     private static final Set<String> PHY_KEYS = Set.of(
             "wifi.phy.bandwidth.mhz", "wifi.phy.mcs", "wifi.phy.nss", "wifi.phy.gi.us",
             "wifi.phy.mac.overhead.bytes", "wifi.phy.he-ltf.type", "wifi.phy.nominal.packet.padding.us");
@@ -105,6 +109,7 @@ public final class ConfigLoader {
         EdcaParameters edcaParameters = readEdcaParameters(properties);
         WifiAccessMode accessMode = readWifiAccessMode(properties);
         WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy, edcaParameters.sifsUs());
+        WifiRetryPolicy retryPolicy = readWifiRetryPolicy(properties, accessMode, frameExchange, edcaParameters);
         long wifiUs = wirelessPhy == null ? readNonNegativeLong(properties, "wifi.delay.us") : 0;
         long durationUs = poisson ? readPositiveDuration(properties, "traffic.duration.us") : 0;
         PoissonTraffic downlink = poisson && directionMode.allows(Packet.Direction.DL)
@@ -119,7 +124,23 @@ public final class ConfigLoader {
 
         validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange);
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange,
-                edcaParameters, accessMode, downlink.windowsUs, uplink.windowsUs, directionMode.allows(Packet.Direction.UL));
+                edcaParameters, accessMode, retryPolicy, downlink.windowsUs, uplink.windowsUs,
+                directionMode.allows(Packet.Direction.UL));
+    }
+
+    private static WifiRetryPolicy readWifiRetryPolicy(Properties properties, WifiAccessMode accessMode,
+                                                       WifiFrameExchange frameExchange, EdcaParameters edcaParameters) {
+        boolean timeoutConfigured = properties.containsKey(MAC_ACK_TIMEOUT_US);
+        if (accessMode != WifiAccessMode.EDCA_MULTI_AC || frameExchange == null) {
+            if (timeoutConfigured || properties.containsKey(MAC_MAX_RETRIES)) {
+                throw new IllegalArgumentException("ACK retry parameters require edca-multi-ac and data-sifs-ack");
+            }
+            return null;
+        }
+        // 近似的缺失 ACK 等待窗口。默认覆盖一次正常 SIFS、ACK 和一个空闲时隙。
+        long timeoutUs = timeoutConfigured ? readNonNegativeLong(properties, MAC_ACK_TIMEOUT_US)
+                : frameExchange.responseDurationNs() / 1_000L + edcaParameters.slotTimeUs();
+        return new WifiRetryPolicy(timeoutUs, readOptionalNonNegativeInt(properties, MAC_MAX_RETRIES, 3));
     }
 
     private static WifiAccessMode readWifiAccessMode(Properties properties) {

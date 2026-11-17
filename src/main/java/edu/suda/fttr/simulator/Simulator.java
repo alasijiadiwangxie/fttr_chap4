@@ -9,6 +9,7 @@ import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.link.FiberLink;
 import edu.suda.fttr.link.FixedDelayModel;
 import edu.suda.fttr.link.WifiLink;
+import edu.suda.fttr.mac.WifiRetryPolicy;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.trace.TraceLogger;
 
@@ -27,7 +28,8 @@ public final class Simulator {
         List<Long> uplinkWindowsUs = config.uplinkTrafficWindowsUs();
         boolean runSummary = config.uplinkEnabled() || !downlinkWindowsUs.isEmpty() || config.inputEvents().size() > 1;
         WirelessPhy wirelessPhy = config.wirelessPhy();
-        SimulationContext context = new SimulationContext(trace, runSummary, wirelessPhy != null);
+        WifiRetryPolicy retryPolicy = config.wifiRetryPolicy();
+        SimulationContext context = new SimulationContext(trace, runSummary, wirelessPhy != null, retryPolicy != null);
         List<Map<Integer, Sta>> stationsBySfu = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             stationsBySfu.add(new HashMap<>());
@@ -48,7 +50,8 @@ public final class Simulator {
         List<Sfu> sfus = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             fibers.add(new FiberLink(fiberDelay));
-            sfus.add(new Sfu(i + 1, wifi, stationsBySfu.get(i), config.edcaParameters(), config.wifiAccessMode()));
+            sfus.add(new Sfu(i + 1, wifi, stationsBySfu.get(i), config.edcaParameters(), config.wifiAccessMode(),
+                    retryPolicy));
         }
         Mfu mfu = new Mfu(config.staSfuIds());
 
@@ -102,6 +105,9 @@ public final class Simulator {
                     break;
                 case WIFI_COLLISION_DATA_END:
                     sfus.get(event.sfuId() - 1).finishCollidedData(event.packet(), context);
+                    break;
+                case WIFI_ACK_TIMEOUT:
+                    sfus.get(event.sfuId() - 1).onAckTimeout(event.packet(), context);
                     break;
                 default:
                     throw new IllegalStateException("Unhandled event: " + event.type());

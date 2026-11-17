@@ -10,7 +10,7 @@
 - 等待队列不设容量上限。HE SU 模式根据包长、开销和 PHY 参数计算数据 PPDU 时长，可启用 DATA–SIFS–ACK 交换。固定时延模式可用于回归对照。
 - SFU 和 STA 的吞吐量统一按从 0 到最后事件的时间窗口计算。日志同时记录逐包时序，以及按业务类别、设备和全局汇总的统计。
 
-信道干扰、ACK 超时、重传、OFDMA、DBA 和 AP 节能机制可作为后续独立扩展。
+信道干扰、OFDMA、DBA 和 AP 节能机制可作为后续独立扩展。
 
 ## 构建与运行
 
@@ -231,9 +231,24 @@ ACK 速率仅用于 `data-sifs-ack`。DATA 继续使用 HE SU PHY。ACK 按 5 GH
 
 同一设备的多个 AC 同刻就绪时，按 VO、VI、BE、BK 的顺序选出获胜 AC。其余就绪 AC 触发虚拟碰撞，更新 CW 后重抽退避计数。`EDCA_VIRTUAL_COLLISION` 日志记录 `winner_packet_id`、`cw_before`、`cw_after` 和 `backoff`。未参与碰撞的 AC 保留剩余计数，在信道恢复空闲后重新等待完整 AIFS。
 
-同刻就绪的 AC 先按设备完成虚拟碰撞仲裁，再由每个设备的获胜 AC 同刻发送。一个设备发送时沿用正常交换流程。同一信道上有多个设备同刻发送时，所有参与发送的报文均发生真实碰撞，并在各自的 DATA 结束时丢弃。SIFS、ACK、下行交付和上行光侧转发均以 DATA 接收成功为前提。碰撞期间信道保持一个连续忙区间，由最晚结束的 DATA 决定释放时刻。仍在竞争的 AC 在信道恢复空闲后重新等待完整 AIFS。
+同刻就绪的 AC 先按设备完成虚拟碰撞仲裁，再由每个设备的获胜 AC 同刻发送。同一信道上的多个设备同刻发送时，所有参与发送的报文均发生真实碰撞。SIFS、ACK、下行交付和上行光侧转发均以 DATA 接收成功为前提。碰撞期间信道保持一个连续忙区间，由最晚结束的 DATA 决定释放时刻。仍在竞争的 AC 在信道恢复空闲后重新等待完整 AIFS。
 
-`WIFI_COLLISION_START` 和 `WIFI_COLLISION_DROP` 分别记录每个碰撞报文的发送开始和丢弃时刻。`WIFI_COLLISION_END` 记录整次碰撞占用结束。发生碰撞的仿真输出 `summary=WIFI_COLLISION`，含 `collision_events`、`dropped_packets` 和 `dropped_bytes`。碰撞采用 DATA 结束即判定失败的简化模型，ACK 超时与重传留待后续实现。真实碰撞后沿用当前 CW 并清空已用退避计数。同一 AC 排在后面的报文重新抽取退避。
+`WIFI_COLLISION_START` 记录每个碰撞报文的发送开始，`WIFI_COLLISION_END` 记录整次碰撞占用结束。在仅发送 DATA 的场景中，碰撞报文在各自的 DATA 结束时丢弃并记录 `WIFI_COLLISION_DROP`。发生碰撞时，`summary=WIFI_COLLISION` 记录同刻碰撞的组数 `collision_events`，以及最终丢弃的报文数 `dropped_packets` 和字节数 `dropped_bytes`。
+
+### ACK 超时与 MAC 重传
+
+同时设置 `wifi.mac.access=edca-multi-ac` 和 `wifi.mac.exchange=data-sifs-ack` 即可启用。以下配置项适用于这两个模式同时开启的场景。
+
+| 配置项 | 含义 | 默认值 |
+| --- | --- | --- |
+| `wifi.mac.ack.timeout.us` | 从发送端自己的碰撞 DATA 结束起算的缺失 ACK 等待时间，取正整数微秒 | SIFS + ACK PPDU 时长 + Slot Time，默认参数下为 53 μs |
+| `wifi.mac.retry.max` | 每个报文允许的重传次数，取非负整数，首次发送另计 | 3 |
+
+从碰撞开始到自身 ACK 超时，发送设备的四类 AC 暂停接入倒计时。信道在最晚一个碰撞 DATA 结束时恢复空闲。其他设备此时可以开始 AIFS，发生碰撞的设备仍各自等待超时。本模型直接从碰撞 DATA 结束起安排缺失 ACK 计时，正常接收仍按 DATA–SIFS–ACK 处理。
+
+超时后，若报文还有重试额度，则保留原报文和队首位置，将该报文的重试次数加一，由对应 AC 更新 `CW = min(2 × CW + 1, CWmax)` 并重新抽取退避。重试设备恢复接入后再次检查 CCA，从完整 AIFS 开始竞争。`wifi.mac.retry.max=0` 时，首次发送失败后仍等待超时，再丢弃报文。正常收到 ACK 或达到重试上限丢弃时，队首退出且该 AC 的 CW 恢复到 CWmin，下一报文从零开始计数。每个报文沿用原始 `packet_id`，最终只计一次交付或丢弃。
+
+`WIFI_MAC_ATTEMPT` 用 `retry_count=0` 标识首次发送，正值表示重传。发生碰撞时，`WIFI_COLLISION_DATA_END` 和 `WIFI_ACK_TIMEOUT` 分别标记碰撞 DATA 结束和 ACK 超时。`WIFI_MAC_RETRY` 记录新重试次数、更新前后的 CW 和新抽取的退避值。`WIFI_MAC_SUCCESS` 标记 ACK 完成，`WIFI_RETRY_LIMIT_DROP` 标记最终丢弃。`summary=WIFI_RETRY` 输出实际发出的重传次数 `retransmissions`、发送端超时次数 `ack_timeouts` 和重试超限丢包数 `retry_limit_drops`。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。
 

@@ -98,19 +98,20 @@ class EdcaMultiAcTest {
                 "sta.count=2", "packet.1.direction=DL", "packet.1.type=BK", "packet.2.direction=UL",
                 "packet.2.sta.id=2", "packet.2.type=VO", "packet.3.direction=UL", "packet.3.type=VO",
                 "packet.4.direction=UL", "packet.4.type=VO", "packet.5.direction=UL", "packet.5.sta.id=2",
-                "packet.5.type=VO", "wifi.mac.edca.BK.aifsn=2", "wifi.mac.edca.BK.cwmin=0", "wifi.mac.edca.VO.cwmin=0");
+                "packet.5.type=VO", "wifi.mac.edca.BK.aifsn=2", "wifi.mac.edca.BK.cwmin=0", "wifi.mac.edca.VO.cwmin=0",
+                "wifi.mac.ack.timeout.us=20", "wifi.mac.retry.max=0");
 
         String trace = run(config);
-        // 首轮三台设备同时发送。第二轮只有两台 STA 的下一条 VO 队首参与。
+        // 首轮三台设备同时发送。超时后，第二轮只有两台 STA 的下一条 VO 队首参与。
         assertTrue(exchangeBoundaries(trace).isEmpty());
         List<String> starts = packetBoundaries(trace, "WIFI_COLLISION_START");
         assertEquals(5, starts.size());
         assertEquals(Set.of("WIFI_COLLISION_START:1@34", "WIFI_COLLISION_START:2@34", "WIFI_COLLISION_START:3@34",
-                "WIFI_COLLISION_START:4@132", "WIFI_COLLISION_START:5@132"), Set.copyOf(starts));
-        assertEquals(List.of("98", "196"), collisionReleaseTimes(trace));
+                "WIFI_COLLISION_START:4@152", "WIFI_COLLISION_START:5@152"), Set.copyOf(starts));
+        assertEquals(List.of("98", "216"), collisionReleaseTimes(trace));
         assertTrue(collisions(trace).isEmpty());
         assertTrue(trace.contains("summary=WIFI_COLLISION collision_events=2 dropped_packets=5 dropped_bytes=7500"));
-        assertTrue(trace.contains("delivered_packets=0 delivered_bytes=0 wifi_busy_us=128 wifi_idle_us=68 simulation_end_us=196"));
+        assertTrue(trace.contains("delivered_packets=0 delivered_bytes=0 wifi_busy_us=128 wifi_idle_us=108 simulation_end_us=236"));
     }
 
     @Test
@@ -119,26 +120,27 @@ class EdcaMultiAcTest {
                 "packet.1.direction=UL", "packet.2.direction=UL", "packet.2.type=VO", "packet.3.direction=DL",
                 "packet.3.type=BK", "wifi.mac.edca.BE.aifsn=2", "wifi.mac.edca.BK.aifsn=2",
                 "wifi.mac.edca.BE.cwmin=0", "wifi.mac.edca.BE.cwmax=0", "wifi.mac.edca.BK.cwmin=0",
-                "wifi.mac.edca.VO.cwmin=0");
+                "wifi.mac.edca.VO.cwmin=0", "wifi.mac.ack.timeout.us=20", "wifi.mac.retry.max=0");
 
         String trace = run(config);
-        assertEquals(List.of("WIFI_TX_START:1@132", "WIFI_ACK_END:1@240"), exchangeBoundaries(trace));
-        // STA 的 BE 因虚拟碰撞留下。STA 的 VO 与 SFU 的 BK 同时发送并丢弃。
+        assertEquals(List.of("WIFI_TX_START:1@152", "WIFI_ACK_END:1@260"), exchangeBoundaries(trace));
+        // STA 的 BE 因虚拟碰撞留下。STA 的 VO 与 SFU 的 BK 同时发送，超时后丢弃。
         assertEquals(List.of("34:UL:1:1:2"), collisions(trace).stream()
                 .map(collision -> String.join(":", collision.get("t_us"), collision.get("direction"),
                         collision.get("sta_id"), collision.get("packet_id"), collision.get("winner_packet_id")))
                 .collect(Collectors.toList()));
-        List<String> drops = packetBoundaries(trace, "WIFI_COLLISION_DROP");
+        List<String> drops = packetBoundaries(trace, "WIFI_RETRY_LIMIT_DROP");
         assertEquals(2, drops.size());
-        assertEquals(Set.of("WIFI_COLLISION_DROP:2@98", "WIFI_COLLISION_DROP:3@98"), Set.copyOf(drops));
-        assertEquals(List.of("DELIVERED:1@196"), packetBoundaries(trace, "DELIVERED"));
+        assertEquals(Set.of("WIFI_RETRY_LIMIT_DROP:2@118", "WIFI_RETRY_LIMIT_DROP:3@118"), Set.copyOf(drops));
+        assertEquals(List.of("DELIVERED:1@216"), packetBoundaries(trace, "DELIVERED"));
     }
 
     @Test
     void keepsTwoStaCollisionBusyUntilTheLongestDataEnds(@TempDir Path directory) throws IOException {
         SimulationConfig config = load(directory, "packet.arrival.us=0,9,80", "traffic.direction=UL", "sta.count=2",
                 "wifi.phy.bandwidth.mhz=80", "wifi.phy.nss=1", "wifi.mac.edca.seed=2", "packet.1.type=VO",
-                "packet.1.bytes=215", "packet.2.type=VO", "packet.2.sta.id=2", "packet.3.type=VO", "packet.3.bytes=215");
+                "packet.1.bytes=215", "packet.2.type=VO", "packet.2.sta.id=2", "packet.3.type=VO", "packet.3.bytes=215",
+                "wifi.mac.ack.timeout.us=5", "wifi.mac.retry.max=0");
 
         String trace = run(config);
         assertEquals(trace, run(config));
@@ -146,10 +148,12 @@ class EdcaMultiAcTest {
         List<String> starts = packetBoundaries(trace, "WIFI_COLLISION_START");
         assertEquals(2, starts.size());
         assertEquals(Set.of("WIFI_COLLISION_START:1@61", "WIFI_COLLISION_START:2@61"), Set.copyOf(starts));
-        assertEquals(List.of("WIFI_COLLISION_DROP:1@117.8", "WIFI_COLLISION_DROP:2@131.4"),
-                packetBoundaries(trace, "WIFI_COLLISION_DROP"));
+        assertEquals(List.of("WIFI_COLLISION_DATA_END:1@117.8", "WIFI_COLLISION_DATA_END:2@131.4"),
+                packetBoundaries(trace, "WIFI_COLLISION_DATA_END"));
+        assertEquals(List.of("WIFI_RETRY_LIMIT_DROP:1@122.8", "WIFI_RETRY_LIMIT_DROP:2@136.4"),
+                packetBoundaries(trace, "WIFI_RETRY_LIMIT_DROP"));
         assertEquals(List.of("131.4"), collisionReleaseTimes(trace));
-        // 短帧先结束。STA 1 的下一帧用原 CW 抽到 2 格，从信道空闲重新等待 34 + 2 × 9 μs。
+        // 短帧先超时。STA 1 的下一帧从 CWmin 抽到 2 格，在长帧结束后等待 34 + 2 × 9 μs。
         assertEquals(List.of("WIFI_TX_START:3@183.4", "WIFI_ACK_END:3@284.2"), exchangeBoundaries(trace));
         assertEquals(List.of("FIBER_TX_START:3@240.2", "DELIVERED:3@240.2", "WIFI_ACK_START:3@256.2"),
                 packetBoundaries(trace, "DELIVERED|FIBER_TX_START|WIFI_ACK_START"));
@@ -163,13 +167,13 @@ class EdcaMultiAcTest {
         SimulationConfig config = load(directory, "packet.arrival.us=0,0,0", "traffic.direction=BOTH", "sfu.count=2",
                 "sta.count=2", "sta.2.sfu.id=2", "packet.1.direction=DL", "packet.1.type=VO",
                 "packet.2.direction=UL", "packet.2.type=VO", "packet.3.direction=DL", "packet.3.type=VO",
-                "packet.3.sta.id=2", "wifi.mac.edca.VO.cwmin=0");
+                "packet.3.sta.id=2", "wifi.mac.edca.VO.cwmin=0", "wifi.mac.ack.timeout.us=20", "wifi.mac.retry.max=0");
 
         String trace = run(config);
         assertEquals(List.of("WIFI_TX_START:3@34", "WIFI_ACK_END:3@142"), exchangeBoundaries(trace));
-        List<String> drops = packetBoundaries(trace, "WIFI_COLLISION_DROP");
+        List<String> drops = packetBoundaries(trace, "WIFI_RETRY_LIMIT_DROP");
         assertEquals(2, drops.size());
-        assertEquals(Set.of("WIFI_COLLISION_DROP:1@98", "WIFI_COLLISION_DROP:2@98"), Set.copyOf(drops));
+        assertEquals(Set.of("WIFI_RETRY_LIMIT_DROP:1@118", "WIFI_RETRY_LIMIT_DROP:2@118"), Set.copyOf(drops));
         assertEquals(List.of("98"), collisionReleaseTimes(trace));
         assertEquals(List.of("DELIVERED:3@98", "WIFI_ACK_START:3@114"), packetBoundaries(trace, "DELIVERED|WIFI_ACK_START"));
         assertTrue(trace.contains("summary=WIFI_COLLISION collision_events=1 dropped_packets=2 dropped_bytes=3000"));

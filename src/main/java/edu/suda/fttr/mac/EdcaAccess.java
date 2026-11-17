@@ -8,9 +8,11 @@ import edu.suda.fttr.simulator.SimulationContext;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** 为同一 SFU 信道上的各发送请求维护接入计时。 */
 public final class EdcaAccess {
@@ -24,6 +26,7 @@ public final class EdcaAccess {
     private final boolean multiAc;
     private final Map<Packet, Attempt> pending = new LinkedHashMap<>();
     private final List<Attempt> ready = new ArrayList<>();
+    private final Set<Integer> suspendedSenders = new HashSet<>();
     private SimulationContext context;
     private Event resolveEvent;
 
@@ -48,7 +51,7 @@ public final class EdcaAccess {
             state.drawBackoff();
         }
         Attempt attempt = new Attempt(packet, state);
-        if (channel.state() == WifiChannel.State.IDLE) {
+        if (channel.state() == WifiChannel.State.IDLE && !suspendedSenders.contains(attempt.senderKey())) {
             startAifs(attempt);
         }
         pending.put(packet, attempt);
@@ -56,6 +59,24 @@ public final class EdcaAccess {
 
     public boolean isWaiting() {
         return !pending.isEmpty();
+    }
+
+    /** 碰撞 DATA 开始后，发送设备的所有 AC 都须等到 ACK 超时才能继续竞争。 */
+    public void suspendSender(Packet packet) {
+        // 信道已经进入 BUSY，忙态回调已冻结各 AC 的计时器。
+        if (channel.state() != WifiChannel.State.BUSY || !suspendedSenders.add(senderKey(packet))) {
+            throw new IllegalStateException("Cannot suspend Wi-Fi sender for packet " + packet.id());
+        }
+    }
+
+    public void resumeSender(Packet packet) {
+        int sender = senderKey(packet);
+        if (!suspendedSenders.remove(sender)) {
+            throw new IllegalStateException("No suspended Wi-Fi sender for packet " + packet.id());
+        }
+        if (channel.state() == WifiChannel.State.IDLE) {
+            pending.values().stream().filter(attempt -> attempt.senderKey() == sender).forEach(this::startAifs);
+        }
     }
 
     public void onTimer(Event event) {
@@ -113,7 +134,8 @@ public final class EdcaAccess {
 
     private void onChannelChange(WifiChannel.State state) {
         if (state == WifiChannel.State.IDLE) {
-            pending.values().forEach(this::startAifs);
+            pending.values().stream().filter(attempt -> !suspendedSenders.contains(attempt.senderKey()))
+                    .forEach(this::startAifs);
             return;
         }
 
@@ -140,6 +162,10 @@ public final class EdcaAccess {
         attempt.timer = context.scheduleAfter(delayUs, EventType.WIFI_ACCESS_TIMER, attempt.packet, sfuId);
     }
 
+    private static int senderKey(Packet packet) {
+        return packet.isUplink() ? packet.staId() : 0;
+    }
+
     private static final class Attempt {
         private final Packet packet;
         private final EdcaState.AcState state;
@@ -152,7 +178,7 @@ public final class EdcaAccess {
         }
 
         private int senderKey() {
-            return packet.isUplink() ? packet.staId() : 0;
+            return EdcaAccess.senderKey(packet);
         }
     }
 }

@@ -17,6 +17,7 @@ public final class SimulationContext {
     private final TraceLogger trace;
     private final boolean multiPacket;
     private final boolean nanosecondClock;
+    private final boolean wifiRetryEnabled;
     private final EnumMap<AccessCategory, DelayStats> byClass = new EnumMap<>(AccessCategory.class);
     private final DelayStats overallDelay = new DelayStats();
     private final Map<Integer, UplinkStats> uplinkByStation = new HashMap<>();
@@ -27,14 +28,22 @@ public final class SimulationContext {
     private long wifiBusyTicks;
     private long wifiBusySinceTicks;
     private int activeRadios;
-    private int wifiCollisionEvents;
+    private long wifiCollisionEvents;
     private int wifiCollisionDroppedPackets;
     private long wifiCollisionDroppedBytes;
+    private long wifiRetransmissions;
+    private long wifiAckTimeouts;
+    private int wifiRetryLimitDrops;
 
     SimulationContext(TraceLogger trace, boolean multiPacket, boolean nanosecondClock) {
+        this(trace, multiPacket, nanosecondClock, false);
+    }
+
+    SimulationContext(TraceLogger trace, boolean multiPacket, boolean nanosecondClock, boolean wifiRetryEnabled) {
         this.trace = trace.withNanosecondClock(nanosecondClock);
         this.multiPacket = multiPacket;
         this.nanosecondClock = nanosecondClock;
+        this.wifiRetryEnabled = wifiRetryEnabled;
         for (AccessCategory type : AccessCategory.values()) {
             byClass.put(type, new DelayStats());
         }
@@ -170,9 +179,43 @@ public final class SimulationContext {
     }
 
     public void recordWifiCollisionDrop(Packet packet, int sfuId) {
+        recordCollisionLoss(packet);
+        trace.recordCollisionPacket(packet, sfuId, nowTicks, "WIFI_COLLISION_DROP");
+    }
+
+    public void recordWifiCollisionDataEnd(Packet packet, int sfuId) {
+        trace.recordCollisionPacket(packet, sfuId, nowTicks, "WIFI_COLLISION_DATA_END");
+    }
+
+    public void recordWifiMacAttempt(Packet packet, int sfuId, int retries) {
+        if (retries > 0) {
+            wifiRetransmissions++;
+        }
+        trace.recordMacRetryPacket(packet, sfuId, nowTicks, "WIFI_MAC_ATTEMPT", retries);
+    }
+
+    public void recordWifiAckTimeout(Packet packet, int sfuId, int retries) {
+        wifiAckTimeouts++;
+        trace.recordMacRetryPacket(packet, sfuId, nowTicks, "WIFI_ACK_TIMEOUT", retries);
+    }
+
+    public void recordWifiMacRetry(Packet packet, int sfuId, int retries, int cwBefore, int cwAfter, int backoff) {
+        trace.recordMacRetry(packet, sfuId, nowTicks, retries, cwBefore, cwAfter, backoff);
+    }
+
+    public void recordWifiRetryLimitDrop(Packet packet, int sfuId, int retries) {
+        wifiRetryLimitDrops++;
+        recordCollisionLoss(packet);
+        trace.recordMacRetryPacket(packet, sfuId, nowTicks, "WIFI_RETRY_LIMIT_DROP", retries);
+    }
+
+    private void recordCollisionLoss(Packet packet) {
         wifiCollisionDroppedPackets++;
         wifiCollisionDroppedBytes += packet.bytes();
-        trace.recordCollisionPacket(packet, sfuId, nowTicks, "WIFI_COLLISION_DROP");
+    }
+
+    public void recordWifiMacSuccess(Packet packet, int sfuId, int retries) {
+        trace.recordMacRetryPacket(packet, sfuId, nowTicks, "WIFI_MAC_SUCCESS", retries);
     }
 
     public void recordWifiCollisionEnd(int sfuId) {
@@ -214,6 +257,9 @@ public final class SimulationContext {
         }
         if (wifiCollisionEvents > 0) {
             trace.recordCollisionSummary(wifiCollisionEvents, wifiCollisionDroppedPackets, wifiCollisionDroppedBytes);
+        }
+        if (wifiRetryEnabled) {
+            trace.recordRetrySummary(wifiRetransmissions, wifiAckTimeouts, wifiRetryLimitDrops);
         }
         if (multiPacket) {
             trace.recordRunSummary(deliveredPackets, deliveredBytes, wifiBusyTicks, nowTicks);

@@ -77,6 +77,11 @@ public final class EdcaState {
         }
 
         public void onTransmissionSuccess() {
+            resetContentionWindow();
+        }
+
+        /** 一条报文的竞争结束后，为后续报文恢复初始 CW 和空计数。 */
+        public void resetContentionWindow() {
             currentCw = parameters.cwMin();
             clearBackoff();
         }

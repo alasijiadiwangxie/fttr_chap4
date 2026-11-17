@@ -74,7 +74,8 @@ public final class TraceLogger {
                 // 内部接入事件。记录实际选队结果和虚拟碰撞。
                 break;
             case WIFI_COLLISION_DATA_END:
-                // SFU 在处理失败报文及信道释放时分别记录日志。
+            case WIFI_ACK_TIMEOUT:
+                // SFU 处理结果后记录失败、重传或信道释放日志。
                 break;
             default:
                 throw new IllegalStateException("Unhandled trace event: " + event.type());
@@ -156,9 +157,22 @@ public final class TraceLogger {
     }
 
     public void recordCollisionPacket(Packet packet, int sfuId, long ticks, String action) {
-        output.printf(Locale.ROOT, "t_us=%s node=%s event=%s packet_id=%d bytes=%d type=%s direction=%s sfu_id=%d sta_id=%d%n",
+        writeMacPacket(packet, sfuId, ticks, action, "");
+    }
+
+    public void recordMacRetryPacket(Packet packet, int sfuId, long ticks, String action, int retries) {
+        writeMacPacket(packet, sfuId, ticks, action, " retry_count=" + retries);
+    }
+
+    public void recordMacRetry(Packet packet, int sfuId, long ticks, int retries, int cwBefore, int cwAfter, int backoff) {
+        String detail = " retry_count=" + retries + " cw_before=" + cwBefore + " cw_after=" + cwAfter + " backoff=" + backoff;
+        writeMacPacket(packet, sfuId, ticks, "WIFI_MAC_RETRY", detail);
+    }
+
+    private void writeMacPacket(Packet packet, int sfuId, long ticks, String action, String detail) {
+        output.printf(Locale.ROOT, "t_us=%s node=%s event=%s packet_id=%d bytes=%d type=%s direction=%s sfu_id=%d sta_id=%d%s%n",
                 formatMicroseconds(ticks), packet.isUplink() ? "STA" : "SFU", action, packet.id(), packet.bytes(),
-                packet.type(), packet.direction(), sfuId, packet.staId());
+                packet.type(), packet.direction(), sfuId, packet.staId(), detail);
     }
 
     public void recordCollisionEnd(int sfuId, long ticks) {
@@ -166,9 +180,14 @@ public final class TraceLogger {
                 formatMicroseconds(ticks), sfuId);
     }
 
-    public void recordCollisionSummary(int collisionEvents, int droppedPackets, long droppedBytes) {
+    public void recordCollisionSummary(long collisionEvents, int droppedPackets, long droppedBytes) {
         output.printf(Locale.ROOT, "summary=WIFI_COLLISION collision_events=%d dropped_packets=%d dropped_bytes=%d%n",
                 collisionEvents, droppedPackets, droppedBytes);
+    }
+
+    public void recordRetrySummary(long retransmissions, long ackTimeouts, int retryLimitDrops) {
+        output.printf(Locale.ROOT, "summary=WIFI_RETRY retransmissions=%d ack_timeouts=%d retry_limit_drops=%d%n",
+                retransmissions, ackTimeouts, retryLimitDrops);
     }
 
     public void recordWifiService(Packet packet, int sfuId, long queueEntryTicks, long startTicks, long endTicks,

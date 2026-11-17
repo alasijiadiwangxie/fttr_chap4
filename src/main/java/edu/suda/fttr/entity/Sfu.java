@@ -6,6 +6,7 @@ import edu.suda.fttr.mac.EdcaAccess;
 import edu.suda.fttr.mac.EdcaParameters;
 import edu.suda.fttr.mac.EdcaState;
 import edu.suda.fttr.mac.WifiAccessMode;
+import edu.suda.fttr.mac.WifiRetryPolicy;
 import edu.suda.fttr.simulator.Event;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
@@ -27,10 +28,12 @@ public final class Sfu {
     private final EdcaState edcaState;
     private final EdcaAccess edcaAccess;
     private final boolean multiAc;
+    private final WifiRetryPolicy retryPolicy;
     // 以实际发送设备的 AC 状态为键。每个键独立维护 FIFO 与队首的接入计时。
     private final Map<EdcaState.AcState, Deque<QueuedPacket>> deviceQueues = new HashMap<>();
     // 同一次碰撞中仍在发射 DATA 的报文。最后一条结束时才释放公共信道。
     private final Set<Packet> collidedData = new HashSet<>();
+    private final Set<Packet> awaitingAck = new HashSet<>();
     private final Deque<QueuedPacket> voQueue = new ArrayDeque<>();
     private final Deque<QueuedPacket> viQueue = new ArrayDeque<>();
     private final Deque<QueuedPacket> beQueue = new ArrayDeque<>();
@@ -58,6 +61,11 @@ public final class Sfu {
 
     public Sfu(int id, WifiLink wifi, Map<Integer, Sta> stations, EdcaParameters edcaParameters,
                WifiAccessMode accessMode) {
+        this(id, wifi, stations, edcaParameters, accessMode, null);
+    }
+
+    public Sfu(int id, WifiLink wifi, Map<Integer, Sta> stations, EdcaParameters edcaParameters,
+               WifiAccessMode accessMode, WifiRetryPolicy retryPolicy) {
         this.id = id;
         this.wifi = wifi;
         this.stations = Map.copyOf(stations);
@@ -66,6 +74,7 @@ public final class Sfu {
         this.multiAc = accessMode == WifiAccessMode.EDCA_MULTI_AC;
         this.edcaAccess = accessMode == WifiAccessMode.FIXED_PRIORITY ? null
                 : new EdcaAccess(id, channel, edcaParameters, multiAc);
+        this.retryPolicy = retryPolicy;
     }
 
     public int id() {
@@ -122,6 +131,9 @@ public final class Sfu {
         channel.occupy();
         txStartTicks = context.nowTicks();
         context.recordWifiStart();
+        if (retryPolicy != null) {
+            context.recordWifiMacAttempt(packet, id, active.retries);
+        }
         wifi.transmit(packet, id, context);
     }
 
@@ -154,6 +166,10 @@ public final class Sfu {
         channel.release();
         // 记录半开区间 [开始, 完成)。同刻启动的下一条报文不会与这一条重叠。
         context.recordWifiService(packet, id, active.arrivalTicks, txStartTicks, dataEndTicks);
+        if (retryPolicy != null) {
+            context.recordWifiMacSuccess(packet, id, active.retries);
+            active.retries = 0;
+        }
         active = null;
         if (edcaAccess != null) {
             EdcaState.AcState ac = senderAc(packet);
@@ -208,6 +224,10 @@ public final class Sfu {
             collidedData.addAll(contenders);
             context.recordWifiCollisionStart(contenders, id);
             for (Packet packet : contenders) {
+                if (retryPolicy != null) {
+                    edcaAccess.suspendSender(packet);
+                    context.recordWifiMacAttempt(packet, id, deviceQueues.get(senderAc(packet)).getFirst().retries);
+                }
                 wifi.transmitCollidedData(packet, id, context);
             }
             return;
@@ -225,15 +245,45 @@ public final class Sfu {
         if (!collidedData.remove(packet)) {
             throw new IllegalStateException("No collided DATA pending for packet " + packet.id());
         }
-        context.recordWifiCollisionDrop(packet, id);
-        // 简化为丢弃该队首。保留 CW，清空已用的计数器，下一条新报文独立抽取。
-        EdcaState.AcState ac = senderAc(packet);
-        ac.clearBackoff();
-        advanceDeviceQueue(ac, context);
+        if (retryPolicy == null) {
+            context.recordWifiCollisionDrop(packet, id);
+            EdcaState.AcState ac = senderAc(packet);
+            ac.clearBackoff();
+            advanceDeviceQueue(ac, context);
+        } else {
+            // ACK 从本设备的 DATA 结束起等待。射频占用和发送设备的等待状态分别管理。
+            awaitingAck.add(packet);
+            context.recordWifiCollisionDataEnd(packet, id);
+            context.scheduleAfter(retryPolicy.ackTimeoutUs(), EventType.WIFI_ACK_TIMEOUT, packet, id);
+        }
         if (collidedData.isEmpty()) {
             channel.release();
             context.recordWifiCollisionEnd(id);
         }
+    }
+
+    public void onAckTimeout(Packet packet, SimulationContext context) {
+        if (!awaitingAck.remove(packet)) {
+            throw new IllegalStateException("No ACK pending for packet " + packet.id());
+        }
+        EdcaState.AcState ac = senderAc(packet);
+        QueuedPacket queued = deviceQueues.get(ac).getFirst();
+        context.recordWifiAckTimeout(packet, id, queued.retries);
+        if (queued.retries < retryPolicy.maxRetries()) {
+            int cwBefore = ac.currentCw();
+            ac.onContentionFailure();
+            int backoff = ac.drawBackoff();
+            queued.retries++;
+            context.recordWifiMacRetry(packet, id, queued.retries, cwBefore, ac.currentCw(), backoff);
+            // 继续使用同一个队首报文和原入队时间。恢复发送端后，计时器按 CCA 等待 AIFS。
+            edcaAccess.start(packet, ac, context);
+        } else {
+            context.recordWifiRetryLimitDrop(packet, id, queued.retries);
+            ac.resetContentionWindow();
+            queued.retries = 0;
+            advanceDeviceQueue(ac, context);
+        }
+        edcaAccess.resumeSender(packet);
     }
 
     private void advanceDeviceQueue(EdcaState.AcState ac, SimulationContext context) {
@@ -295,6 +345,7 @@ public final class Sfu {
     private static final class QueuedPacket {
         private final Packet packet;
         private final long arrivalTicks;
+        private int retries;
 
         private QueuedPacket(Packet packet, long arrivalTicks) {
             this.packet = packet;
