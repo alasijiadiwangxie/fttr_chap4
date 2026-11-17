@@ -9,6 +9,7 @@ import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.link.FiberLink;
 import edu.suda.fttr.link.FixedDelayModel;
 import edu.suda.fttr.link.WifiLink;
+import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.trace.TraceLogger;
 
 import java.util.ArrayList;
@@ -25,7 +26,8 @@ public final class Simulator {
         List<Long> downlinkWindowsUs = config.downlinkTrafficWindowsUs();
         List<Long> uplinkWindowsUs = config.uplinkTrafficWindowsUs();
         boolean runSummary = config.uplinkEnabled() || !downlinkWindowsUs.isEmpty() || config.inputEvents().size() > 1;
-        SimulationContext context = new SimulationContext(trace, runSummary);
+        WirelessPhy wirelessPhy = config.wirelessPhy();
+        SimulationContext context = new SimulationContext(trace, runSummary, wirelessPhy != null);
         List<Map<Integer, Sta>> stationsBySfu = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             stationsBySfu.add(new HashMap<>());
@@ -39,12 +41,14 @@ public final class Simulator {
 
         // 每台 SFU 都有各自的收包队列和发送状态，光链路也按目的 SFU 分开实例化。
         FixedDelayModel fiberDelay = new FixedDelayModel(config.fiberDelayUs());
-        FixedDelayModel wifiDelay = new FixedDelayModel(config.wifiDelayUs());
+        // 静态 PHY 没有共享发送状态。实际的收发互斥仍由各个 SFU 的队列控制。
+        WifiLink wifi = wirelessPhy == null ? new WifiLink(new FixedDelayModel(config.wifiDelayUs()))
+                : new WifiLink(wirelessPhy);
         List<FiberLink> fibers = new ArrayList<>(config.sfuCount());
         List<Sfu> sfus = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             fibers.add(new FiberLink(fiberDelay));
-            sfus.add(new Sfu(i + 1, new WifiLink(wifiDelay), stationsBySfu.get(i)));
+            sfus.add(new Sfu(i + 1, wifi, stationsBySfu.get(i)));
         }
         Mfu mfu = new Mfu(config.staSfuIds());
 
@@ -94,6 +98,9 @@ public final class Simulator {
         }
         if (!uplinkWindowsUs.isEmpty()) {
             recordGeneratedTraffic(config, trace, uplinkWindowsUs, true);
+        }
+        if (wirelessPhy != null) {
+            trace.recordWirelessPhyRate(wirelessPhy.phyRateMbps());
         }
         context.recordSummary(sfus, stations, config.uplinkEnabled());
     }

@@ -2,6 +2,7 @@ package edu.suda.fttr.config;
 
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 import edu.suda.fttr.traffic.TrafficGenerator;
 
@@ -9,6 +10,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -24,7 +26,9 @@ import java.util.regex.Pattern;
 public final class ConfigLoader {
     private static final String DEFAULT_SCENARIO = "/phase1-minimal-downlink.properties";
     private static final Set<String> KEYS = Set.of(
-            "fiber.delay.us", "wifi.delay.us", "sta.count", "sfu.count", "traffic.mode", "traffic.direction");
+            "fiber.delay.us", "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction");
+    private static final Set<String> PHY_KEYS = Set.of(
+            "wifi.phy.bandwidth.mhz", "wifi.phy.mcs", "wifi.phy.nss", "wifi.phy.gi.us", "wifi.phy.mac.overhead.bytes");
     private static final Set<String> MANUAL_KEYS = Set.of("packet.bytes", "packet.arrival.us");
     private static final Pattern PACKET_OVERRIDE = Pattern.compile("packet\\.([1-9][0-9]*)\\.(bytes|type|sta\\.id|direction)");
     private static final Pattern STA_ASSOCIATION = Pattern.compile("sta\\.([1-9][0-9]*)\\.sfu\\.id");
@@ -82,7 +86,8 @@ public final class ConfigLoader {
         validateKeys(properties, arrivalsUs.size(), staCount, sfuCount, poisson, directionMode);
         List<Integer> staSfuIds = readStaAssociations(properties, staCount, sfuCount);
         long fiberUs = readNonNegativeLong(properties, "fiber.delay.us");
-        long wifiUs = readNonNegativeLong(properties, "wifi.delay.us");
+        WirelessPhy wirelessPhy = readWirelessPhy(properties);
+        long wifiUs = wirelessPhy == null ? readNonNegativeLong(properties, "wifi.delay.us") : 0;
         long durationUs = poisson ? readPositiveDuration(properties, "traffic.duration.us") : 0;
         PoissonTraffic downlink = poisson && directionMode.allows(Packet.Direction.DL)
                 ? readDownlinkSources(properties, sfuCount, staSfuIds, durationUs) : new PoissonTraffic();
@@ -94,9 +99,48 @@ public final class ConfigLoader {
                 ? TrafficGenerator.generate(sources)
                 : readManualEvents(properties, arrivalsUs, staCount, directionMode);
 
-        validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs);
-        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs,
+        validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy);
+        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy,
                 downlink.windowsUs, uplink.windowsUs, directionMode.allows(Packet.Direction.UL));
+    }
+
+    private static WirelessPhy readWirelessPhy(Properties properties) {
+        // 旧配置只要包含 wifi.delay.us 就继续使用固定时延。新场景默认使用 HE SU。
+        String defaultMode = properties.containsKey("wifi.delay.us") ? "fixed" : "he-su";
+        String mode = properties.getProperty("wifi.model", defaultMode).strip();
+        if (mode.equals("fixed")) {
+            if (PHY_KEYS.stream().anyMatch(properties::containsKey)) {
+                throw new IllegalArgumentException("wifi.phy.* requires wifi.model=he-su");
+            }
+            return null;
+        }
+        if (!mode.equals("he-su")) {
+            throw new IllegalArgumentException("wifi.model must be fixed or he-su");
+        }
+        if (properties.containsKey("wifi.delay.us")) {
+            throw new IllegalArgumentException("wifi.delay.us requires wifi.model=fixed");
+        }
+        int giNs;
+        try {
+            giNs = new BigDecimal(properties.getProperty("wifi.phy.gi.us", "0.8").strip())
+                    .movePointRight(3).intValueExact();
+        } catch (NumberFormatException | ArithmeticException e) {
+            throw new IllegalArgumentException("wifi.phy.gi.us must be 0.8, 1.6 or 3.2", e);
+        }
+        return new WirelessPhy(readPhyInt(properties, "wifi.phy.bandwidth.mhz", 160),
+                readPhyInt(properties, "wifi.phy.mcs", 11), readPhyInt(properties, "wifi.phy.nss", 2), giNs,
+                readPhyInt(properties, "wifi.phy.mac.overhead.bytes", 34));
+    }
+
+    private static int readPhyInt(Properties properties, String key, int defaultValue) {
+        if (!properties.containsKey(key)) {
+            return defaultValue;
+        }
+        long value = readNonNegativeLong(properties, key);
+        if (value > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(key + " must fit in a 32-bit integer");
+        }
+        return (int) value;
     }
 
     private static DirectionMode readDirectionMode(Properties properties) {
@@ -109,30 +153,31 @@ public final class ConfigLoader {
     }
 
     private static void validateCompletionClock(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds,
-                                                long fiberUs, long wifiUs) {
-        // 固定无线时长下，同一 SFU 的忙闲边界由实际入队时刻决定，与选队优先级无关。
+                                                long fiberUs, long wifiUs, WirelessPhy wirelessPhy) {
+        // 同一 SFU 按到达时刻累计无线工作量即可计算忙闲边界，优先级只改变其中的发送顺序。
         boolean mixed = inputEvents.stream().anyMatch(event -> event.packet().direction() == Packet.Direction.UL)
                 && inputEvents.stream().anyMatch(event -> event.packet().direction() == Packet.Direction.DL);
-        long[] completionUs = new long[sfuCount];
+        long[] completion = new long[sfuCount];
+        long ticksPerUs = wirelessPhy == null ? 1 : 1000;
         try {
+            long fiberTicks = Math.multiplyExact(fiberUs, ticksPerUs);
             List<Event> wifiArrivals = inputEvents;
             if (mixed) {
                 // 上行直接进入无线队列，下行先走光路，双向模式的入队顺序可能与生成顺序不同。
                 wifiArrivals = new ArrayList<>(inputEvents);
-                wifiArrivals.sort(Comparator.comparingLong(event -> wifiArrivalUs(event, fiberUs)));
+                wifiArrivals.sort(Comparator.comparingLong(event -> wifiArrivalTicks(event, ticksPerUs, fiberTicks)));
             }
             for (Event event : wifiArrivals) {
                 Packet packet = event.packet();
-                boolean uplink = packet.direction() == Packet.Direction.UL;
-                long arrivalUs = wifiArrivalUs(event, fiberUs);
-                int staId = uplink ? packet.sourceNodeId() : packet.destinationStaId();
-                int sfuIndex = staSfuIds.get(staId - 1) - 1;
-                completionUs[sfuIndex] = Math.addExact(Math.max(arrivalUs, completionUs[sfuIndex]), wifiUs);
-                if (uplink) {
+                long arrival = wifiArrivalTicks(event, ticksPerUs, fiberTicks);
+                int sfuIndex = staSfuIds.get(packet.staId() - 1) - 1;
+                long wifiTicks = wirelessPhy == null ? wifiUs : wirelessPhy.ppduDurationNs(packet.bytes());
+                completion[sfuIndex] = Math.addExact(Math.max(arrival, completion[sfuIndex]), wifiTicks);
+                if (packet.isUplink()) {
                     // 纯上行的最后一条无线完成记录可给出精确上界。双向时谁最后上行由实际选队决定，
                     // 这里只检查最早可完成的时刻，剩余的上行光路加法在执行实际事件时校验。
-                    long uplinkEndUs = mixed ? Math.addExact(arrivalUs, wifiUs) : completionUs[sfuIndex];
-                    Math.addExact(uplinkEndUs, fiberUs);
+                    long uplinkEnd = mixed ? Math.addExact(arrival, wifiTicks) : completion[sfuIndex];
+                    Math.addExact(uplinkEnd, fiberTicks);
                 }
             }
         } catch (ArithmeticException e) {
@@ -140,15 +185,16 @@ public final class ConfigLoader {
         }
     }
 
-    private static long wifiArrivalUs(Event event, long fiberUs) {
-        return event.packet().direction() == Packet.Direction.UL ? event.timeUs() : Math.addExact(event.timeUs(), fiberUs);
+    private static long wifiArrivalTicks(Event event, long ticksPerUs, long fiberTicks) {
+        long input = Math.multiplyExact(event.timeUs(), ticksPerUs);
+        return event.packet().isUplink() ? input : Math.addExact(input, fiberTicks);
     }
 
     private static void validateKeys(Properties properties, int packetCount, int staCount, int sfuCount,
                                      boolean poisson, DirectionMode directionMode) {
         // 模式间的字段不能混用，防止手填报文或流量源的设置被忽略。
         for (String key : properties.stringPropertyNames()) {
-            if (KEYS.contains(key)) {
+            if (KEYS.contains(key) || PHY_KEYS.contains(key)) {
                 continue;
             }
             Matcher packet = PACKET_OVERRIDE.matcher(key);

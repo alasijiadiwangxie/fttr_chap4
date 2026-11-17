@@ -1,29 +1,33 @@
 package edu.suda.fttr.config;
 
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 
 import java.util.List;
 import java.util.stream.Collectors;
 
-/** 场景的已校验输入。时间统一使用整数微秒，长度使用字节。 */
+/** 场景的已校验输入。配置中的事件时刻和固定时延使用整数微秒。 */
 public final class SimulationConfig {
     private final List<Event> inputEvents;
     private final int sfuCount;
     private final List<Integer> staSfuIds;
     private final long fiberDelayUs;
     private final long wifiDelayUs;
+    private final WirelessPhy wirelessPhy;
     private final List<Long> downlinkTrafficWindowsUs;
     private final List<Long> uplinkTrafficWindowsUs;
     private final boolean uplinkEnabled;
 
     SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs, long wifiDelayUs,
+                     WirelessPhy wirelessPhy,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled) {
         this.inputEvents = List.copyOf(inputEvents);
         this.sfuCount = sfuCount;
         this.staSfuIds = List.copyOf(staSfuIds);
         this.fiberDelayUs = fiberDelayUs;
         this.wifiDelayUs = wifiDelayUs;
+        this.wirelessPhy = wirelessPhy;
         this.downlinkTrafficWindowsUs = List.copyOf(downlinkTrafficWindowsUs);
         this.uplinkTrafficWindowsUs = List.copyOf(uplinkTrafficWindowsUs);
         this.uplinkEnabled = uplinkEnabled;
@@ -70,7 +74,15 @@ public final class SimulationConfig {
     }
 
     public long wifiDelayUs() {
+        if (wirelessPhy != null) {
+            throw new IllegalStateException("Wi-Fi delay is computed per packet in he-su mode");
+        }
         return wifiDelayUs;
+    }
+
+    /** HE SU 模式的静态速率模型。固定时延模式返回 null。 */
+    public WirelessPhy wirelessPhy() {
+        return wirelessPhy;
     }
 
     /** 各 SFU 的下行泊松生成窗口，按 ID 排列。手动模式或未开启下行时为空。 */

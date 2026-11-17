@@ -19,7 +19,7 @@ public final class Sfu {
     private final Deque<QueuedPacket> bkQueue = new ArrayDeque<>();
     private QueuedPacket active;
     private boolean selectionPending;
-    private long txStartUs;
+    private long txStartTicks;
     private int sentPackets;
     private long sentBytes;
     private double queueWaitSumUs;
@@ -52,14 +52,14 @@ public final class Sfu {
         }
         // 上行报文仍在源 STA 等待。这里入队的是对同一无线资源的发送请求。
         Deque<QueuedPacket> queue = queueFor(packet.type());
-        queue.addLast(new QueuedPacket(packet, context.nowUs()));
+        queue.addLast(new QueuedPacket(packet, context.nowTicks()));
         context.recordEnqueue(packet, id, queue.size());
         requestSelection(context);
     }
 
     public void transmit(Packet packet, SimulationContext context) {
         checkActive(packet);
-        txStartUs = context.nowUs();
+        txStartTicks = context.nowTicks();
         context.recordWifiStart();
         wifi.transmit(packet, id, context);
     }
@@ -73,10 +73,10 @@ public final class Sfu {
             stations.get(packet.destinationStaId()).receive(packet, context);
             sentPackets++;
             sentBytes += packet.bytes();
-            queueWaitSumUs += txStartUs - active.arrivalUs;
+            queueWaitSumUs += context.ticksToMicroseconds(txStartTicks - active.arrivalTicks);
         }
         // 记录半开区间 [开始, 完成)。同刻启动的下一条报文不会与这一条重叠。
-        context.recordWifiService(packet, id, active.arrivalUs, txStartUs);
+        context.recordWifiService(packet, id, active.arrivalTicks, txStartTicks);
         active = null;
         requestSelection(context);
     }
@@ -134,11 +134,11 @@ public final class Sfu {
 
     private static final class QueuedPacket {
         private final Packet packet;
-        private final long arrivalUs;
+        private final long arrivalTicks;
 
-        private QueuedPacket(Packet packet, long arrivalUs) {
+        private QueuedPacket(Packet packet, long arrivalTicks) {
             this.packet = packet;
-            this.arrivalUs = arrivalUs;
+            this.arrivalTicks = arrivalTicks;
         }
     }
 }

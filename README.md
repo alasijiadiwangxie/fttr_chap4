@@ -4,10 +4,10 @@
 
 ## 模型范围与假设
 
-- 仿真以微秒为单位。报文按手动配置或泊松生成的时刻注入源节点，全部事件处理完毕后结束。
+- 配置与日志以微秒为单位。HE SU 场景内部使用整数纳秒，保留 PPDU 的小数微秒；固定时延场景仍使用整数微秒。报文按手动配置或泊松生成的时刻注入源节点，事件处理完毕后结束。
 - 每台 STA 在一次仿真中固定关联一台 SFU。上下行光侧均使用固定时延，收齐报文后可立即转发。光路之间没有共享资源竞争或额外排队。
 - 每台 SFU 独立维护 VO、VI、BE、BK 四类 FIFO 等待队列和一份无线资源。该 SFU 的上下行统一按固定优先级选队，已经开始的传输会发完。不同 SFU 可以并行收发。
-- 等待队列不设容量上限，无线传输按成功交付处理。**同一场景中的所有报文使用相同的 Wi-Fi 服务时长**。包长用于统计交付字节数和吞吐量。
+- 等待队列不设容量上限，无线传输按成功交付处理。HE SU 模式根据包长、开销和 PHY 参数计算每包的发送时间，固定时延模式可用于回归对照。
 - SFU 和 STA 的吞吐量统一按从 0 到最后事件的时间窗口计算。日志同时记录逐包时序，以及按业务类别、设备和全局汇总的统计。
 
 信道干扰、EDCA、OFDMA、DBA 和 AP 节能机制可作为后续独立扩展。
@@ -21,7 +21,7 @@ mvn clean package
 java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar
 ```
 
-默认场景包含一条 1200 字节的下行报文。仿真时钟统一以微秒计，光纤和无线链路使用固定时延。默认轨迹的关键行如下：
+JAR 无参数时运行随包附带的固定时延回归场景，其中包含一条 1200 字节的下行报文。关键轨迹如下：
 
 ```text
 t_us=0 node=MFU event=ARRIVAL packet_id=1 bytes=1200 type=BE destination_sta_id=1
@@ -41,7 +41,7 @@ delivered_packets=1 delivered_bytes=1200 e2e_delay_us=350
 java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar path/to/scenario.properties
 ```
 
-手动场景需包含 `packet.arrival.us`、`fiber.delay.us` 和 `wifi.delay.us`，并提供共用 `packet.bytes` 或逐包长度。报文长度必须为正整数，到达时刻和链路时延为非负整数。链路的零时延可用于检验同一时刻的事件顺序。
+手动场景需包含 `packet.arrival.us` 和 `fiber.delay.us`，并提供共用 `packet.bytes` 或逐包长度。报文长度必须为正整数，到达时刻和固定链路时延为非负整数。链路的零时延可用于检验同一时刻的事件顺序。
 
 ### 同一 SFU 的多报文串行发送
 
@@ -139,7 +139,29 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/poisson-per-class-uplink.
 
 逐类模式使用 `class.C.*` 代替同一前缀下的总量字段 `rate.pps`、`packet.bytes` 和 `class.weights`。同一场景的其他 STA 或 SFU 仍可用总速率加权重的配置。
 
-示例中，STA 1 的 VO、VI、BE、BK 分别为 5、10、3、2 Mb/s，包长分别为 200、1000、1500、750 B。STA 2 仅生成 10 Mb/s 的 VO。指定 Mb/s 时，程序按 `Mb/s × 1,000,000 ÷ (8 × 包长)` 换算为平均包/s，然后为各类独立采样到达间隔。不同包长下，按包数和按字节计算的业务比例可能不同，可在 `TRAFFIC_UL_CLASS` 和 `TRAFFIC_CLASS` 中核对。当前 Wi-Fi 模型仍对所有报文使用同一个 `wifi.delay.us` 服务时长。
+示例中，STA 1 的 VO、VI、BE、BK 分别为 5、10、3、2 Mb/s，包长分别为 200、1000、1500、750 B。STA 2 仅生成 10 Mb/s 的 VO。指定 Mb/s 时，程序按 `Mb/s × 1,000,000 ÷ (8 × 包长)` 换算为平均包/s，然后为各类独立采样到达间隔。不同包长下，按包数和按字节计算的业务比例可能不同，可在 `TRAFFIC_UL_CLASS` 和 `TRAFFIC_CLASS` 中核对。
+
+### 静态 802.11ax HE SU PHY
+
+```powershell
+java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/he-su-phy-downlink.properties
+```
+
+新场景省略 `wifi.delay.us` 时默认使用 HE SU，也可显式设为 `wifi.model=he-su`。旧配置只要给出 `wifi.delay.us` 就保留固定时延行为，也可显式设为 `wifi.model=fixed`。两种模式的专用字段不可混用。
+
+| HE SU 配置项 | 取值 | 默认值 |
+| --- | --- | --- |
+| `wifi.phy.bandwidth.mhz` | 20、40、80、160 MHz | 160 |
+| `wifi.phy.mcs` | 0–11 | 11 |
+| `wifi.phy.nss` | 1–8 条空间流 | 2 |
+| `wifi.phy.gi.us` | 0.8、1.6、3.2 μs | 0.8 |
+| `wifi.phy.mac.overhead.bytes` | 加在业务包长上的封装字节数 | 34 |
+
+一个仿真报文对应一个 HE SU 数据 PPDU。默认封装 34 B 对应 26 B QoS MAC 头、4 B FCS 和 4 B MPDU delimiter，业务包长之外的额外封装可计入此字段。静态配置使用 LDPC，按 MCS 的调制阶数、码率、全带宽数据子载波数和 NSS 计算每个符号的数据位数。PHY 速率为每个数据符号的位数除以 `12.8 μs + GI`。
+
+前导码为固定的 36 μs 加 HE-LTF。GI 为 0.8 或 1.6 μs 时选择 2× HE-LTF，3.2 μs 时选择 4× HE-LTF，训练符号数由 NSS 决定。数据符号数由封装后长度、16 位 SERVICE 和 LDPC 填充规则计算。模型采用单 MPDU、无 STBC、DCM 或 midamble，PE 与 2.4 GHz 信号延长均设为 0。超过单 MPDU 长度或 5484 μs PPDU 时长上限时拒绝该配置。计算依据见 [IEEE 802.11ax-2021 §27](https://standards.ieee.org/ieee/802.11ax/7180/) 和 [HE SU 前导码图 27-8](https://ptacts.uspto.gov/ptacts/public-informations/petitions/1550280/download-documents?artifactId=UHWJ2oZgTs7zxpCXsgW00tuhUMqbKMe159a9qxSLKRDsqJiIOFfQids)。
+
+HE SU 模式用 `summary=WIFI_PHY` 输出 PHY 速率，`wifi_service_us` 表示该数据 PPDU 占用无线资源的时长。`wifi_queue_wait_us` 仍是原有队列等待。MAC 竞争、无线传播、SIFS 与 ACK 未计入。光纤固定时延按原路径单独计算。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。
 

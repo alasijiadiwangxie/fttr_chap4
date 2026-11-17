@@ -8,7 +8,7 @@ public final class Sta {
     private final int sfuId;
     private int receivedPackets;
     private long receivedBytes;
-    // 单包时延由微秒时钟精确计算，累加用 double 避免跨报文累计时溢出 long。
+    // 单包时间差先用整数刻度计算，再换算为微秒累加。
     private double delaySumUs;
 
     public Sta(int id, int sfuId) {
@@ -33,7 +33,7 @@ public final class Sta {
         }
         receivedPackets++;
         receivedBytes += packet.bytes();
-        delaySumUs += context.nowUs() - packet.mfuArrivalUs();
+        delaySumUs += context.ticksToMicroseconds(context.elapsedSinceGenerationTicks(packet));
         context.recordDelivery(packet, this);
     }
 

@@ -7,14 +7,35 @@ import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.simulator.Event;
 
 import java.io.PrintStream;
+import java.math.BigDecimal;
 import java.util.Locale;
 
 /** 每行保留时刻、节点、动作和报文身份，便于逐事件核对。 */
 public final class TraceLogger {
     private final PrintStream output;
+    private final boolean nanosecondClock;
 
     public TraceLogger(PrintStream output) {
+        this(output, false);
+    }
+
+    private TraceLogger(PrintStream output, boolean nanosecondClock) {
         this.output = output;
+        this.nanosecondClock = nanosecondClock;
+    }
+
+    /** 共享输出流，但单次运行的时钟单位独立于其他运行。 */
+    public TraceLogger withNanosecondClock(boolean nanosecondClock) {
+        return this.nanosecondClock == nanosecondClock ? this : new TraceLogger(output, nanosecondClock);
+    }
+
+    private String formatMicroseconds(long ticks) {
+        if (!nanosecondClock) {
+            return Long.toString(ticks);
+        }
+        // 日志仍用 _us。整数微秒保持旧格式，小数部分则不经过 double。
+        return ticks % 1_000 == 0 ? Long.toString(ticks / 1_000)
+                : BigDecimal.valueOf(ticks, 3).stripTrailingZeros().toPlainString();
     }
 
     public void recordEvent(Event event) {
@@ -50,67 +71,78 @@ public final class TraceLogger {
     private void write(Event event, String node, String action) {
         Packet packet = event.packet();
         if (packet.isUplink()) {
-            writeUplink(packet, event.timeUs(), node, action, event.sfuId(), "");
+            writeUplink(packet, event.timeTicks(), node, action, event.sfuId(), "");
             return;
         }
         String route = event.sfuId() == 0 ? "" : " sfu_id=" + event.sfuId();
-        output.printf(Locale.ROOT, "t_us=%d node=%s event=%s packet_id=%d bytes=%d type=%s destination_sta_id=%d%s%n",
-                event.timeUs(), node, action, packet.id(), packet.bytes(), packet.type(), packet.destinationStaId(), route);
+        output.printf(Locale.ROOT, "t_us=%s node=%s event=%s packet_id=%d bytes=%d type=%s destination_sta_id=%d%s%n",
+                formatMicroseconds(event.timeTicks()), node, action, packet.id(), packet.bytes(), packet.type(),
+                packet.destinationStaId(), route);
     }
 
-    private void writeUplink(Packet packet, long timeUs, String node, String action, int sfuId, String details) {
+    private void writeUplink(Packet packet, long timeTicks, String node, String action, int sfuId, String details) {
         String route = sfuId == 0 ? "" : " sfu_id=" + sfuId;
-        output.printf(Locale.ROOT, "t_us=%d node=%s event=%s packet_id=%d bytes=%d type=%s "
+        output.printf(Locale.ROOT, "t_us=%s node=%s event=%s packet_id=%d bytes=%d type=%s "
                         + "direction=UL source_sta_id=%d destination_mfu_id=%d%s%s%n",
-                timeUs, node, action, packet.id(), packet.bytes(), packet.type(), packet.staId(),
+                formatMicroseconds(timeTicks), node, action, packet.id(), packet.bytes(), packet.type(), packet.staId(),
                 packet.destinationNodeId(), route, details);
     }
 
-    public void recordDelivery(Packet packet, Sta sta, long timeUs) {
+    public void recordDelivery(Packet packet, Sta sta, long timeTicks) {
         output.printf(Locale.ROOT,
-                "t_us=%d node=STA event=DELIVERED packet_id=%d bytes=%d type=%s destination_sta_id=%d sta_id=%d sfu_id=%d%n",
-                timeUs, packet.id(), packet.bytes(), packet.type(), packet.destinationStaId(), sta.id(), sta.sfuId());
+                "t_us=%s node=STA event=DELIVERED packet_id=%d bytes=%d type=%s destination_sta_id=%d sta_id=%d sfu_id=%d%n",
+                formatMicroseconds(timeTicks), packet.id(), packet.bytes(), packet.type(), packet.destinationStaId(),
+                sta.id(), sta.sfuId());
     }
 
-    public void recordUplinkDelivery(Packet packet, int sfuId, long timeUs) {
-        writeUplink(packet, timeUs, "MFU", "DELIVERED", sfuId,
-                " e2e_delay_us=" + (timeUs - packet.generationTimeUs()));
+    public void recordUplinkDelivery(Packet packet, int sfuId, long timeTicks, long endToEndTicks) {
+        writeUplink(packet, timeTicks, "MFU", "DELIVERED", sfuId,
+                " e2e_delay_us=" + formatMicroseconds(endToEndTicks));
     }
 
-    public void recordEnqueue(Packet packet, long timeUs, int sfuId, int queueDepth) {
+    public void recordEnqueue(Packet packet, long timeTicks, int sfuId, int queueDepth) {
         if (packet.isUplink()) {
-            writeUplink(packet, timeUs, "STA", "SFU_ENQUEUE", sfuId,
+            writeUplink(packet, timeTicks, "STA", "SFU_ENQUEUE", sfuId,
                     " generation_us=" + packet.generationTimeUs() + " queue_depth=" + queueDepth);
             return;
         }
         output.printf(Locale.ROOT,
-                "t_us=%d node=SFU event=SFU_ENQUEUE packet_id=%d bytes=%d type=%s mfu_arrival_us=%d queue_depth=%d destination_sta_id=%d sfu_id=%d%n",
-                timeUs, packet.id(), packet.bytes(), packet.type(), packet.mfuArrivalUs(),
+                "t_us=%s node=SFU event=SFU_ENQUEUE packet_id=%d bytes=%d type=%s mfu_arrival_us=%d queue_depth=%d destination_sta_id=%d sfu_id=%d%n",
+                formatMicroseconds(timeTicks), packet.id(), packet.bytes(), packet.type(), packet.mfuArrivalUs(),
                 queueDepth, packet.destinationStaId(), sfuId);
     }
 
-    public void recordQueueSelection(Packet packet, long timeUs, int sfuId, int vo, int vi, int be, int bk) {
+    public void recordQueueSelection(Packet packet, long timeTicks, int sfuId, int vo, int vi, int be, int bk) {
         if (packet.isUplink()) {
-            writeUplink(packet, timeUs, "SFU", "QUEUE_SELECT", sfuId,
+            writeUplink(packet, timeTicks, "SFU", "QUEUE_SELECT", sfuId,
                     " vo_queue=" + vo + " vi_queue=" + vi + " be_queue=" + be + " bk_queue=" + bk);
             return;
         }
         output.printf(Locale.ROOT,
-                "t_us=%d node=SFU event=QUEUE_SELECT packet_id=%d type=%s vo_queue=%d vi_queue=%d be_queue=%d bk_queue=%d destination_sta_id=%d sfu_id=%d%n",
-                timeUs, packet.id(), packet.type(), vo, vi, be, bk, packet.destinationStaId(), sfuId);
+                "t_us=%s node=SFU event=QUEUE_SELECT packet_id=%d type=%s vo_queue=%d vi_queue=%d be_queue=%d bk_queue=%d destination_sta_id=%d sfu_id=%d%n",
+                formatMicroseconds(timeTicks), packet.id(), packet.type(), vo, vi, be, bk, packet.destinationStaId(),
+                sfuId);
     }
 
-    public void recordWifiService(Packet packet, int sfuId, long sfuArrivalUs, long startUs, long endUs) {
+    public void recordWifiService(Packet packet, int sfuId, long queueEntryTicks, long startTicks, long endTicks,
+                                  long endToEndTicks) {
+        String startUs = formatMicroseconds(startTicks);
+        String waitUs = formatMicroseconds(startTicks - queueEntryTicks);
+        String serviceUs = formatMicroseconds(endTicks - startTicks);
         if (packet.isUplink()) {
-            writeUplink(packet, endUs, "SFU", "WIFI_TX_END", sfuId, " wifi_tx_start_us=" + startUs
-                    + " wifi_queue_wait_us=" + (startUs - sfuArrivalUs) + " wifi_service_us=" + (endUs - startUs));
+            writeUplink(packet, endTicks, "SFU", "WIFI_TX_END", sfuId, " wifi_tx_start_us=" + startUs
+                    + " wifi_queue_wait_us=" + waitUs + " wifi_service_us=" + serviceUs);
             return;
         }
         output.printf(Locale.ROOT,
-                "t_us=%d node=SFU event=WIFI_TX_END packet_id=%d wifi_tx_start_us=%d wifi_queue_wait_us=%d "
-                        + "wifi_service_us=%d e2e_delay_us=%d type=%s destination_sta_id=%d sfu_id=%d%n",
-                endUs, packet.id(), startUs, startUs - sfuArrivalUs, endUs - startUs,
-                endUs - packet.mfuArrivalUs(), packet.type(), packet.destinationStaId(), sfuId);
+                "t_us=%s node=SFU event=WIFI_TX_END packet_id=%d wifi_tx_start_us=%s wifi_queue_wait_us=%s "
+                        + "wifi_service_us=%s e2e_delay_us=%s type=%s destination_sta_id=%d sfu_id=%d%n",
+                formatMicroseconds(endTicks), packet.id(), startUs, waitUs, serviceUs,
+                formatMicroseconds(endToEndTicks), packet.type(), packet.destinationStaId(), sfuId);
+    }
+
+    public void recordWirelessPhyRate(double rateMbps) {
+        output.printf(Locale.ROOT, "summary=WIFI_PHY model=HE_SU phy_rate_mbps=%.6f%n", rateMbps);
     }
 
     public void recordClassSummary(AccessCategory type, int sentPackets, double waitUs, double delayUs) {
@@ -169,14 +201,15 @@ public final class TraceLogger {
                 packets, bytes, delayUs);
     }
 
-    public void recordSinglePacketSummary(int deliveredPackets, long deliveredBytes, long delayUs) {
-        output.printf(Locale.ROOT, "delivered_packets=%d delivered_bytes=%d e2e_delay_us=%d%n",
-                deliveredPackets, deliveredBytes, delayUs);
+    public void recordSinglePacketSummary(int deliveredPackets, long deliveredBytes, long delayTicks) {
+        output.printf(Locale.ROOT, "delivered_packets=%d delivered_bytes=%d e2e_delay_us=%s%n",
+                deliveredPackets, deliveredBytes, formatMicroseconds(delayTicks));
     }
 
-    public void recordRunSummary(int deliveredPackets, long deliveredBytes, long busyUs, long endUs) {
+    public void recordRunSummary(int deliveredPackets, long deliveredBytes, long busyTicks, long endTicks) {
         output.printf(Locale.ROOT,
-                "delivered_packets=%d delivered_bytes=%d wifi_busy_us=%d wifi_idle_us=%d simulation_end_us=%d%n",
-                deliveredPackets, deliveredBytes, busyUs, endUs - busyUs, endUs);
+                "delivered_packets=%d delivered_bytes=%d wifi_busy_us=%s wifi_idle_us=%s simulation_end_us=%s%n",
+                deliveredPackets, deliveredBytes, formatMicroseconds(busyTicks),
+                formatMicroseconds(endTicks - busyTicks), formatMicroseconds(endTicks));
     }
 }

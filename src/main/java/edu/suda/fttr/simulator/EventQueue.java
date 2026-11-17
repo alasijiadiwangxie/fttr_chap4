@@ -6,7 +6,7 @@ import java.util.PriorityQueue;
 /** 按时间取出事件。同刻先处理报文事件，再选队，各组内保持先入先出。 */
 final class EventQueue {
     private final PriorityQueue<Entry> pending = new PriorityQueue<>(
-            Comparator.comparingLong((Entry entry) -> entry.event.timeUs())
+            Comparator.comparingLong((Entry entry) -> entry.event.timeTicks())
                     .thenComparingInt(entry -> entry.event.type() == EventType.WIFI_SELECT_NEXT ? 1 : 0)
                     .thenComparingLong(entry -> entry.sequence));
     private long nextSequence;
