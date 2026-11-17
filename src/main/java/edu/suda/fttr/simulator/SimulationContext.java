@@ -34,6 +34,9 @@ public final class SimulationContext {
     private long wifiRetransmissions;
     private long wifiAckTimeouts;
     private int wifiRetryLimitDrops;
+    private int wifiTxops;
+    private int wifiTxopPackets;
+    private double totalWifiTxopDurationUs;
 
     SimulationContext(TraceLogger trace, boolean multiPacket, boolean nanosecondClock) {
         this(trace, multiPacket, nanosecondClock, false);
@@ -152,8 +155,11 @@ public final class SimulationContext {
         trace.recordWifiDataEnd(packet, sfuId, nowTicks);
     }
 
-    public void recordWifiService(Packet packet, int sfuId, long queueEntryTicks, long startTicks, long dataEndTicks) {
-        recordWifiEnd();
+    public void recordWifiService(Packet packet, int sfuId, long queueEntryTicks, long startTicks, long dataEndTicks,
+                                  boolean channelReleased) {
+        if (channelReleased) {
+            recordWifiEnd();
+        }
         double queueWaitUs = ticksToMicroseconds(startTicks - queueEntryTicks);
         long endToEndTicks = 0;
         if (packet.isUplink()) {
@@ -167,6 +173,18 @@ public final class SimulationContext {
             overallDelay.add(queueWaitUs, delayUs);
         }
         trace.recordWifiService(packet, sfuId, queueEntryTicks, startTicks, nowTicks, endToEndTicks);
+    }
+
+    public void recordWifiTxopStart(Packet packet, int sfuId, long limitNs) {
+        trace.recordWifiTxopStart(packet, sfuId, nowTicks, limitNs);
+    }
+
+    public void recordWifiTxopEnd(Packet packet, int sfuId, long startTicks, long limitNs, int packetCount) {
+        long durationTicks = nowTicks - startTicks;
+        wifiTxops++;
+        wifiTxopPackets += packetCount;
+        totalWifiTxopDurationUs += ticksToMicroseconds(durationTicks);
+        trace.recordWifiTxopEnd(packet, sfuId, nowTicks, limitNs, durationTicks, packetCount);
     }
 
     public void recordWifiCollisionStart(List<Packet> packets, int sfuId) {
@@ -260,6 +278,9 @@ public final class SimulationContext {
         }
         if (wifiRetryEnabled) {
             trace.recordRetrySummary(wifiRetransmissions, wifiAckTimeouts, wifiRetryLimitDrops);
+        }
+        if (wifiTxops > 0) {
+            trace.recordTxopSummary(wifiTxops, totalWifiTxopDurationUs, wifiTxopPackets);
         }
         if (multiPacket) {
             trace.recordRunSummary(deliveredPackets, deliveredBytes, wifiBusyTicks, nowTicks);

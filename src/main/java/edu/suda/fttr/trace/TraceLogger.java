@@ -51,6 +51,7 @@ public final class TraceLogger {
                 write(event, "SFU", "ARRIVAL");
                 break;
             case WIFI_TX_START:
+            case WIFI_TXOP_DATA_START:
                 write(event, packet.isUplink() ? "STA" : "SFU", "WIFI_TX_START");
                 break;
             case WIFI_ACK_START:
@@ -188,6 +189,22 @@ public final class TraceLogger {
     public void recordRetrySummary(long retransmissions, long ackTimeouts, int retryLimitDrops) {
         output.printf(Locale.ROOT, "summary=WIFI_RETRY retransmissions=%d ack_timeouts=%d retry_limit_drops=%d%n",
                 retransmissions, ackTimeouts, retryLimitDrops);
+    }
+
+    public void recordWifiTxopStart(Packet packet, int sfuId, long ticks, long limitNs) {
+        writeMacPacket(packet, sfuId, ticks, "WIFI_TXOP_START", " limit_us=" + formatMicroseconds(limitNs));
+    }
+
+    public void recordWifiTxopEnd(Packet packet, int sfuId, long ticks, long limitNs, long durationTicks,
+                                  int packetCount) {
+        String detail = " limit_us=" + formatMicroseconds(limitNs) + " duration_us=" + formatMicroseconds(durationTicks)
+                + " packet_count=" + packetCount;
+        writeMacPacket(packet, sfuId, ticks, "WIFI_TXOP_END", detail);
+    }
+
+    public void recordTxopSummary(int txops, double durationUs, int transmittedPackets) {
+        output.printf(Locale.ROOT, "summary=WIFI_TXOP txops=%d total_duration_us=%.3f transmitted_packets=%d%n",
+                txops, durationUs, transmittedPackets);
     }
 
     public void recordWifiService(Packet packet, int sfuId, long queueEntryTicks, long startTicks, long endTicks,

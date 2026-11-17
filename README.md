@@ -190,7 +190,7 @@ ACK 速率仅用于 `data-sifs-ack`。DATA 继续使用 HE SU PHY。ACK 按 5 GH
 
 日志依次记录 `WIFI_TX_START`、`WIFI_DATA_END`、`WIFI_SIFS_START`、`WIFI_ACK_START`、`WIFI_ACK_END` 和 `WIFI_TX_END`。DATA 由原发送端发出，ACK 由 DATA 接收端反向发出，日志中的报文字段均指原 DATA。DATA 收齐时，下行交付到 STA，上行由 SFU 发往光链路。SIFS 和 ACK 计入无线资源占用，端到端时延仍按 DATA 到达最终目的节点计算。
 
-`WIFI_TX_END` 记录 ACK 完成时的资源释放，`wifi_service_us` 包含 DATA、SIFS 和 ACK。示例按默认接入模式运行时，首个 1500 B 报文在 100 μs 开始无线发送，在 164 μs 交付 DATA，在 180 μs 开始 ACK，并在 208 μs 释放资源。该次交换占用 108 μs，下一包可在 208 μs 启动。模型采用理想信道和零无线传播时延。
+`WIFI_TX_END` 记录单帧交换完成，`wifi_service_us` 包含 DATA、SIFS 和 ACK。单帧接入在该时刻释放资源，TXOP 的释放时刻由 `WIFI_TXOP_END` 标记。示例按默认接入模式运行时，首个 1500 B 报文在 100 μs 开始无线发送，在 164 μs 交付 DATA，在 180 μs 开始 ACK，并在 208 μs 释放资源。该次交换占用 108 μs，下一包可在 208 μs 启动。模型采用理想信道和零无线传播时延。
 
 ### EDCA 参数与 AIFS
 
@@ -213,7 +213,7 @@ ACK 速率仅用于 `data-sifs-ack`。DATA 继续使用 HE SU PHY。ACK 按 5 GH
 
 ### CCA 信道忙闲检测
 
-每台 SFU 拥有一个独立信道，SFU 和所有关联 STA 通过 `ccaState()` 查询同一份 `WifiChannel.State`。信道初始为 `IDLE`。成功交换从 DATA 开始到 ACK 完成保持 `BUSY`，含 SIFS 的资源预留。固定时延和 `data-only` 模式在 DATA 完成后恢复 `IDLE`。跨设备碰撞时，信道在最后一个碰撞 DATA 结束后释放。
+每台 SFU 拥有一个独立信道，SFU 和所有关联 STA 通过 `ccaState()` 查询同一份 `WifiChannel.State`。信道初始为 `IDLE`。单帧成功交换从 DATA 开始到 ACK 完成保持 `BUSY`，TXOP 则持续占用到最后一个 ACK 完成。固定时延和 `data-only` 模式在 DATA 完成后恢复 `IDLE`。跨设备碰撞时，信道在最后一个碰撞 DATA 结束后释放。
 
 报文到达和信道释放先于同一时刻的选队或接入倒计时。同一优先顺序的报文事件按入队顺序处理。不同 SFU 的信道独立，可并行发送。
 
@@ -249,6 +249,16 @@ ACK 速率仅用于 `data-sifs-ack`。DATA 继续使用 HE SU PHY。ACK 按 5 GH
 超时后，若报文还有重试额度，则保留原报文和队首位置，将该报文的重试次数加一，由对应 AC 更新 `CW = min(2 × CW + 1, CWmax)` 并重新抽取退避。重试设备恢复接入后再次检查 CCA，从完整 AIFS 开始竞争。`wifi.mac.retry.max=0` 时，首次发送失败后仍等待超时，再丢弃报文。正常收到 ACK 或达到重试上限丢弃时，队首退出且该 AC 的 CW 恢复到 CWmin，下一报文从零开始计数。每个报文沿用原始 `packet_id`，最终只计一次交付或丢弃。
 
 `WIFI_MAC_ATTEMPT` 用 `retry_count=0` 标识首次发送，正值表示重传。发生碰撞时，`WIFI_COLLISION_DATA_END` 和 `WIFI_ACK_TIMEOUT` 分别标记碰撞 DATA 结束和 ACK 超时。`WIFI_MAC_RETRY` 记录新重试次数、更新前后的 CW 和新抽取的退避值。`WIFI_MAC_SUCCESS` 标记 ACK 完成，`WIFI_RETRY_LIMIT_DROP` 标记最终丢弃。`summary=WIFI_RETRY` 输出实际发出的重传次数 `retransmissions`、发送端超时次数 `ack_timeouts` 和重试超限丢包数 `retry_limit_drops`。
+
+### EDCA TXOP
+
+`wifi.mac.edca.<AC>.txop.limit.us` 为每类业务设置 TXOP Limit，取非负整数微秒，VO、VI、BE、BK 默认均为 `0`。取 `0` 时，每帧单独竞争信道。同时启用 `edca-multi-ac` 与 `data-sifs-ack` 后，正值允许获胜设备在同一 TXOP 内继续发送当前 AC 的 FIFO 报文。
+
+TXOP 从首帧 DATA 开始计时，到最后一帧 ACK 完成释放信道。每次收到 ACK 后，只有本设备同一 AC 的下一队首能够在剩余时间内完成帧间 SIFS 及完整的 DATA–SIFS–ACK 时，才按 `ACK → SIFS → DATA` 继续发送。正好用完预算也可发送。整个 TXOP 含帧间 SIFS 都保持 `BUSY`，其他设备和 AC 的计时器按现有 CCA 规则冻结。队列为空或预算不足时在当前 ACK 完成后立即释放。若首帧交换已超过正值上限，该帧仍可进行一次单帧交换，按普通发送统计。争用时发生碰撞的尝试不建立 TXOP，重传按原有 ACK 超时与退避规则重新竞争。
+
+`WIFI_TXOP_START` 记录配置上限 `limit_us`。`WIFI_TXOP_END` 记录实际占用 `duration_us`、成功报文数 `packet_count` 和配置上限。`summary=WIFI_TXOP` 汇总次数 `txops`、各 SFU 的 TXOP 持续时间之和 `total_duration_us` 和成功报文总数 `transmitted_packets`。全局 `wifi_busy_us` 按信道忙区间的并集计时。
+
+在 HE SU 下行示例中启用 `edca-multi-ac`，将 `packet.2.bytes` 改为 `1500`，并设置 `wifi.mac.edca.BE.txop.limit.us=232`。两包的完整交换各为 108 μs，中间间隔 16 μs，正好在一次 232 μs 的 TXOP 内完成。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。
 

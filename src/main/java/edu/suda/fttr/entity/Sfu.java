@@ -26,6 +26,7 @@ public final class Sfu {
     private final WifiChannel channel = new WifiChannel();
     private final Map<Integer, Sta> stations;
     private final EdcaState edcaState;
+    private final EdcaParameters edcaParameters;
     private final EdcaAccess edcaAccess;
     private final boolean multiAc;
     private final WifiRetryPolicy retryPolicy;
@@ -39,6 +40,7 @@ public final class Sfu {
     private final Deque<QueuedPacket> beQueue = new ArrayDeque<>();
     private final Deque<QueuedPacket> bkQueue = new ArrayDeque<>();
     private QueuedPacket active;
+    private Txop txop;
     private boolean selectionPending;
     private long txStartTicks;
     private long dataEndTicks;
@@ -69,6 +71,7 @@ public final class Sfu {
         this.id = id;
         this.wifi = wifi;
         this.stations = Map.copyOf(stations);
+        this.edcaParameters = edcaParameters;
         this.edcaState = EdcaState.forSfu(id, edcaParameters);
         this.stations.values().forEach(sta -> sta.attachChannel(id, channel));
         this.multiAc = accessMode == WifiAccessMode.EDCA_MULTI_AC;
@@ -129,8 +132,28 @@ public final class Sfu {
             throw new IllegalStateException("Wi-Fi access wait is incomplete for packet " + packet.id());
         }
         channel.occupy();
-        txStartTicks = context.nowTicks();
         context.recordWifiStart();
+        if (multiAc && wifi.hasAckExchange()) {
+            long limitNs = edcaParameters.forCategory(packet.type()).txopLimitUs() * 1_000L;
+            if (limitNs > 0 && wifi.exchangeDurationNs(packet) <= limitNs) {
+                txop = new Txop(packet, context.nowTicks(), limitNs);
+                context.recordWifiTxopStart(packet, id, limitNs);
+            }
+        }
+        startData(packet, context);
+    }
+
+    public void transmitWithinTxop(Packet packet, SimulationContext context) {
+        checkActive(packet);
+        if (txop == null || ccaState() != WifiChannel.State.BUSY) {
+            throw new IllegalStateException("No active TXOP for packet " + packet.id());
+        }
+        // 同一 AC 队首从 ACK 后的 SIFS 继续发送，信道和全局忙时均沿用原占用。
+        startData(packet, context);
+    }
+
+    private void startData(Packet packet, SimulationContext context) {
+        txStartTicks = context.nowTicks();
         if (retryPolicy != null) {
             context.recordWifiMacAttempt(packet, id, active.retries);
         }
@@ -162,24 +185,48 @@ public final class Sfu {
 
     public void completeTransmission(Packet packet, SimulationContext context) {
         checkActive(packet);
-        // DATA–SIFS–ACK 共用同一段占用。只在 ACK 完成时释放，仅 DATA 模式在 DATA 完成时释放。
-        channel.release();
-        // 记录半开区间 [开始, 完成)。同刻启动的下一条报文不会与这一条重叠。
-        context.recordWifiService(packet, id, active.arrivalTicks, txStartTicks, dataEndTicks);
+        EdcaState.AcState ac = edcaAccess == null ? null : senderAc(packet);
+        QueuedPacket next = null;
+        if (multiAc) {
+            Deque<QueuedPacket> queue = deviceQueues.get(ac);
+            queue.removeFirst();
+            next = queue.peekFirst();
+        }
+        boolean continues = txop != null && next != null && fitsInTxop(next.packet, context.nowTicks());
+        if (!continues) {
+            channel.release();
+        }
+        // 逐包服务时长止于自己的 ACK。全局忙时跨过 TXOP 内的帧间 SIFS，直到最终释放。
+        context.recordWifiService(packet, id, active.arrivalTicks, txStartTicks, dataEndTicks, !continues);
         if (retryPolicy != null) {
             context.recordWifiMacSuccess(packet, id, active.retries);
             active.retries = 0;
         }
-        active = null;
-        if (edcaAccess != null) {
-            EdcaState.AcState ac = senderAc(packet);
+        if (ac != null) {
             ac.onTransmissionSuccess();
-            if (multiAc) {
-                advanceDeviceQueue(ac, context);
+        }
+        if (txop != null) {
+            txop.packetCount++;
+            if (continues) {
+                active = next;
+                context.scheduleAfterNanoseconds(wifi.sifsNs(), EventType.WIFI_TXOP_DATA_START, next.packet, id);
                 return;
             }
+            context.recordWifiTxopEnd(txop.firstPacket, id, txop.startTicks, txop.limitNs, txop.packetCount);
+            txop = null;
         }
-        requestSelection(context);
+        active = null;
+        if (multiAc) {
+            startDeviceQueueHead(ac, context);
+        } else {
+            requestSelection(context);
+        }
+    }
+
+    private boolean fitsInTxop(Packet packet, long nowTicks) {
+        long remainingNs = txop.limitNs - (nowTicks - txop.startTicks);
+        long sifsNs = wifi.sifsNs();
+        return remainingNs >= sifsNs && wifi.exchangeDurationNs(packet) <= remainingNs - sifsNs;
     }
 
     private void requestSelection(SimulationContext context) {
@@ -288,8 +335,12 @@ public final class Sfu {
 
     private void advanceDeviceQueue(EdcaState.AcState ac, SimulationContext context) {
         // 队首保留到成功或失败结束，随后才允许下一条报文参与竞争。
+        deviceQueues.get(ac).removeFirst();
+        startDeviceQueueHead(ac, context);
+    }
+
+    private void startDeviceQueueHead(EdcaState.AcState ac, SimulationContext context) {
         Deque<QueuedPacket> queue = deviceQueues.get(ac);
-        queue.removeFirst();
         if (queue.isEmpty()) {
             deviceQueues.remove(ac);
         } else {
@@ -350,6 +401,19 @@ public final class Sfu {
         private QueuedPacket(Packet packet, long arrivalTicks) {
             this.packet = packet;
             this.arrivalTicks = arrivalTicks;
+        }
+    }
+
+    private static final class Txop {
+        private final Packet firstPacket;
+        private final long startTicks;
+        private final long limitNs;
+        private int packetCount;
+
+        private Txop(Packet firstPacket, long startTicks, long limitNs) {
+            this.firstPacket = firstPacket;
+            this.startTicks = startTicks;
+            this.limitNs = limitNs;
         }
     }
 }

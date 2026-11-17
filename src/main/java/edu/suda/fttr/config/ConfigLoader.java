@@ -50,7 +50,8 @@ public final class ConfigLoader {
     private static final Set<String> MANUAL_KEYS = Set.of("packet.bytes", "packet.arrival.us");
     private static final Pattern PACKET_OVERRIDE = Pattern.compile("packet\\.([1-9][0-9]*)\\.(bytes|type|sta\\.id|direction)");
     private static final Pattern STA_ASSOCIATION = Pattern.compile("sta\\.([1-9][0-9]*)\\.sfu\\.id");
-    private static final Pattern EDCA_AC_KEY = Pattern.compile("wifi\\.mac\\.edca\\.(VO|VI|BE|BK)\\.(aifsn|cwmin|cwmax)");
+    private static final Pattern EDCA_AC_KEY = Pattern.compile(
+            "wifi\\.mac\\.edca\\.(VO|VI|BE|BK)\\.(aifsn|cwmin|cwmax|txop\\.limit\\.us)");
     private static final Pattern POISSON_SOURCE = Pattern.compile(
             "traffic\\.(sfu|sta)\\.([1-9][0-9]*)\\.(rate\\.pps|packet\\.bytes|seed|class\\.weights|duration\\.us|"
                     + "class\\.(VO|VI|BE|BK)\\.(rate\\.pps|rate\\.mbps|packet\\.bytes))");
@@ -166,8 +167,11 @@ public final class ConfigLoader {
             int aifsn = readOptionalNonNegativeInt(properties, prefix + "aifsn", acDefaults.aifsn());
             int cwMin = readOptionalNonNegativeInt(properties, prefix + "cwmin", acDefaults.cwMin());
             int cwMax = readOptionalNonNegativeInt(properties, prefix + "cwmax", acDefaults.cwMax());
+            String txopKey = prefix + "txop.limit.us";
+            long txopLimitUs = properties.containsKey(txopKey) ? readNonNegativeLong(properties, txopKey)
+                    : acDefaults.txopLimitUs();
             try {
-                byCategory.put(category, new AcParameters(aifsn, cwMin, cwMax));
+                byCategory.put(category, new AcParameters(aifsn, cwMin, cwMax, txopLimitUs));
             } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException("Invalid EDCA parameters for " + category + ": " + e.getMessage(), e);
             }

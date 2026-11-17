@@ -29,6 +29,20 @@ public final class WifiLink {
         this.frameExchange = frameExchange;
     }
 
+    public boolean hasAckExchange() {
+        return frameExchange != null;
+    }
+
+    public long sifsNs() {
+        return requireAckExchange().sifsNs();
+    }
+
+    /** 由实际 DATA 与 ACK 时长组成的完整单帧交换，供 TXOP 判断剩余预算。 */
+    public long exchangeDurationNs(Packet packet) {
+        WifiFrameExchange exchange = requireAckExchange();
+        return Math.addExact(dataDurationNs(packet), exchange.responseDurationNs());
+    }
+
     public void transmit(Packet packet, int sfuId, SimulationContext context) {
         EventType arrival = packet.isUplink() ? EventType.WIFI_ARRIVAL_AT_SFU : EventType.PACKET_ARRIVAL_AT_STA;
         scheduleDataEnd(packet, sfuId, context, arrival);
@@ -42,10 +56,21 @@ public final class WifiLink {
     private void scheduleDataEnd(Packet packet, int sfuId, SimulationContext context, EventType dataEnd) {
         if (wirelessPhy != null) {
             // DATA 到达独立于后续的 SIFS 和 ACK。此处使用含 PE 的完整数据 PPDU 时长。
-            context.scheduleAfterNanoseconds(wirelessPhy.ppduDurationNs(packet.bytes()), dataEnd, packet, sfuId);
+            context.scheduleAfterNanoseconds(dataDurationNs(packet), dataEnd, packet, sfuId);
         } else {
             context.scheduleAfter(delayModel.delayUs(packet), dataEnd, packet, sfuId);
         }
+    }
+
+    private long dataDurationNs(Packet packet) {
+        return wirelessPhy.ppduDurationNs(packet.bytes());
+    }
+
+    private WifiFrameExchange requireAckExchange() {
+        if (!hasAckExchange()) {
+            throw new IllegalStateException("DATA-SIFS-ACK exchange is required");
+        }
+        return frameExchange;
     }
 
     /** DATA 抵达后，由接收端等待 SIFS，再反向发送立即 ACK。 */

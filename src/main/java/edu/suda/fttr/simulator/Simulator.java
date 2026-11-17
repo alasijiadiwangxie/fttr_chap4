@@ -81,6 +81,9 @@ public final class Simulator {
                 case WIFI_TX_START:
                     sfus.get(event.sfuId() - 1).transmit(event.packet(), context);
                     break;
+                case WIFI_TXOP_DATA_START:
+                    sfus.get(event.sfuId() - 1).transmitWithinTxop(event.packet(), context);
+                    break;
                 case PACKET_ARRIVAL_AT_STA:
                 case WIFI_ARRIVAL_AT_SFU:
                     sfus.get(event.sfuId() - 1).receiveData(event.packet(), context);

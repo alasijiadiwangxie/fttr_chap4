@@ -71,8 +71,13 @@ public final class EdcaParameters {
         private final int aifsn;
         private final int cwMin;
         private final int cwMax;
+        private final long txopLimitUs;
 
         public AcParameters(int aifsn, int cwMin, int cwMax) {
+            this(aifsn, cwMin, cwMax, 0);
+        }
+
+        public AcParameters(int aifsn, int cwMin, int cwMax, long txopLimitUs) {
             // 参数同时适用于普通 STA 和 AP。仅 AP 可用的 AIFSN=1 不用于这份共用配置。
             if (aifsn < 2 || aifsn > 15) {
                 throw new IllegalArgumentException("AIFSN must be between 2 and 15");
@@ -82,9 +87,13 @@ public final class EdcaParameters {
             if (cwMin > cwMax) {
                 throw new IllegalArgumentException("CWmin must not exceed CWmax");
             }
+            if (txopLimitUs < 0 || txopLimitUs > Long.MAX_VALUE / 1_000L) {
+                throw new IllegalArgumentException("TXOP limit must be non-negative and fit the nanosecond clock");
+            }
             this.aifsn = aifsn;
             this.cwMin = cwMin;
             this.cwMax = cwMax;
+            this.txopLimitUs = txopLimitUs;
         }
 
         private static void validateWindow(int window, String name) {
@@ -104,6 +113,10 @@ public final class EdcaParameters {
 
         public int cwMax() {
             return cwMax;
+        }
+
+        public long txopLimitUs() {
+            return txopLimitUs;
         }
     }
 }
