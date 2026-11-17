@@ -81,6 +81,18 @@ class HeSuSimulationTest {
     }
 
     @Test
+    void usesConfiguredLtfTypeAndPacketExtensionForWirelessOccupancy(@TempDir Path directory) throws IOException {
+        List<Map<String, String>> trace = trace(run(load(directory, "wifi.model=he-su", "wifi.phy.bandwidth.mhz=80",
+                "wifi.phy.mcs=11", "wifi.phy.nss=1", "wifi.phy.gi.us=0.8", "wifi.phy.he-ltf.type=1",
+                "wifi.phy.nominal.packet.padding.us=16", "fiber.delay.us=10", "packet.arrival.us=0",
+                "packet.bytes=215")));
+
+        // 1× HE-LTF 的前导码为 40 μs，一个 13.6 μs 数据符号，最终 a=3 对应 12 μs PE。
+        assertWifiInterval(trace, 1, "10", "75.6", "65.6", "0");
+        assertDecimal("75.6", packetEvent(trace, "DELIVERED", 1), "t_us");
+    }
+
+    @Test
     void rejectsAnInputOutsideTheNanosecondClockRange(@TempDir Path directory) {
         long arrivalUs = Long.MAX_VALUE / 1000 + 1;
         assertThrows(IllegalArgumentException.class, () -> load(directory, "wifi.model=he-su", "fiber.delay.us=0",

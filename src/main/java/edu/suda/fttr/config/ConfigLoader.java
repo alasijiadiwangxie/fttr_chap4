@@ -28,7 +28,8 @@ public final class ConfigLoader {
     private static final Set<String> KEYS = Set.of(
             "fiber.delay.us", "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction");
     private static final Set<String> PHY_KEYS = Set.of(
-            "wifi.phy.bandwidth.mhz", "wifi.phy.mcs", "wifi.phy.nss", "wifi.phy.gi.us", "wifi.phy.mac.overhead.bytes");
+            "wifi.phy.bandwidth.mhz", "wifi.phy.mcs", "wifi.phy.nss", "wifi.phy.gi.us",
+            "wifi.phy.mac.overhead.bytes", "wifi.phy.he-ltf.type", "wifi.phy.nominal.packet.padding.us");
     private static final Set<String> MANUAL_KEYS = Set.of("packet.bytes", "packet.arrival.us");
     private static final Pattern PACKET_OVERRIDE = Pattern.compile("packet\\.([1-9][0-9]*)\\.(bytes|type|sta\\.id|direction)");
     private static final Pattern STA_ASSOCIATION = Pattern.compile("sta\\.([1-9][0-9]*)\\.sfu\\.id");
@@ -129,7 +130,9 @@ public final class ConfigLoader {
         }
         return new WirelessPhy(readPhyInt(properties, "wifi.phy.bandwidth.mhz", 160),
                 readPhyInt(properties, "wifi.phy.mcs", 11), readPhyInt(properties, "wifi.phy.nss", 2), giNs,
-                readPhyInt(properties, "wifi.phy.mac.overhead.bytes", 34));
+                readPhyInt(properties, "wifi.phy.mac.overhead.bytes", 34),
+                readPhyInt(properties, "wifi.phy.he-ltf.type", WirelessPhy.defaultHeLtfType(giNs)),
+                readPhyInt(properties, "wifi.phy.nominal.packet.padding.us", 0));
     }
 
     private static int readPhyInt(Properties properties, String key, int defaultValue) {

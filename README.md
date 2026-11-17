@@ -155,11 +155,25 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/he-su-phy-downlink.proper
 | `wifi.phy.mcs` | 0–11 | 11 |
 | `wifi.phy.nss` | 1–8 条空间流 | 2 |
 | `wifi.phy.gi.us` | 0.8、1.6、3.2 μs | 0.8 |
+| `wifi.phy.he-ltf.type` | 1、2、4，表示 HE-LTF 类型，须与 GI 匹配 | GI 为 0.8/1.6 时取 2，GI 为 3.2 时取 4 |
 | `wifi.phy.mac.overhead.bytes` | 加在业务包长上的封装字节数 | 34 |
+| `wifi.phy.nominal.packet.padding.us` | 接收端标称填充需求 0、8、16 μs，用于推导实际 PE | 0 |
 
 一个仿真报文对应一个 HE SU 数据 PPDU。默认封装 34 B 对应 26 B QoS MAC 头、4 B FCS 和 4 B MPDU delimiter，业务包长之外的额外封装可计入此字段。静态配置使用 LDPC，按 MCS 的调制阶数、码率、全带宽数据子载波数和 NSS 计算每个符号的数据位数。PHY 速率为每个数据符号的位数除以 `12.8 μs + GI`。
 
-前导码为固定的 36 μs 加 HE-LTF。GI 为 0.8 或 1.6 μs 时选择 2× HE-LTF，3.2 μs 时选择 4× HE-LTF，训练符号数由 NSS 决定。数据符号数由封装后长度、16 位 SERVICE 和 LDPC 填充规则计算。模型采用单 MPDU、无 STBC、DCM 或 midamble，PE 与 2.4 GHz 信号延长均设为 0。超过单 MPDU 长度或 5484 μs PPDU 时长上限时拒绝该配置。计算依据见 [IEEE 802.11ax-2021 §27](https://standards.ieee.org/ieee/802.11ax/7180/) 和 [HE SU 前导码图 27-8](https://ptacts.uspto.gov/ptacts/public-informations/petitions/1550280/download-documents?artifactId=UHWJ2oZgTs7zxpCXsgW00tuhUMqbKMe159a9qxSLKRDsqJiIOFfQids)。
+**前导码。** `T_preamble` 为固定的 36 μs 加 HE-LTF 训练字段。1×、2×、4× HE-LTF 的每个符号分别为 `3.2 + GI`、`6.4 + GI`、`12.8 + GI` μs。普通 HE SU 允许 `1×/0.8`、`2×/0.8`、`2×/1.6`、`4×/3.2`。`4×/0.8` 也可用，它对应 HE-SIG-A 特殊信令，DCM 和 STBC 位均置 1，但两种编码操作都不应用。这里假定收发端支持所选的 HE-LTF/GI 组合，未模拟能力协商。无 STBC 时 `NSTS = NSS`，1 至 8 条空间流对应 `1, 2, 4, 4, 6, 6, 8, 8` 个训练符号。见 [IEEE 802.11ax-2021 图 27-8 与 §27.3.11](https://ptacts.uspto.gov/ptacts/public-informations/petitions/1550280/download-documents?artifactId=UHWJ2oZgTs7zxpCXsgW00tuhUMqbKMe159a9qxSLKRDsqJiIOFfQids) 和 [HE-SIG-A 特殊信令对照](https://data.epo.org/publication-server/rest/v1.2/publication-dates/2025-12-03/patents/EP4657975NWA2/document.pdf#page=23)。
+
+**数据符号。** 按封装后的字节数和 16 位 SERVICE 计算初始符号数及最后一个符号的 pre-FEC 填充因子 `a`。Pre-FEC 填充补齐 LDPC 的初始输入边界。模型用码字容量、截短和打孔阈值判断是否需要 LDPC 额外符号段。若需要且 `a < 4`，只增大 `a`，完整数据符号数不变。若 `a = 4`，增加一个完整数据符号，并将最终 `a` 设为 1。Post-FEC 填充只补齐最终符号剩余的编码位，已经包含在该符号的时长中。计算参照 [IEEE 802.11ax-2021 §27.3.12](https://standards.ieee.org/ieee/802.11ax/7180/)。
+
+**PE。** 模型使用未启用 PPE Thresholds 的标称填充规则。下表按**最终** `a` 确定实际添加的 PE，单位为 μs。参见 [MathWorks WLAN Toolbox 的 HE SU PE 表](https://www.mathworks.com/help/wlan/ref/wlanhesuconfig.html)。
+
+| 标称填充 | `a=1` | `a=2` | `a=3` | `a=4` |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 0 | 0 | 0 | 0 |
+| 8 | 0 | 0 | 4 | 8 |
+| 16 | 4 | 8 | 12 | 16 |
+
+总时长为 `T_preamble + N_DATA × T_SYM + T_PE`，并包含 PE 一起校验 5484 μs 的上限。模型只计算单 MPDU 的 airtime，无多报文聚合、实际 LDPC 编解码、波形、PPE 阈值协商、midamble 或 2.4 GHz 信号延长。默认的 HE-LTF 选择和 0 μs PE 保留了旧场景的时长。
 
 HE SU 模式用 `summary=WIFI_PHY` 输出 PHY 速率，`wifi_service_us` 表示该数据 PPDU 占用无线资源的时长。`wifi_queue_wait_us` 仍是原有队列等待。MAC 竞争、无线传播、SIFS 与 ACK 未计入。光纤固定时延按原路径单独计算。
 
