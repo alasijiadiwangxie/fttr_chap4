@@ -1,6 +1,8 @@
 package edu.suda.fttr.entity;
 
 import edu.suda.fttr.link.WifiLink;
+import edu.suda.fttr.mac.EdcaParameters;
+import edu.suda.fttr.mac.EdcaState;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
 
@@ -13,6 +15,7 @@ public final class Sfu {
     private final int id;
     private final WifiLink wifi;
     private final Map<Integer, Sta> stations;
+    private final EdcaState edcaState;
     private final Deque<QueuedPacket> voQueue = new ArrayDeque<>();
     private final Deque<QueuedPacket> viQueue = new ArrayDeque<>();
     private final Deque<QueuedPacket> beQueue = new ArrayDeque<>();
@@ -26,13 +29,22 @@ public final class Sfu {
     private double queueWaitSumUs;
 
     public Sfu(int id, WifiLink wifi, Map<Integer, Sta> stations) {
+        this(id, wifi, stations, EdcaParameters.defaults());
+    }
+
+    public Sfu(int id, WifiLink wifi, Map<Integer, Sta> stations, EdcaParameters edcaParameters) {
         this.id = id;
         this.wifi = wifi;
         this.stations = Map.copyOf(stations);
+        this.edcaState = EdcaState.forSfu(id, edcaParameters);
     }
 
     public int id() {
         return id;
+    }
+
+    public EdcaState edcaState() {
+        return edcaState;
     }
 
     public int sentPackets() {

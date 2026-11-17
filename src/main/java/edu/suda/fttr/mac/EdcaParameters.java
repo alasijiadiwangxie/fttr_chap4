@@ -4,19 +4,32 @@ import edu.suda.fttr.entity.AccessCategory;
 
 import java.util.Map;
 
-/** 场景共用的上下行 EDCA 参数。这里只计算时长，发送流程仍由现有队列调度。 */
+/** 场景共用的上下行 EDCA 参数与随机种子。各设备的可变退避状态独立存放。 */
 public final class EdcaParameters {
+    private static final long DEFAULT_SEED = 0L;
+    private static final EdcaParameters DEFAULTS = new EdcaParameters(16, 9, Map.of(
+            AccessCategory.VO, new AcParameters(2, 3, 7),
+            AccessCategory.VI, new AcParameters(3, 7, 15),
+            AccessCategory.BE, new AcParameters(6, 15, 1023),
+            AccessCategory.BK, new AcParameters(9, 15, 1023)), DEFAULT_SEED);
+
     private final long sifsUs;
     private final long slotTimeUs;
     private final Map<AccessCategory, AcParameters> byCategory;
+    private final long seed;
 
     public EdcaParameters(long sifsUs, long slotTimeUs, Map<AccessCategory, AcParameters> byCategory) {
+        this(sifsUs, slotTimeUs, byCategory, DEFAULT_SEED);
+    }
+
+    public EdcaParameters(long sifsUs, long slotTimeUs, Map<AccessCategory, AcParameters> byCategory, long seed) {
         if (sifsUs <= 0 || slotTimeUs <= 0) {
             throw new IllegalArgumentException("wifi.mac.sifs.us and wifi.mac.slot.us must be positive");
         }
         this.sifsUs = sifsUs;
         this.slotTimeUs = slotTimeUs;
         this.byCategory = Map.copyOf(byCategory);
+        this.seed = seed;
         for (AccessCategory category : AccessCategory.values()) {
             if (!this.byCategory.containsKey(category)) {
                 throw new IllegalArgumentException("Missing EDCA parameters for " + category);
@@ -30,12 +43,20 @@ public final class EdcaParameters {
         }
     }
 
+    public static EdcaParameters defaults() {
+        return DEFAULTS;
+    }
+
     public long sifsUs() {
         return sifsUs;
     }
 
     public long slotTimeUs() {
         return slotTimeUs;
+    }
+
+    public long seed() {
+        return seed;
     }
 
     public AcParameters forCategory(AccessCategory category) {

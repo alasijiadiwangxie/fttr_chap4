@@ -34,7 +34,7 @@ public final class Simulator {
         }
         List<Sta> stations = new ArrayList<>(config.staCount());
         for (int i = 0; i < config.staCount(); i++) {
-            Sta sta = new Sta(i + 1, config.staSfuIds().get(i));
+            Sta sta = new Sta(i + 1, config.staSfuIds().get(i), config.edcaParameters());
             stations.add(sta);
             stationsBySfu.get(sta.sfuId() - 1).put(sta.id(), sta);
         }
@@ -48,7 +48,7 @@ public final class Simulator {
         List<Sfu> sfus = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             fibers.add(new FiberLink(fiberDelay));
-            sfus.add(new Sfu(i + 1, wifi, stationsBySfu.get(i)));
+            sfus.add(new Sfu(i + 1, wifi, stationsBySfu.get(i), config.edcaParameters()));
         }
         Mfu mfu = new Mfu(config.staSfuIds());
 

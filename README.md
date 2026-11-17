@@ -205,7 +205,13 @@ ACK 速率仅用于 `data-sifs-ack`。DATA 继续使用 HE SU PHY。ACK 按 5 GH
 
 `AIFS = SIFS + AIFSN × SlotTime`，结果须在 64 位整数纳秒的时钟范围内。上下行共用的参数中，AIFSN 取 2–15，CWmin 和 CWmax 均取 `2^k − 1`（`k` 为 0–15），且 CWmin ≤ CWmax。[IEEE 802.11-2012 §8.4.2.31 和 §9.19.2.3](https://mrncciew.com/wp-content/uploads/2014/10/ieee-802-11-2012.pdf)
 
-程序读取并校验这些参数。实际发送仍按固定优先级选队，AIFS 和 CW 不计入排队或无线服务时长。
+#### 独立 CW 与退避计数器
+
+每台 SFU 和 STA 都为 VO、VI、BE、BK 分别维护独立的 CW 和退避计数器。`wifi.mac.edca.seed` 取有符号 64 位整数，默认值为 `0`。每个随机序列由该种子、设备类型、设备 ID 和 AC 共同确定，与流量生成器的种子独立。相同配置与抽取顺序可以复现各 AC 的退避值。
+
+通过 `edcaState().forCategory(ac)` 获取某个 AC 的状态。CW 初始为 CWmin，计数器初始为空，调用 `drawBackoff()` 时从 `[0, CW]` 均匀抽取并保存整数。竞争失败时调用 `onContentionFailure()`，将 CW 更新为 `min(2 × CW + 1, CWmax)`。发送成功时调用 `onTransmissionSuccess()`，将 CW 恢复为 CWmin。两种更新均清空本次计数器，下一次抽取沿用该 AC 的随机序列。
+
+竞争状态供后续调度逻辑调用。当前发送仍按固定优先级选队，无线服务时长继续由现有 PHY 和帧交换模型决定。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。
 

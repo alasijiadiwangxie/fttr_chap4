@@ -34,9 +34,10 @@ public final class ConfigLoader {
     private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
     private static final String MAC_SLOT_US = "wifi.mac.slot.us";
     private static final String MAC_ACK_RATE_MBPS = "wifi.mac.ack.rate.mbps";
+    private static final String EDCA_SEED = "wifi.mac.edca.seed";
     private static final Set<String> KEYS = Set.of(
             "fiber.delay.us", "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
-            MAC_EXCHANGE, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS);
+            MAC_EXCHANGE, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, EDCA_SEED);
     private static final Set<String> PHY_KEYS = Set.of(
             "wifi.phy.bandwidth.mhz", "wifi.phy.mcs", "wifi.phy.nss", "wifi.phy.gi.us",
             "wifi.phy.mac.overhead.bytes", "wifi.phy.he-ltf.type", "wifi.phy.nominal.packet.padding.us");
@@ -48,12 +49,6 @@ public final class ConfigLoader {
             "traffic\\.(sfu|sta)\\.([1-9][0-9]*)\\.(rate\\.pps|packet\\.bytes|seed|class\\.weights|duration\\.us|"
                     + "class\\.(VO|VI|BE|BK)\\.(rate\\.pps|rate\\.mbps|packet\\.bytes))");
     private static final AccessCategory[] CATEGORIES = AccessCategory.values();
-    // 本仿真实验的默认值，可逐字段覆盖。
-    private static final Map<AccessCategory, AcParameters> DEFAULT_EDCA = Map.of(
-            AccessCategory.VO, new AcParameters(2, 3, 7),
-            AccessCategory.VI, new AcParameters(3, 7, 15),
-            AccessCategory.BE, new AcParameters(6, 15, 1023),
-            AccessCategory.BK, new AcParameters(9, 15, 1023));
 
     private static final class PoissonTraffic {
         private final List<TrafficGenerator.Source> streams = new ArrayList<>();
@@ -125,22 +120,25 @@ public final class ConfigLoader {
     }
 
     private static EdcaParameters readEdcaParameters(Properties properties) {
-        long sifsUs = properties.containsKey(MAC_SIFS_US) ? readNonNegativeLong(properties, MAC_SIFS_US) : 16;
-        long slotTimeUs = properties.containsKey(MAC_SLOT_US) ? readNonNegativeLong(properties, MAC_SLOT_US) : 9;
+        EdcaParameters defaults = EdcaParameters.defaults();
+        long sifsUs = properties.containsKey(MAC_SIFS_US) ? readNonNegativeLong(properties, MAC_SIFS_US) : defaults.sifsUs();
+        long slotTimeUs = properties.containsKey(MAC_SLOT_US) ? readNonNegativeLong(properties, MAC_SLOT_US)
+                : defaults.slotTimeUs();
+        long seed = properties.containsKey(EDCA_SEED) ? readSeed(properties, EDCA_SEED) : defaults.seed();
         Map<AccessCategory, AcParameters> byCategory = new EnumMap<>(AccessCategory.class);
         for (AccessCategory category : CATEGORIES) {
-            AcParameters defaults = DEFAULT_EDCA.get(category);
+            AcParameters acDefaults = defaults.forCategory(category);
             String prefix = "wifi.mac.edca." + category + ".";
-            int aifsn = readOptionalNonNegativeInt(properties, prefix + "aifsn", defaults.aifsn());
-            int cwMin = readOptionalNonNegativeInt(properties, prefix + "cwmin", defaults.cwMin());
-            int cwMax = readOptionalNonNegativeInt(properties, prefix + "cwmax", defaults.cwMax());
+            int aifsn = readOptionalNonNegativeInt(properties, prefix + "aifsn", acDefaults.aifsn());
+            int cwMin = readOptionalNonNegativeInt(properties, prefix + "cwmin", acDefaults.cwMin());
+            int cwMax = readOptionalNonNegativeInt(properties, prefix + "cwmax", acDefaults.cwMax());
             try {
                 byCategory.put(category, new AcParameters(aifsn, cwMin, cwMax));
             } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException("Invalid EDCA parameters for " + category + ": " + e.getMessage(), e);
             }
         }
-        return new EdcaParameters(sifsUs, slotTimeUs, byCategory);
+        return new EdcaParameters(sifsUs, slotTimeUs, byCategory, seed);
     }
 
     private static WifiFrameExchange readWifiFrameExchange(Properties properties, WirelessPhy wirelessPhy, long sifsUs) {
