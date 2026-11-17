@@ -9,9 +9,9 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 class EventQueueTest {
     @Test
     void pollsByTimeAndKeepsInsertionOrderForTies() {
-        Packet packet = new Packet(1, 1200, 0);
+        Packet packet = new Packet(1, 1200, 5);
         Event late = new Event(9, EventType.PACKET_ARRIVAL_AT_STA, packet);
-        Event first = new Event(5, EventType.PACKET_ARRIVAL_AT_MFU, packet);
+        Event first = Event.packetGenerated(packet);
         Event second = new Event(5, EventType.FIBER_TX_START, packet);
         Event sameTimeAddedDuringExecution = new Event(5, EventType.PACKET_ARRIVAL_AT_SFU, packet);
 

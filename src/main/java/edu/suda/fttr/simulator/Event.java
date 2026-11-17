@@ -2,7 +2,7 @@ package edu.suda.fttr.simulator;
 
 import edu.suda.fttr.entity.Packet;
 
-/** 事件不可变。报文进入 MFU 后，事件携带对应的 SFU ID，选队事件也据此定位。 */
+/** 事件不可变。生成事件标记报文的入口时刻，进入链路后的事件可携带 SFU ID。 */
 public final class Event {
     private final long timeUs;
     private final EventType type;
@@ -20,6 +20,11 @@ public final class Event {
         this.sfuId = sfuId;
     }
 
+    /** 统一的输入事件。执行时由仿真器根据报文方向和源节点选择入口。 */
+    public static Event packetGenerated(Packet packet) {
+        return new Event(packet.generationTimeUs(), EventType.PACKET_GENERATED, packet);
+    }
+
     public long timeUs() {
         return timeUs;
     }
@@ -32,7 +37,7 @@ public final class Event {
         return packet;
     }
 
-    /** 0 表示尚未由 MFU 转发。 */
+    /** 0 表示该事件尚未关联 SFU。 */
     public int sfuId() {
         return sfuId;
     }

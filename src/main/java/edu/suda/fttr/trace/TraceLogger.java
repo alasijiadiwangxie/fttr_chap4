@@ -19,7 +19,8 @@ public final class TraceLogger {
 
     public void recordEvent(Event event) {
         switch (event.type()) {
-            case PACKET_ARRIVAL_AT_MFU:
+            case PACKET_GENERATED:
+                // 当前仿真器只接收 MFU 生成的 DL 事件，沿用下行入口日志格式。
                 write(event, "MFU", "ARRIVAL");
                 break;
             case FIBER_TX_START:

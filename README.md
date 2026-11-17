@@ -106,6 +106,10 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/poisson-multi-sfu-downlin
 
 每台 SFU 在自己的 `[0, duration)` 窗口内生成报文。窗口结束后仿真继续完成已生成的报文，`simulation_end_us` 记录最后的仿真事件时刻。固定种子和相同配置可复现报文序列。
 
+流量生成与链路传输分开。配置层为每条流提供方向、源节点和候选目的节点，生成器输出携带报文的 `PACKET_GENERATED` 事件。`Packet` 记录生成时刻、业务类型及源和目的节点 ID。方向决定 ID 对应的节点类型，`DL` 表示 MFU → STA，`UL` 表示 STA → MFU。各 `traffic.sfu.N.*` 配置的是发往该 SFU 关联终端的下行流，报文源始终是 MFU 1。仿真器收到入口事件后，从 MFU 注入现有下行流程。
+
+`traffic.direction` 省略时默认为 `DL`。当前仿真只接受下行业务，`traffic.direction=UL` 或 `traffic.sta.N.*` 会在配置加载时明确报错。将来可按每台 STA 建立独立的 `TrafficGenerator.Source`，复用相同的指数间隔采样和入口事件，再接入 STA 的上行入口。
+
 `summary=TRAFFIC_SFU` 和 `summary=TRAFFIC_CLASS` 分别给出 SFU 总量及其各业务类别的生成包数、字节数、实际到达率和平均输入负载。`actual_rate_pps` 按生成包数除以该 SFU 的窗口秒数计算，`offered_load_mbps` 按生成比特数除以该 SFU 的窗口微秒数计算。交付吞吐量仍按原有仿真窗口统计。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。

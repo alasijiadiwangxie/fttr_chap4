@@ -36,8 +36,11 @@ public final class SimulationContext {
         return nowUs;
     }
 
-    public void scheduleAfter(long delayUs, EventType type, Packet packet) {
-        scheduleAfter(delayUs, type, packet, 0);
+    void scheduleInputEvent(Event event) {
+        if (event.timeUs() < nowUs) {
+            throw new IllegalArgumentException("Input event time must not precede the simulation clock");
+        }
+        events.add(event);
     }
 
     public void scheduleAfter(long delayUs, EventType type, Packet packet, int sfuId) {

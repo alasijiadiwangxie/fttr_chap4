@@ -23,7 +23,7 @@ public final class Simulator {
 
     public static void run(SimulationConfig config, TraceLogger trace) {
         boolean poisson = !config.poissonSources().isEmpty();
-        SimulationContext context = new SimulationContext(trace, poisson || config.packets().size() > 1);
+        SimulationContext context = new SimulationContext(trace, poisson || config.inputEvents().size() > 1);
         List<Map<Integer, Sta>> stationsBySfu = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             stationsBySfu.add(new HashMap<>());
@@ -46,15 +46,22 @@ public final class Simulator {
         }
         Mfu mfu = new Mfu(config.staSfuIds(), fibers);
 
-        // 外部业务只安排 MFU 到达。后续的事件由节点和链路逐跳生成。
-        for (Packet packet : config.packets()) {
-            context.scheduleAfter(packet.mfuArrivalUs(), EventType.PACKET_ARRIVAL_AT_MFU, packet);
+        // 生成器只给出入口事件。仿真器检查当前支持的方向和源节点，再按事件时刻注入。
+        for (Event input : config.inputEvents()) {
+            Packet packet = input.packet();
+            if (packet.direction() != Packet.Direction.DL) {
+                throw new IllegalArgumentException("Uplink traffic (UL) is not supported by the simulator");
+            }
+            if (packet.sourceNodeId() != Packet.DEFAULT_MFU_ID) {
+                throw new IllegalArgumentException("Unknown source MFU ID: " + packet.sourceNodeId());
+            }
+            context.scheduleInputEvent(input);
         }
 
         Event event;
         while ((event = context.nextEvent()) != null) {
             switch (event.type()) {
-                case PACKET_ARRIVAL_AT_MFU:
+                case PACKET_GENERATED:
                     mfu.receive(event.packet(), context);
                     break;
                 case FIBER_TX_START:
@@ -88,7 +95,8 @@ public final class Simulator {
         int[][] packetCounts = new int[config.sfuCount()][categories.length];
         long[][] byteCounts = new long[config.sfuCount()][categories.length];
         // 按实际进入 MFU 的报文统计供给负载。分母是生成窗口，与链路排队或清空时刻无关。
-        for (Packet packet : config.packets()) {
+        for (Event input : config.inputEvents()) {
+            Packet packet = input.packet();
             int sfu = config.staSfuIds().get(packet.destinationStaId() - 1) - 1;
             int type = packet.type().ordinal();
             packetCounts[sfu][type]++;

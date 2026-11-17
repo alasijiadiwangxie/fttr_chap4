@@ -2,6 +2,7 @@ package edu.suda.fttr.config;
 
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.simulator.Event;
 import edu.suda.fttr.traffic.TrafficGenerator;
 
 import java.io.IOException;
@@ -23,7 +24,7 @@ import java.util.regex.Pattern;
 public final class ConfigLoader {
     private static final String DEFAULT_SCENARIO = "/phase1-minimal-downlink.properties";
     private static final Set<String> KEYS = Set.of(
-            "fiber.delay.us", "wifi.delay.us", "sta.count", "sfu.count", "traffic.mode");
+            "fiber.delay.us", "wifi.delay.us", "sta.count", "sfu.count", "traffic.mode", "traffic.direction");
     private static final Set<String> MANUAL_KEYS = Set.of("packet.bytes", "packet.arrival.us");
     private static final Pattern PACKET_OVERRIDE = Pattern.compile("packet\\.([1-9][0-9]*)\\.(bytes|type|sta\\.id)");
     private static final Pattern STA_ASSOCIATION = Pattern.compile("sta\\.([1-9][0-9]*)\\.sfu\\.id");
@@ -52,6 +53,7 @@ public final class ConfigLoader {
     private static SimulationConfig read(Reader reader) throws IOException {
         Properties properties = new Properties();
         properties.load(reader);
+        validateTrafficDirection(properties);
 
         String mode = properties.getProperty("traffic.mode", "manual").strip();
         if (!mode.equals("manual") && !mode.equals("poisson")) {
@@ -65,23 +67,38 @@ public final class ConfigLoader {
         List<Integer> staSfuIds = readStaAssociations(properties, staCount, sfuCount);
         long fiberUs = readNonNegativeLong(properties, "fiber.delay.us");
         long wifiUs = readNonNegativeLong(properties, "wifi.delay.us");
-        List<TrafficGenerator.Source> sources = poisson ? readPoissonSources(properties, sfuCount) : List.of();
-        List<Packet> packets = poisson
-                ? TrafficGenerator.generate(sources, staSfuIds)
-                : readPackets(properties, arrivalsUs, staCount);
+        List<TrafficGenerator.Source> sources = poisson ? readDownlinkSources(properties, sfuCount, staSfuIds) : List.of();
+        List<Event> inputEvents = poisson
+                ? TrafficGenerator.generate(sources)
+                : readManualEvents(properties, arrivalsUs, staCount);
 
-        validateCompletionClock(packets, sfuCount, staSfuIds, fiberUs, wifiUs);
-        return new SimulationConfig(packets, sfuCount, staSfuIds, fiberUs, wifiUs, sources);
+        validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs);
+        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, sources);
     }
 
-    private static void validateCompletionClock(List<Packet> packets, int sfuCount, List<Integer> staSfuIds,
+    private static void validateTrafficDirection(Properties properties) {
+        String direction = properties.getProperty("traffic.direction", "DL").strip();
+        if (direction.equals("UL")) {
+            throw new IllegalArgumentException("Uplink traffic (UL) is not supported: traffic.direction");
+        }
+        if (!direction.equals("DL")) {
+            throw new IllegalArgumentException("traffic.direction must be DL or UL");
+        }
+        for (String key : properties.stringPropertyNames()) {
+            if (key.startsWith("traffic.sta.")) {
+                throw new IllegalArgumentException("Uplink traffic (UL) is not supported: " + key);
+            }
+        }
+    }
+
+    private static void validateCompletionClock(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds,
                                                 long fiberUs, long wifiUs) {
         // 每台 SFU 独立预检最后完成时刻。固定服务时长下，优先级不改变同一台 SFU 的忙闲边界。
         long[] completionUs = new long[sfuCount];
         try {
-            for (Packet packet : packets) {
-                long sfuArrivalUs = Math.addExact(packet.mfuArrivalUs(), fiberUs);
-                int sfuIndex = staSfuIds.get(packet.destinationStaId() - 1) - 1;
+            for (Event event : inputEvents) {
+                long sfuArrivalUs = Math.addExact(event.timeUs(), fiberUs);
+                int sfuIndex = staSfuIds.get(event.packet().destinationStaId() - 1) - 1;
                 completionUs[sfuIndex] = Math.addExact(Math.max(sfuArrivalUs, completionUs[sfuIndex]), wifiUs);
             }
         } catch (ArithmeticException e) {
@@ -130,11 +147,21 @@ public final class ConfigLoader {
         }
     }
 
-    private static List<TrafficGenerator.Source> readPoissonSources(Properties properties, int sfuCount) {
+    private static List<TrafficGenerator.Source> readDownlinkSources(Properties properties, int sfuCount,
+                                                                    List<Integer> staSfuIds) {
         long durationUs = readPositiveDuration(properties, "traffic.duration.us");
+        // 配置层把 STA–SFU 关联转换为每条下行流的候选终端，生成器只接收端点列表。
+        List<List<Integer>> stationsBySfu = new ArrayList<>(sfuCount);
+        for (int i = 0; i < sfuCount; i++) {
+            stationsBySfu.add(new ArrayList<>());
+        }
+        for (int i = 0; i < staSfuIds.size(); i++) {
+            stationsBySfu.get(staSfuIds.get(i) - 1).add(i + 1);
+        }
         List<TrafficGenerator.Source> sources = new ArrayList<>(sfuCount);
         for (int i = 0; i < sfuCount; i++) {
-            String prefix = "traffic.sfu." + (i + 1);
+            int sfuId = i + 1;
+            String prefix = "traffic.sfu." + sfuId;
             String rateKey = prefix + ".rate.pps";
             double ratePps = parseNonNegativeDouble(properties.getProperty(rateKey, "0"), rateKey);
             String bytesKey = prefix + ".packet.bytes";
@@ -148,7 +175,12 @@ public final class ConfigLoader {
                 throw new IllegalArgumentException(durationKey + " must not exceed traffic.duration.us");
             }
             double[] weights = readClassWeights(properties, prefix + ".class.weights");
-            sources.add(new TrafficGenerator.Source(ratePps, bytes, seed, sourceDurationUs, weights));
+            List<Integer> destinations = stationsBySfu.get(i);
+            if (ratePps > 0.0 && destinations.isEmpty()) {
+                throw new IllegalArgumentException("SFU " + sfuId + " has positive traffic rate but no associated STA");
+            }
+            sources.add(new TrafficGenerator.Source(Packet.Direction.DL, Packet.DEFAULT_MFU_ID, destinations,
+                    ratePps, bytes, seed, sourceDurationUs, weights));
         }
         return sources;
     }
@@ -212,7 +244,7 @@ public final class ConfigLoader {
         return staSfuIds;
     }
 
-    private static List<Packet> readPackets(Properties properties, List<Long> arrivalsUs, int staCount) {
+    private static List<Event> readManualEvents(Properties properties, List<Long> arrivalsUs, int staCount) {
         // 覆盖项对应原始列表位置。报文 ID 仍按时刻编号，稳定排序保留同刻配置顺序。
         List<Integer> positions = new ArrayList<>(arrivalsUs.size());
         for (int i = 0; i < arrivalsUs.size(); i++) {
@@ -221,7 +253,7 @@ public final class ConfigLoader {
         positions.sort(Comparator.comparingLong(arrivalsUs::get));
 
         int defaultBytes = properties.containsKey("packet.bytes") ? readPositiveInt(properties, "packet.bytes") : 0;
-        List<Packet> packets = new ArrayList<>(arrivalsUs.size());
+        List<Event> events = new ArrayList<>(arrivalsUs.size());
         for (int position : positions) {
             String prefix = "packet." + (position + 1);
             String bytesKey = prefix + ".bytes";
@@ -241,9 +273,10 @@ public final class ConfigLoader {
             if (staId > staCount) {
                 throw new IllegalArgumentException(staKey + " must refer to a configured STA (1 to " + staCount + ")");
             }
-            packets.add(new Packet(packets.size() + 1, bytes, arrivalsUs.get(position), type, staId));
+            Packet packet = new Packet(events.size() + 1, bytes, arrivalsUs.get(position), type, staId);
+            events.add(Event.packetGenerated(packet));
         }
-        return packets;
+        return events;
     }
 
     private static int readPositiveInt(Properties properties, String key) {

@@ -2,13 +2,23 @@ package edu.suda.fttr.entity;
 
 import java.util.Objects;
 
-/** 报文在两段链路间保持同一身份，并携带原始 MFU 到达时刻。 */
+/** 报文在传输过程中保持同一身份，端点是最初发送节点和最终接收节点。 */
 public final class Packet {
+    public static final int DEFAULT_MFU_ID = 1;
+
+    /** DL 从 MFU 发往 STA，UL 从 STA 发往 MFU。节点 ID 在各自类型内编号。 */
+    public enum Direction {
+        DL,
+        UL
+    }
+
     private final int id;
     private final int bytes;
-    private final long mfuArrivalUs;
+    private final long generationTimeUs;
     private final AccessCategory type;
-    private final int destinationStaId;
+    private final Direction direction;
+    private final int sourceNodeId;
+    private final int destinationNodeId;
 
     public Packet(int id, int bytes, long mfuArrivalUs) {
         this(id, bytes, mfuArrivalUs, AccessCategory.BE);
@@ -19,14 +29,21 @@ public final class Packet {
     }
 
     public Packet(int id, int bytes, long mfuArrivalUs, AccessCategory type, int destinationStaId) {
-        if (destinationStaId < 1) {
-            throw new IllegalArgumentException("Destination STA ID must be positive");
+        this(id, bytes, mfuArrivalUs, type, Direction.DL, DEFAULT_MFU_ID, destinationStaId);
+    }
+
+    public Packet(int id, int bytes, long generationTimeUs, AccessCategory type, Direction direction,
+                  int sourceNodeId, int destinationNodeId) {
+        if (sourceNodeId < 1 || destinationNodeId < 1) {
+            throw new IllegalArgumentException("Source and destination node IDs must be positive");
         }
         this.id = id;
         this.bytes = bytes;
-        this.mfuArrivalUs = mfuArrivalUs;
+        this.generationTimeUs = generationTimeUs;
         this.type = Objects.requireNonNull(type);
-        this.destinationStaId = destinationStaId;
+        this.direction = Objects.requireNonNull(direction);
+        this.sourceNodeId = sourceNodeId;
+        this.destinationNodeId = destinationNodeId;
     }
 
     public int id() {
@@ -37,15 +54,40 @@ public final class Packet {
         return bytes;
     }
 
-    public long mfuArrivalUs() {
-        return mfuArrivalUs;
+    public long generationTimeUs() {
+        return generationTimeUs;
     }
 
     public AccessCategory type() {
         return type;
     }
 
+    public Direction direction() {
+        return direction;
+    }
+
+    public int sourceNodeId() {
+        return sourceNodeId;
+    }
+
+    public int destinationNodeId() {
+        return destinationNodeId;
+    }
+
+    /** 现有下行链路的入口时刻就是 MFU 生成或注入报文的时刻。 */
+    public long mfuArrivalUs() {
+        requireDownlink();
+        return generationTimeUs;
+    }
+
     public int destinationStaId() {
-        return destinationStaId;
+        requireDownlink();
+        return destinationNodeId;
+    }
+
+    private void requireDownlink() {
+        if (direction != Direction.DL) {
+            throw new IllegalStateException("This packet accessor requires downlink traffic");
+        }
     }
 }
