@@ -7,7 +7,7 @@
 - 配置与日志以微秒为单位。HE SU 场景内部使用整数纳秒，保留 PPDU 的小数微秒；固定时延场景仍使用整数微秒。报文按手动配置或泊松生成的时刻注入源节点，事件处理完毕后结束。
 - 每台 STA 在一次仿真中固定关联一台 SFU。上下行光侧均使用固定时延，收齐报文后可立即转发。光路之间没有共享资源竞争或额外排队。
 - 每台 SFU 独立维护 VO、VI、BE、BK 四类 FIFO 等待队列和一份无线资源。该 SFU 的上下行统一按固定优先级选队，已经开始的传输会发完。不同 SFU 可以并行收发。
-- 等待队列不设容量上限，无线传输按成功交付处理。HE SU 模式根据包长、开销和 PHY 参数计算每包的发送时间，固定时延模式可用于回归对照。
+- 等待队列不设容量上限，无线传输按成功交付处理。HE SU 模式根据包长、开销和 PHY 参数计算数据 PPDU 时长，可启用 DATA–SIFS–ACK 交换。固定时延模式可用于回归对照。
 - SFU 和 STA 的吞吐量统一按从 0 到最后事件的时间窗口计算。日志同时记录逐包时序，以及按业务类别、设备和全局汇总的统计。
 
 信道干扰、EDCA、OFDMA、DBA 和 AP 节能机制可作为后续独立扩展。
@@ -51,7 +51,7 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/phase1-serial-downlink.pr
 
 `packet.arrival.us` 也接受逗号分隔的 MFU 到达时刻，如 `0,0,250,1000`。程序按时间排序，同刻报文按配置顺序编号。报文共用两段固定链路时延，光链路仅对每条报文引入固定到达时差。
 
-同一 SFU 按业务类型分别排队，类型内按到达顺序发送。无线资源从 `WIFI_TX_START` 占用到 `WIFI_TX_END`，以 STA 完整接收为结束边界。前一包完成的同一微秒可以启动下一包。逐包轨迹列出排队时延、占用时长和端到端时延，多包汇总记录无线忙时与空闲时间。空闲时间以仿真时间 0 至最后交付为窗口，包括首次无线发送前的时间。
+同一 SFU 按业务类型分别排队，类型内按到达顺序发送。固定时延场景的无线资源从 `WIFI_TX_START` 占用到 `WIFI_TX_END`，以 STA 完整接收为结束边界。前一包完成的同一微秒可以启动下一包。逐包轨迹列出排队时延、占用时长和端到端时延，多包汇总记录无线忙时与空闲时间。空闲时间以仿真时间 0 至最后事件为窗口，包括首次无线发送前的时间。
 
 ### 四类业务固定优先级
 
@@ -83,7 +83,7 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/phase1-multi-sfu-downlink
 
 每台 SFU 各自维护四类 FIFO 和无线发送状态。单台 SFU 串行、非抢占发送，不同 SFU 可以并行。各条逻辑光链路和无线链路使用同一组固定时延参数。轨迹从 `FIBER_TX_START` 起附带 `sfu_id`，可用 `packet_id` 串起 MFU、SFU 和实际收包的 STA。
 
-`summary=SFU` 给出逐 SFU 的发送量、吞吐量和平均排队时延。与 STA 一样，吞吐量以公共仿真窗口计算。全局 `wifi_busy_us` 是**至少一台 SFU 正在发送**的时长，重叠区间只计一次。`wifi_idle_us` 是所有 SFU 均未发送的时长。
+`summary=SFU` 给出逐 SFU 的发送量、吞吐量和平均排队时延。与 STA 一样，吞吐量以公共仿真窗口计算。全局 `wifi_busy_us` 是至少一台 SFU 的无线资源处于占用状态的时长，重叠区间只计一次。`wifi_idle_us` 是所有 SFU 的无线资源均空闲的时长。
 
 ### 泊松下行的总速率和权重配置
 
@@ -120,7 +120,7 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/poisson-multi-sta-uplink.
 
 上行报文在源 STA 等待关联 SFU 的无线资源，SFU 收齐报文后立即走固定时延光链路，抵达 MFU 时计为交付。四类等待队列是集中式调度抽象。上下行共用同一台 SFU 的无线资源，其他 SFU 独立运行。
 
-`TRAFFIC_UL_STA` 与 `TRAFFIC_UL_CLASS` 按源 STA 输出总量及各业务的生成包数、实际到达率和输入负载。`UL_STA` 与 `UL_GLOBAL` 统计 MFU 收到的上行报文，时延从 STA 生成算到 MFU 收齐。`CLASS`、`GLOBAL`、`SFU` 和 `STA` 汇总仍对应下行。最后一行的 `delivered_packets` 为两个方向的交付总数，`wifi_busy_us` 为至少一台 SFU 正在无线发送或接收的时长。
+`TRAFFIC_UL_STA` 与 `TRAFFIC_UL_CLASS` 按源 STA 输出总量及各业务的生成包数、实际到达率和输入负载。`UL_STA` 与 `UL_GLOBAL` 统计 MFU 收到的上行报文，时延从 STA 生成算到 MFU 收齐。`CLASS`、`GLOBAL`、`SFU` 和 `STA` 汇总仍对应下行。最后一行的 `delivered_packets` 为两个方向的交付总数。
 
 ### 为每类业务设置独立的泊松流
 
@@ -175,7 +175,22 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/he-su-phy-downlink.proper
 
 总时长为 `T_preamble + N_DATA × T_SYM + T_PE`，并包含 PE 一起校验 5484 μs 的上限。模型只计算单 MPDU 的 airtime，无多报文聚合、实际 LDPC 编解码、波形、PPE 阈值协商、midamble 或 2.4 GHz 信号延长。默认的 HE-LTF 选择和 0 μs PE 保留了旧场景的时长。
 
-HE SU 模式用 `summary=WIFI_PHY` 输出 PHY 速率，`wifi_service_us` 表示该数据 PPDU 占用无线资源的时长。`wifi_queue_wait_us` 仍是原有队列等待。MAC 竞争、无线传播、SIFS 与 ACK 未计入。光纤固定时延按原路径单独计算。
+HE SU 模式用 `summary=WIFI_PHY` 输出 DATA 的 PHY 速率。`wifi_queue_wait_us` 从报文进入 SFU 队列算到 DATA 开始。`wifi_service_us` 的范围由下节的交换模式决定。光纤固定时延按原路径单独计算。
+
+### DATA–SIFS–ACK 单播交换
+
+在 HE SU 场景中设置 `wifi.mac.exchange=data-sifs-ack`，启用理想信道下的双向单播交换。省略该项或设为 `data-only` 时，`wifi_service_us` 只包含 DATA。固定时延场景沿用固定无线服务时长。
+
+| 配置项 | 含义 | 默认值 |
+| --- | --- | --- |
+| `wifi.mac.sifs.us` | SIFS 时长，取正整数微秒 | 16 |
+| `wifi.mac.ack.rate.mbps` | ACK 的固定基础速率，可取 6、9、12、18、24、36、48、54 Mb/s | 24 |
+
+这两个参数仅用于 `data-sifs-ack`。DATA 继续使用 HE SU PHY。ACK 按 5 GHz 场景的 20 MHz non-HT OFDM 计算，14 B 包含 FCS。ACK PPDU 时长为 `20 + 4 × ceil((16 + 8 × 14 + 6) / (4 × rate))` μs，其中 20 μs 包含前导码和 L-SIG，分子中的 16 位和 6 位分别对应 SERVICE 和 BCC 尾位。24 Mb/s 对应 28 μs。模型假定所配置的速率已可用，省略 BSS 控制响应速率选择。参见 [non-HT PPDU 结构](https://www.mathworks.com/help/wlan/gs/non-ht-ppdu-structure.html)和 [mac80211 的 OFDM 时长计算](https://cos.googlesource.com/third_party/kernel/+/5e7779f0395833d80d8fa15933737c8dc48759ec/net/mac80211/util.c#137)。
+
+日志依次记录 `WIFI_TX_START`、`WIFI_DATA_END`、`WIFI_SIFS_START`、`WIFI_ACK_START`、`WIFI_ACK_END` 和 `WIFI_TX_END`。DATA 由原发送端发出，ACK 由 DATA 接收端反向发出，日志中的报文字段均指原 DATA。DATA 收齐时，下行交付到 STA，上行由 SFU 发往光链路。SIFS 和 ACK 计入无线资源占用，端到端时延仍按 DATA 到达最终目的节点计算。
+
+`WIFI_TX_END` 记录 ACK 完成时的资源释放，`wifi_service_us` 包含 DATA、SIFS 和 ACK。此后同一 SFU 才能启动下一次上下行交换。示例中，首个 1500 B 报文在 100 μs 开始无线发送，在 164 μs 交付 DATA，在 180 μs 开始 ACK，并在 208 μs 释放资源。该次交换占用 108 μs，下一包可在 208 μs 启动。模型采用理想信道和零无线传播时延，省略 EDCA、CCA、退避、碰撞、丢包和重传。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。
 

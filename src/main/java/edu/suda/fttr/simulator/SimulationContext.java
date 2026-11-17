@@ -130,18 +130,23 @@ public final class SimulationContext {
         }
     }
 
-    public void recordWifiService(Packet packet, int sfuId, long queueEntryTicks, long startTicks) {
-        // 至少一台 SFU 正在无线发送或接收时计为忙。不同 SFU 的并行区间只计一次。
+    public void recordWifiDataEnd(Packet packet, int sfuId) {
+        trace.recordWifiDataEnd(packet, sfuId, nowTicks);
+    }
+
+    public void recordWifiService(Packet packet, int sfuId, long queueEntryTicks, long startTicks, long dataEndTicks) {
+        // 无线资源被预留时计为忙，包括 SIFS。不同 SFU 的并行区间只计一次。
         if (--activeRadios == 0) {
             wifiBusyTicks += nowTicks - wifiBusySinceTicks;
         }
         double queueWaitUs = ticksToMicroseconds(startTicks - queueEntryTicks);
         long endToEndTicks = 0;
         if (packet.isUplink()) {
-            // 上行此时只完成无线一跳，端到端时延等 MFU 接收后再统计。
+            // 上行端到端时延由 MFU 的收包时刻统计，无线一跳只记录排队时延。
             uplinkByStation.computeIfAbsent(packet.staId(), id -> new UplinkStats()).waitSumUs += queueWaitUs;
         } else {
-            endToEndTicks = elapsedSinceGenerationTicks(packet);
+            // 下行端到端时延止于 STA 收齐 DATA，服务时长止于无线资源释放。
+            endToEndTicks = dataEndTicks - microsecondsToTicks(packet.generationTimeUs());
             double delayUs = ticksToMicroseconds(endToEndTicks);
             byClass.get(packet.type()).add(queueWaitUs, delayUs);
             overallDelay.add(queueWaitUs, delayUs);

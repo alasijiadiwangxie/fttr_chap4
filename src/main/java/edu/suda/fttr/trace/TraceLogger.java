@@ -53,12 +53,18 @@ public final class TraceLogger {
             case WIFI_TX_START:
                 write(event, packet.isUplink() ? "STA" : "SFU", "WIFI_TX_START");
                 break;
+            case WIFI_ACK_START:
+                write(event, packet.isUplink() ? "SFU" : "STA", "WIFI_ACK_START");
+                break;
+            case WIFI_ACK_END:
+                write(event, packet.isUplink() ? "STA" : "SFU", "WIFI_ACK_END");
+                break;
             case PACKET_ARRIVAL_AT_STA:
             case PACKET_ARRIVAL_AT_MFU:
                 // 接收端确认目的 ID 后，通过 recordDelivery 记录实际接收者。
                 break;
             case WIFI_ARRIVAL_AT_SFU:
-                // 此时无线发送结束，SFU 会通过 WIFI_TX_END 记录该边界。
+                // SFU 收齐上行 DATA。链路随后单独记录 DATA 到达和无线资源释放。
                 break;
             case WIFI_SELECT_NEXT:
                 // SFU 实际选队时另记队列快照，此处的调度事件没有报文。
@@ -69,15 +75,24 @@ public final class TraceLogger {
     }
 
     private void write(Event event, String node, String action) {
-        Packet packet = event.packet();
+        write(event.packet(), event.timeTicks(), node, action, event.sfuId());
+    }
+
+    private void write(Packet packet, long timeTicks, String node, String action, int sfuId) {
         if (packet.isUplink()) {
-            writeUplink(packet, event.timeTicks(), node, action, event.sfuId(), "");
+            writeUplink(packet, timeTicks, node, action, sfuId, "");
             return;
         }
-        String route = event.sfuId() == 0 ? "" : " sfu_id=" + event.sfuId();
+        String route = sfuId == 0 ? "" : " sfu_id=" + sfuId;
         output.printf(Locale.ROOT, "t_us=%s node=%s event=%s packet_id=%d bytes=%d type=%s destination_sta_id=%d%s%n",
-                formatMicroseconds(event.timeTicks()), node, action, packet.id(), packet.bytes(), packet.type(),
+                formatMicroseconds(timeTicks), node, action, packet.id(), packet.bytes(), packet.type(),
                 packet.destinationStaId(), route);
+    }
+
+    public void recordWifiDataEnd(Packet packet, int sfuId, long timeTicks) {
+        String receiver = packet.isUplink() ? "SFU" : "STA";
+        write(packet, timeTicks, receiver, "WIFI_DATA_END", sfuId);
+        write(packet, timeTicks, receiver, "WIFI_SIFS_START", sfuId);
     }
 
     private void writeUplink(Packet packet, long timeTicks, String node, String action, int sfuId, String details) {

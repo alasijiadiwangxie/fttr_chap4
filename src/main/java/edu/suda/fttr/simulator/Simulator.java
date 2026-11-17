@@ -43,7 +43,7 @@ public final class Simulator {
         FixedDelayModel fiberDelay = new FixedDelayModel(config.fiberDelayUs());
         // 静态 PHY 没有共享发送状态。实际的收发互斥仍由各个 SFU 的队列控制。
         WifiLink wifi = wirelessPhy == null ? new WifiLink(new FixedDelayModel(config.wifiDelayUs()))
-                : new WifiLink(wirelessPhy);
+                : new WifiLink(wirelessPhy, config.wifiFrameExchange());
         List<FiberLink> fibers = new ArrayList<>(config.sfuCount());
         List<Sfu> sfus = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
@@ -80,7 +80,12 @@ public final class Simulator {
                     break;
                 case PACKET_ARRIVAL_AT_STA:
                 case WIFI_ARRIVAL_AT_SFU:
-                    // 上下行完成事件都释放该 SFU 的无线资源。上行还需要转发光侧一跳。
+                    sfus.get(event.sfuId() - 1).receiveData(event.packet(), context);
+                    break;
+                case WIFI_ACK_START:
+                    sfus.get(event.sfuId() - 1).transmitAck(event.packet(), context);
+                    break;
+                case WIFI_ACK_END:
                     sfus.get(event.sfuId() - 1).completeTransmission(event.packet(), context);
                     break;
                 case PACKET_ARRIVAL_AT_MFU:

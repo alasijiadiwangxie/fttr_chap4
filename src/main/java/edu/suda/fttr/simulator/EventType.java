@@ -1,6 +1,6 @@
 package edu.suda.fttr.simulator;
 
-/** 到达事件同时标记上一跳服务结束，发送开始保留为单独事件。 */
+/** 到达事件标记数据接收。启用立即 ACK 时，无线服务在 ACK 完成后结束。 */
 public enum EventType {
     PACKET_GENERATED,
     FIBER_TX_START,
@@ -8,6 +8,8 @@ public enum EventType {
     WIFI_ARRIVAL_AT_SFU,
     WIFI_TX_START,
     PACKET_ARRIVAL_AT_STA,
+    WIFI_ACK_START,
+    WIFI_ACK_END,
     PACKET_ARRIVAL_AT_MFU,
     WIFI_SELECT_NEXT
 }

@@ -1,6 +1,7 @@
 package edu.suda.fttr.config;
 
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.link.WifiFrameExchange;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 
@@ -15,12 +16,13 @@ public final class SimulationConfig {
     private final long fiberDelayUs;
     private final long wifiDelayUs;
     private final WirelessPhy wirelessPhy;
+    private final WifiFrameExchange wifiFrameExchange;
     private final List<Long> downlinkTrafficWindowsUs;
     private final List<Long> uplinkTrafficWindowsUs;
     private final boolean uplinkEnabled;
 
     SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs, long wifiDelayUs,
-                     WirelessPhy wirelessPhy,
+                     WirelessPhy wirelessPhy, WifiFrameExchange wifiFrameExchange,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled) {
         this.inputEvents = List.copyOf(inputEvents);
         this.sfuCount = sfuCount;
@@ -28,6 +30,7 @@ public final class SimulationConfig {
         this.fiberDelayUs = fiberDelayUs;
         this.wifiDelayUs = wifiDelayUs;
         this.wirelessPhy = wirelessPhy;
+        this.wifiFrameExchange = wifiFrameExchange;
         this.downlinkTrafficWindowsUs = List.copyOf(downlinkTrafficWindowsUs);
         this.uplinkTrafficWindowsUs = List.copyOf(uplinkTrafficWindowsUs);
         this.uplinkEnabled = uplinkEnabled;
@@ -83,6 +86,11 @@ public final class SimulationConfig {
     /** HE SU 模式的静态速率模型。固定时延模式返回 null。 */
     public WirelessPhy wirelessPhy() {
         return wirelessPhy;
+    }
+
+    /** 启用立即 ACK 时的响应时序。旧场景只计算 DATA，返回 null。 */
+    public WifiFrameExchange wifiFrameExchange() {
+        return wifiFrameExchange;
     }
 
     /** 各 SFU 的下行泊松生成窗口，按 ID 排列。手动模式或未开启下行时为空。 */

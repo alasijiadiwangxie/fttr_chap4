@@ -20,6 +20,7 @@ public final class Sfu {
     private QueuedPacket active;
     private boolean selectionPending;
     private long txStartTicks;
+    private long dataEndTicks;
     private int sentPackets;
     private long sentBytes;
     private double queueWaitSumUs;
@@ -64,10 +65,12 @@ public final class Sfu {
         wifi.transmit(packet, id, context);
     }
 
-    public void completeTransmission(Packet packet, SimulationContext context) {
+    public void receiveData(Packet packet, SimulationContext context) {
         checkActive(packet);
+        dataEndTicks = context.nowTicks();
+        boolean ackPending = wifi.scheduleAck(packet, id, context);
         if (packet.isUplink()) {
-            // SFU 此时才收齐上行报文。光侧作为独立的一跳开始转发，无线资源可以立即接力。
+            // SFU 已收齐上行 DATA，独立的光纤链路可立即转发。无线资源继续留给本次 ACK。
             context.scheduleAfter(0, EventType.FIBER_TX_START, packet, id);
         } else {
             stations.get(packet.destinationStaId()).receive(packet, context);
@@ -75,8 +78,20 @@ public final class Sfu {
             sentBytes += packet.bytes();
             queueWaitSumUs += context.ticksToMicroseconds(txStartTicks - active.arrivalTicks);
         }
+        if (!ackPending) {
+            completeTransmission(packet, context);
+        }
+    }
+
+    public void transmitAck(Packet packet, SimulationContext context) {
+        checkActive(packet);
+        wifi.transmitAck(packet, id, context);
+    }
+
+    public void completeTransmission(Packet packet, SimulationContext context) {
+        checkActive(packet);
         // 记录半开区间 [开始, 完成)。同刻启动的下一条报文不会与这一条重叠。
-        context.recordWifiService(packet, id, active.arrivalTicks, txStartTicks);
+        context.recordWifiService(packet, id, active.arrivalTicks, txStartTicks, dataEndTicks);
         active = null;
         requestSelection(context);
     }
@@ -96,7 +111,7 @@ public final class Sfu {
         Deque<QueuedPacket> queue = highestPriorityQueue();
         context.recordQueueSelection(queue.getFirst().packet, id,
                 voQueue.size(), viQueue.size(), beQueue.size(), bkQueue.size());
-        // 先出队并预留资源，再安排发送。预留持续到无线接收端完整收到该报文。
+        // 先出队并预留资源，再安排发送。启用立即 ACK 时，预留包括 DATA、SIFS、ACK。
         active = queue.removeFirst();
         context.scheduleAfter(0, EventType.WIFI_TX_START, active.packet, id);
     }

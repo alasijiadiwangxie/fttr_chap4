@@ -2,6 +2,7 @@ package edu.suda.fttr.config;
 
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.link.WifiFrameExchange;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 import edu.suda.fttr.traffic.TrafficGenerator;
@@ -25,8 +26,12 @@ import java.util.regex.Pattern;
 /** 读取并校验完整的场景配置，再开始处理仿真事件。 */
 public final class ConfigLoader {
     private static final String DEFAULT_SCENARIO = "/phase1-minimal-downlink.properties";
+    private static final String MAC_EXCHANGE = "wifi.mac.exchange";
+    private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
+    private static final String MAC_ACK_RATE_MBPS = "wifi.mac.ack.rate.mbps";
     private static final Set<String> KEYS = Set.of(
-            "fiber.delay.us", "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction");
+            "fiber.delay.us", "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
+            MAC_EXCHANGE, MAC_SIFS_US, MAC_ACK_RATE_MBPS);
     private static final Set<String> PHY_KEYS = Set.of(
             "wifi.phy.bandwidth.mhz", "wifi.phy.mcs", "wifi.phy.nss", "wifi.phy.gi.us",
             "wifi.phy.mac.overhead.bytes", "wifi.phy.he-ltf.type", "wifi.phy.nominal.packet.padding.us");
@@ -88,6 +93,7 @@ public final class ConfigLoader {
         List<Integer> staSfuIds = readStaAssociations(properties, staCount, sfuCount);
         long fiberUs = readNonNegativeLong(properties, "fiber.delay.us");
         WirelessPhy wirelessPhy = readWirelessPhy(properties);
+        WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy);
         long wifiUs = wirelessPhy == null ? readNonNegativeLong(properties, "wifi.delay.us") : 0;
         long durationUs = poisson ? readPositiveDuration(properties, "traffic.duration.us") : 0;
         PoissonTraffic downlink = poisson && directionMode.allows(Packet.Direction.DL)
@@ -100,9 +106,28 @@ public final class ConfigLoader {
                 ? TrafficGenerator.generate(sources)
                 : readManualEvents(properties, arrivalsUs, staCount, directionMode);
 
-        validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy);
-        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy,
+        validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange);
+        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange,
                 downlink.windowsUs, uplink.windowsUs, directionMode.allows(Packet.Direction.UL));
+    }
+
+    private static WifiFrameExchange readWifiFrameExchange(Properties properties, WirelessPhy wirelessPhy) {
+        String mode = properties.getProperty(MAC_EXCHANGE, "data-only").strip();
+        if (mode.equals("data-only")) {
+            if (properties.containsKey(MAC_SIFS_US) || properties.containsKey(MAC_ACK_RATE_MBPS)) {
+                throw new IllegalArgumentException("SIFS and ACK rate require wifi.mac.exchange=data-sifs-ack");
+            }
+            return null;
+        }
+        if (!mode.equals("data-sifs-ack")) {
+            throw new IllegalArgumentException("wifi.mac.exchange must be data-only or data-sifs-ack");
+        }
+        if (wirelessPhy == null) {
+            throw new IllegalArgumentException("wifi.mac.exchange=data-sifs-ack requires wifi.model=he-su");
+        }
+        long sifsUs = properties.containsKey(MAC_SIFS_US) ? readNonNegativeLong(properties, MAC_SIFS_US) : 16;
+        int ackRateMbps = properties.containsKey(MAC_ACK_RATE_MBPS) ? readPositiveInt(properties, MAC_ACK_RATE_MBPS) : 24;
+        return new WifiFrameExchange(sifsUs, ackRateMbps);
     }
 
     private static WirelessPhy readWirelessPhy(Properties properties) {
@@ -156,12 +181,14 @@ public final class ConfigLoader {
     }
 
     private static void validateCompletionClock(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds,
-                                                long fiberUs, long wifiUs, WirelessPhy wirelessPhy) {
+                                                long fiberUs, long wifiUs, WirelessPhy wirelessPhy,
+                                                WifiFrameExchange frameExchange) {
         // 同一 SFU 按到达时刻累计无线工作量即可计算忙闲边界，优先级只改变其中的发送顺序。
         boolean mixed = inputEvents.stream().anyMatch(event -> event.packet().direction() == Packet.Direction.UL)
                 && inputEvents.stream().anyMatch(event -> event.packet().direction() == Packet.Direction.DL);
         long[] completion = new long[sfuCount];
         long ticksPerUs = wirelessPhy == null ? 1 : 1000;
+        long responseTicks = frameExchange == null ? 0 : frameExchange.responseDurationNs();
         try {
             long fiberTicks = Math.multiplyExact(fiberUs, ticksPerUs);
             List<Event> wifiArrivals = inputEvents;
@@ -174,13 +201,14 @@ public final class ConfigLoader {
                 Packet packet = event.packet();
                 long arrival = wifiArrivalTicks(event, ticksPerUs, fiberTicks);
                 int sfuIndex = staSfuIds.get(packet.staId() - 1) - 1;
-                long wifiTicks = wirelessPhy == null ? wifiUs : wirelessPhy.ppduDurationNs(packet.bytes());
-                completion[sfuIndex] = Math.addExact(Math.max(arrival, completion[sfuIndex]), wifiTicks);
+                long dataTicks = wirelessPhy == null ? wifiUs : wirelessPhy.ppduDurationNs(packet.bytes());
+                long exchangeTicks = Math.addExact(dataTicks, responseTicks);
+                completion[sfuIndex] = Math.addExact(Math.max(arrival, completion[sfuIndex]), exchangeTicks);
                 if (packet.isUplink()) {
-                    // 纯上行的最后一条无线完成记录可给出精确上界。双向时谁最后上行由实际选队决定，
-                    // 这里只检查最早可完成的时刻，剩余的上行光路加法在执行实际事件时校验。
-                    long uplinkEnd = mixed ? Math.addExact(arrival, wifiTicks) : completion[sfuIndex];
-                    Math.addExact(uplinkEnd, fiberTicks);
+                    // 光路从 DATA 结束起算。纯上行可由资源释放时刻减去 SIFS 和 ACK 得到上界。
+                    // 双向时上行顺序由实际选队决定，此处只检查最早出发的光路时刻，运行时再校验实际时刻。
+                    long dataEnd = mixed ? Math.addExact(arrival, dataTicks) : completion[sfuIndex] - responseTicks;
+                    Math.addExact(dataEnd, fiberTicks);
                 }
             }
         } catch (ArithmeticException e) {
