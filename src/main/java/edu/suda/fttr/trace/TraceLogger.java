@@ -70,7 +70,8 @@ public final class TraceLogger {
                 // SFU 实际选队时另记队列快照，此处的调度事件没有报文。
                 break;
             case WIFI_ACCESS_TIMER:
-                // 内部计时事件。接入等待反映在选队与 DATA 开始之间的时间差中。
+            case WIFI_ACCESS_RESOLVE:
+                // 内部接入事件。记录实际选队结果和虚拟碰撞。
                 break;
             default:
                 throw new IllegalStateException("Unhandled trace event: " + event.type());
@@ -140,6 +141,15 @@ public final class TraceLogger {
                 "t_us=%s node=SFU event=QUEUE_SELECT packet_id=%d type=%s vo_queue=%d vi_queue=%d be_queue=%d bk_queue=%d destination_sta_id=%d sfu_id=%d%n",
                 formatMicroseconds(timeTicks), packet.id(), packet.type(), vo, vi, be, bk, packet.destinationStaId(),
                 sfuId);
+    }
+
+    public void recordVirtualCollision(Packet loser, Packet winner, int sfuId, long ticks, int cwBefore, int cwAfter,
+                                       int backoff) {
+        output.printf(Locale.ROOT,
+                "t_us=%s node=%s event=EDCA_VIRTUAL_COLLISION packet_id=%d type=%s direction=%s sfu_id=%d sta_id=%d "
+                        + "winner_packet_id=%d cw_before=%d cw_after=%d backoff=%d%n",
+                formatMicroseconds(ticks), loser.isUplink() ? "STA" : "SFU", loser.id(), loser.type(), loser.direction(),
+                sfuId, loser.staId(), winner.id(), cwBefore, cwAfter, backoff);
     }
 
     public void recordWifiService(Packet packet, int sfuId, long queueEntryTicks, long startTicks, long endTicks,

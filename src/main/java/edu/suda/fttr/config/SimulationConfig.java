@@ -3,6 +3,7 @@ package edu.suda.fttr.config;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.link.WifiFrameExchange;
 import edu.suda.fttr.mac.EdcaParameters;
+import edu.suda.fttr.mac.WifiAccessMode;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 
@@ -19,14 +20,14 @@ public final class SimulationConfig {
     private final WirelessPhy wirelessPhy;
     private final WifiFrameExchange wifiFrameExchange;
     private final EdcaParameters edcaParameters;
-    private final boolean edcaCountdown;
+    private final WifiAccessMode wifiAccessMode;
     private final List<Long> downlinkTrafficWindowsUs;
     private final List<Long> uplinkTrafficWindowsUs;
     private final boolean uplinkEnabled;
 
     SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs, long wifiDelayUs,
                      WirelessPhy wirelessPhy, WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters,
-                     boolean edcaCountdown,
+                     WifiAccessMode wifiAccessMode,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled) {
         this.inputEvents = List.copyOf(inputEvents);
         this.sfuCount = sfuCount;
@@ -36,7 +37,7 @@ public final class SimulationConfig {
         this.wirelessPhy = wirelessPhy;
         this.wifiFrameExchange = wifiFrameExchange;
         this.edcaParameters = edcaParameters;
-        this.edcaCountdown = edcaCountdown;
+        this.wifiAccessMode = wifiAccessMode;
         this.downlinkTrafficWindowsUs = List.copyOf(downlinkTrafficWindowsUs);
         this.uplinkTrafficWindowsUs = List.copyOf(uplinkTrafficWindowsUs);
         this.uplinkEnabled = uplinkEnabled;
@@ -104,7 +105,11 @@ public final class SimulationConfig {
     }
 
     public boolean edcaCountdownEnabled() {
-        return edcaCountdown;
+        return wifiAccessMode != WifiAccessMode.FIXED_PRIORITY;
+    }
+
+    public WifiAccessMode wifiAccessMode() {
+        return wifiAccessMode;
     }
 
     /** 各 SFU 的下行泊松生成窗口，按 ID 排列。手动模式或未开启下行时为空。 */

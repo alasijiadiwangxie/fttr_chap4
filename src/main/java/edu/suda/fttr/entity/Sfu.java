@@ -5,15 +5,17 @@ import edu.suda.fttr.link.WifiLink;
 import edu.suda.fttr.mac.EdcaAccess;
 import edu.suda.fttr.mac.EdcaParameters;
 import edu.suda.fttr.mac.EdcaState;
+import edu.suda.fttr.mac.WifiAccessMode;
 import edu.suda.fttr.simulator.Event;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.Map;
 
-/** 每台 SFU 按四类 FIFO 统一调度下行发送和上行接收。 */
+/** 每台 SFU 统一协调本信道上的下行和关联 STA 的上行。 */
 public final class Sfu {
     private final int id;
     private final WifiLink wifi;
@@ -21,6 +23,9 @@ public final class Sfu {
     private final Map<Integer, Sta> stations;
     private final EdcaState edcaState;
     private final EdcaAccess edcaAccess;
+    private final boolean multiAc;
+    // 以实际发送设备的 AC 状态为键。每个键独立维护 FIFO 与队首的接入计时。
+    private final Map<EdcaState.AcState, Deque<QueuedPacket>> deviceQueues = new HashMap<>();
     private final Deque<QueuedPacket> voQueue = new ArrayDeque<>();
     private final Deque<QueuedPacket> viQueue = new ArrayDeque<>();
     private final Deque<QueuedPacket> beQueue = new ArrayDeque<>();
@@ -42,12 +47,20 @@ public final class Sfu {
     }
 
     public Sfu(int id, WifiLink wifi, Map<Integer, Sta> stations, EdcaParameters edcaParameters, boolean edcaCountdown) {
+        this(id, wifi, stations, edcaParameters,
+                edcaCountdown ? WifiAccessMode.EDCA_COUNTDOWN : WifiAccessMode.FIXED_PRIORITY);
+    }
+
+    public Sfu(int id, WifiLink wifi, Map<Integer, Sta> stations, EdcaParameters edcaParameters,
+               WifiAccessMode accessMode) {
         this.id = id;
         this.wifi = wifi;
         this.stations = Map.copyOf(stations);
         this.edcaState = EdcaState.forSfu(id, edcaParameters);
         this.stations.values().forEach(sta -> sta.attachChannel(id, channel));
-        this.edcaAccess = edcaCountdown ? new EdcaAccess(id, channel, edcaParameters) : null;
+        this.multiAc = accessMode == WifiAccessMode.EDCA_MULTI_AC;
+        this.edcaAccess = accessMode == WifiAccessMode.FIXED_PRIORITY ? null
+                : new EdcaAccess(id, channel, edcaParameters, multiAc);
     }
 
     public int id() {
@@ -79,6 +92,16 @@ public final class Sfu {
         if (!stations.containsKey(packet.staId())) {
             throw new IllegalStateException("Packet " + packet.id() + " reached unassociated SFU " + id);
         }
+        if (multiAc) {
+            EdcaState.AcState ac = senderAc(packet);
+            Deque<QueuedPacket> queue = deviceQueues.computeIfAbsent(ac, key -> new ArrayDeque<>());
+            queue.addLast(new QueuedPacket(packet, context.nowTicks()));
+            context.recordEnqueue(packet, id, queue.size());
+            if (queue.size() == 1) {
+                edcaAccess.start(packet, ac, context);
+            }
+            return;
+        }
         // 上行报文仍在源 STA 等待。这里入队的是对同一无线资源的发送请求。
         Deque<QueuedPacket> queue = queueFor(packet.type());
         queue.addLast(new QueuedPacket(packet, context.nowTicks()));
@@ -88,7 +111,7 @@ public final class Sfu {
 
     public void transmit(Packet packet, SimulationContext context) {
         checkActive(packet);
-        if (edcaAccess != null && edcaAccess.isWaiting()) {
+        if (!multiAc && edcaAccess != null && edcaAccess.isWaiting()) {
             throw new IllegalStateException("Wi-Fi access wait is incomplete for packet " + packet.id());
         }
         channel.occupy();
@@ -126,10 +149,22 @@ public final class Sfu {
         channel.release();
         // 记录半开区间 [开始, 完成)。同刻启动的下一条报文不会与这一条重叠。
         context.recordWifiService(packet, id, active.arrivalTicks, txStartTicks, dataEndTicks);
-        if (edcaAccess != null) {
-            senderAc(packet).onTransmissionSuccess();
-        }
         active = null;
+        if (edcaAccess != null) {
+            EdcaState.AcState ac = senderAc(packet);
+            ac.onTransmissionSuccess();
+            if (multiAc) {
+                // 队首保留到交换完成。此后该 AC 的下一包才可从重置后的 CW 抽取退避。
+                Deque<QueuedPacket> queue = deviceQueues.get(ac);
+                queue.removeFirst();
+                if (queue.isEmpty()) {
+                    deviceQueues.remove(ac);
+                } else {
+                    edcaAccess.start(queue.getFirst().packet, ac, context);
+                }
+                return;
+            }
+        }
         requestSelection(context);
     }
 
@@ -161,10 +196,34 @@ public final class Sfu {
         edcaAccess.onTimer(event);
     }
 
+    public void resolveAccess(Event event, SimulationContext context) {
+        Packet packet = edcaAccess.resolve(event);
+        if (packet == null) {
+            return;
+        }
+        if (active != null || ccaState() != WifiChannel.State.IDLE) {
+            throw new IllegalStateException("SFU " + id + " cannot grant a second Wi-Fi transmission");
+        }
+        EdcaState sender = senderEdcaState(packet);
+        active = deviceQueues.get(sender.forCategory(packet.type())).getFirst();
+        context.recordQueueSelection(packet, id, deviceQueueDepth(sender, AccessCategory.VO),
+                deviceQueueDepth(sender, AccessCategory.VI), deviceQueueDepth(sender, AccessCategory.BE),
+                deviceQueueDepth(sender, AccessCategory.BK));
+        context.scheduleAfter(0, EventType.WIFI_TX_START, packet, id);
+    }
+
+    private int deviceQueueDepth(EdcaState sender, AccessCategory category) {
+        Deque<QueuedPacket> queue = deviceQueues.get(sender.forCategory(category));
+        return queue == null ? 0 : queue.size();
+    }
+
     private EdcaState.AcState senderAc(Packet packet) {
-        // 上行消耗实际发送端 STA 的随机流，虽然选队仍由 SFU 统一完成。
-        EdcaState sender = packet.isUplink() ? stations.get(packet.staId()).edcaState() : edcaState;
-        return sender.forCategory(packet.type());
+        return senderEdcaState(packet).forCategory(packet.type());
+    }
+
+    private EdcaState senderEdcaState(Packet packet) {
+        // 即使由 SFU 统一处理事件，上行队列与竞争状态仍按实际发送 STA 区分。
+        return packet.isUplink() ? stations.get(packet.staId()).edcaState() : edcaState;
     }
 
     private Deque<QueuedPacket> highestPriorityQueue() {

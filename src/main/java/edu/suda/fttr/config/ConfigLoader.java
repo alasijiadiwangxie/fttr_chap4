@@ -5,6 +5,7 @@ import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.link.WifiFrameExchange;
 import edu.suda.fttr.mac.EdcaParameters;
 import edu.suda.fttr.mac.EdcaParameters.AcParameters;
+import edu.suda.fttr.mac.WifiAccessMode;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 import edu.suda.fttr.traffic.TrafficGenerator;
@@ -102,7 +103,7 @@ public final class ConfigLoader {
         long fiberUs = readNonNegativeLong(properties, "fiber.delay.us");
         WirelessPhy wirelessPhy = readWirelessPhy(properties);
         EdcaParameters edcaParameters = readEdcaParameters(properties);
-        boolean edcaCountdown = readEdcaCountdown(properties);
+        WifiAccessMode accessMode = readWifiAccessMode(properties);
         WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy, edcaParameters.sifsUs());
         long wifiUs = wirelessPhy == null ? readNonNegativeLong(properties, "wifi.delay.us") : 0;
         long durationUs = poisson ? readPositiveDuration(properties, "traffic.duration.us") : 0;
@@ -118,15 +119,16 @@ public final class ConfigLoader {
 
         validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange);
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange,
-                edcaParameters, edcaCountdown, downlink.windowsUs, uplink.windowsUs, directionMode.allows(Packet.Direction.UL));
+                edcaParameters, accessMode, downlink.windowsUs, uplink.windowsUs, directionMode.allows(Packet.Direction.UL));
     }
 
-    private static boolean readEdcaCountdown(Properties properties) {
+    private static WifiAccessMode readWifiAccessMode(Properties properties) {
         String access = properties.getProperty(MAC_ACCESS, "fixed-priority").strip();
         switch (access) {
-            case "fixed-priority": return false;
-            case "edca-countdown": return true;
-            default: throw new IllegalArgumentException(MAC_ACCESS + " must be fixed-priority or edca-countdown");
+            case "fixed-priority": return WifiAccessMode.FIXED_PRIORITY;
+            case "edca-countdown": return WifiAccessMode.EDCA_COUNTDOWN;
+            case "edca-multi-ac": return WifiAccessMode.EDCA_MULTI_AC;
+            default: throw new IllegalArgumentException(MAC_ACCESS + " must be fixed-priority, edca-countdown or edca-multi-ac");
         }
     }
 

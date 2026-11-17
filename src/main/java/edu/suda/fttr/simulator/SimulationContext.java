@@ -168,6 +168,10 @@ public final class SimulationContext {
         trace.recordQueueSelection(packet, nowTicks, sfuId, vo, vi, be, bk);
     }
 
+    public void recordVirtualCollision(Packet loser, Packet winner, int sfuId, int cwBefore, int cwAfter, int backoff) {
+        trace.recordVirtualCollision(loser, winner, sfuId, nowTicks, cwBefore, cwAfter, backoff);
+    }
+
     void recordSummary(List<Sfu> sfus, List<Sta> stations, boolean uplinkEnabled) {
         byClass.forEach((type, stats) -> trace.recordClassSummary(
                 type, stats.count, stats.averageWaitUs(), stats.averageDelayUs()));

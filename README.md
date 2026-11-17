@@ -6,11 +6,11 @@
 
 - 配置与日志以微秒为单位。HE SU 场景内部使用整数纳秒，保留 PPDU 的小数微秒；固定时延场景仍使用整数微秒。报文按手动配置或泊松生成的时刻注入源节点，事件处理完毕后结束。
 - 每台 STA 在一次仿真中固定关联一台 SFU。上下行光侧均使用固定时延，收齐报文后可立即转发。光路之间没有共享资源竞争或额外排队。
-- 每台 SFU 独立维护 VO、VI、BE、BK 四类 FIFO 等待队列和一份无线资源。该 SFU 的上下行统一按固定优先级选队，已经开始的传输会发完。不同 SFU 可以并行收发。
+- 每台 SFU 与关联 STA 共用一份无线资源。默认按 VO、VI、BE、BK 固定优先级选队。启用 `edca-multi-ac` 后，SFU 和 STA 各自按四类 FIFO 队列竞争信道。不同 SFU 可以并行收发。
 - 等待队列不设容量上限，无线传输按成功交付处理。HE SU 模式根据包长、开销和 PHY 参数计算数据 PPDU 时长，可启用 DATA–SIFS–ACK 交换。固定时延模式可用于回归对照。
 - SFU 和 STA 的吞吐量统一按从 0 到最后事件的时间窗口计算。日志同时记录逐包时序，以及按业务类别、设备和全局汇总的统计。
 
-信道干扰、多个 AC 并行竞争、OFDMA、DBA 和 AP 节能机制可作为后续独立扩展。
+信道干扰、跨设备真实碰撞、OFDMA、DBA 和 AP 节能机制可作为后续独立扩展。
 
 ## 构建与运行
 
@@ -71,7 +71,7 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/phase1-multi-sta-downlink
 
 `sta.count` 设置终端数量，ID 从 1 到该数量连续编号。`packet.N.sta.id` 指定到达列表中第 N 个报文的目的终端。两项省略时均取 1，所以旧配置默认投递给 STA 1。超出范围的目的 ID 会在启动仿真前报错。
 
-所有终端共用同一个 SFU 的四类队列和无线发送资源。轨迹的 `destination_sta_id` 是目标 ID，`DELIVERED` 中的 `sta_id` 是实际接收终端。每台 STA 有一行 `summary=STA`，记录收包数、收到的字节数、有效吞吐量和平均端到端时延。吞吐量用有效交付比特数除以从 0 到最后事件的公共时间窗口，单位为 Mb/s。窗口为零时吞吐量记为 0。没有收包的终端平均时延记为 0。
+下行报文按业务类型进入同一个 SFU 的四类发送队列，并使用该 SFU 的无线资源。轨迹的 `destination_sta_id` 是目标 ID，`DELIVERED` 中的 `sta_id` 是实际接收终端。每台 STA 有一行 `summary=STA`，记录收包数、收到的字节数、有效吞吐量和平均端到端时延。吞吐量用有效交付比特数除以从 0 到最后事件的公共时间窗口，单位为 Mb/s。窗口为零时吞吐量记为 0。没有收包的终端平均时延记为 0。
 
 ### 多 SFU 独立下行发送
 
@@ -118,7 +118,7 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/poisson-multi-sta-uplink.
 
 `traffic.direction` 支持 `DL`（默认）、`UL` 和 `BOTH`。泊松模式下，上行使用 `traffic.sta.N.*` 按源 STA 配置。使用总速率加权重时，字段与下行相同，即 `rate.pps`、`packet.bytes`、`seed`、`class.weights` 和可选的 `duration.us`。`BOTH` 可同时配置 `traffic.sfu.N.*` 和 `traffic.sta.N.*`。手动模式下，`packet.N.sta.id` 在上行表示源 STA，在下行表示目的 STA，双向模式还须为每包设置 `packet.N.direction=UL` 或 `DL`。`packet.arrival.us` 始终表示报文进入源节点的时刻。
 
-上行报文在源 STA 等待关联 SFU 的无线资源，SFU 收齐报文后立即走固定时延光链路，抵达 MFU 时计为交付。四类等待队列是集中式调度抽象。上下行共用同一台 SFU 的无线资源，其他 SFU 独立运行。
+上行报文在源 STA 等待关联 SFU 的无线资源，SFU 收齐报文后立即走固定时延光链路，抵达 MFU 时计为交付。默认接入模式的四类等待队列是集中式调度抽象。上下行共用同一台 SFU 的无线资源，其他 SFU 独立运行。
 
 `TRAFFIC_UL_STA` 与 `TRAFFIC_UL_CLASS` 按源 STA 输出总量及各业务的生成包数、实际到达率和输入负载。`UL_STA` 与 `UL_GLOBAL` 统计 MFU 收到的上行报文，时延从 STA 生成算到 MFU 收齐。`CLASS`、`GLOBAL`、`SFU` 和 `STA` 汇总仍对应下行。最后一行的 `delivered_packets` 为两个方向的交付总数。
 
@@ -175,7 +175,7 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/he-su-phy-downlink.proper
 
 总时长为 `T_preamble + N_DATA × T_SYM + T_PE`，并包含 PE 一起校验 5484 μs 的上限。模型只计算单 MPDU 的 airtime，无多报文聚合、实际 LDPC 编解码、波形、PPE 阈值协商、midamble 或 2.4 GHz 信号延长。默认的 HE-LTF 选择和 0 μs PE 保留了旧场景的时长。
 
-HE SU 模式用 `summary=WIFI_PHY` 输出 DATA 的 PHY 速率。`wifi_queue_wait_us` 从报文进入 SFU 队列算到 DATA 开始。`wifi_service_us` 的范围由下节的交换模式决定。光纤固定时延按原路径单独计算。
+HE SU 模式用 `summary=WIFI_PHY` 输出 DATA 的 PHY 速率。`wifi_queue_wait_us` 从报文进入无线发送队列算到 DATA 开始。`wifi_service_us` 的范围由下节的交换模式决定。光纤固定时延按原路径单独计算。
 
 ### DATA–SIFS–ACK 单播交换
 
@@ -215,17 +215,23 @@ ACK 速率仅用于 `data-sifs-ack`。DATA 继续使用 HE SU PHY。ACK 按 5 GH
 
 每台 SFU 拥有一个独立信道，SFU 和所有关联 STA 通过 `ccaState()` 查询同一份 `WifiChannel.State`。信道初始为 `IDLE`，从 DATA 开始到 ACK 完成保持 `BUSY`，含 SIFS 的资源预留。固定时延和 `data-only` 模式在 DATA 完成后恢复 `IDLE`。
 
-上下行共用信道，等待报文在信道空闲后由固定优先级选队。报文到达和信道释放先于同一时刻的下一次选队，各类同刻报文事件按入队顺序处理。不同 SFU 的信道独立，可并行发送。
+报文到达和信道释放先于同一时刻的选队或接入倒计时。同一优先顺序的报文事件按入队顺序处理。不同 SFU 的信道独立，可并行发送。
 
 ### AIFS 等待与随机退避倒计时
 
-在 HE SU 下行示例中取消 `wifi.mac.access=edca-countdown` 的注释，即可在 DATA–SIFS–ACK 前加入接入等待。该接入模式也适用于固定时延和 `data-only` 场景。默认模式为 `fixed-priority`，选中的报文在信道空闲时直接开始发送。
+在 HE SU 下行示例中设置 `wifi.mac.access=edca-countdown`，即可在 DATA–SIFS–ACK 前为选中的单个请求加入接入等待。该接入模式也适用于固定时延和 `data-only` 场景。默认模式为 `fixed-priority`，选中的报文在信道空闲时直接开始发送。
 
 每台 SFU 仍按 VO、VI、BE、BK 的固定优先级选队，一次只有一个请求执行 AIFS 与退避。请求选定后会等到发送，新到达的报文参与下一次选队。下行使用 SFU 的 AC 计数器，上行使用发送 STA 的 AC 计数器，首次需要计数器时抽取退避值。信道连续空闲达到 AIFS 后，每完成一个空闲时隙递减一次。若退避值为零，等完 AIFS 即可发送。无中断时，从选队到 DATA 开始的时间为 `AIFS + 退避值 × Slot Time`。
 
 信道转为 `BUSY` 时保存剩余计数，恢复 `IDLE` 后重新等待完整 AIFS，再沿用剩余计数。同一时刻先处理信道状态变化，再处理倒计时事件。如果时隙结束时信道转为 `BUSY`，该时隙不计入退避。计数归零且信道空闲时开始发送，成功完成交换后恢复发送设备的 CWmin 并清空计数。`wifi_queue_wait_us` 包含接入等待，`wifi_service_us` 从 DATA 开始计时。
 
-当前模式只为已选中的请求推进倒计时。测试通过切换信道忙闲状态验证冻结与恢复。
+### 四类 AC 独立竞争与虚拟碰撞
+
+取消 HE SU 下行示例中 `wifi.mac.access=edca-multi-ac` 的注释可启用该模式。下行按 SFU 的 AC 队列排队，上行按源 STA 的 AC 队列排队。每个设备的 VO、VI、BE、BK 各有一个 FIFO，队首报文按对应 AC 的 AIFS、CW 和退避计数独立竞争。最先完成倒计时的请求获得发送机会，高优先级只用于同一设备内的同刻仲裁。
+
+同一设备的多个 AC 同刻就绪时，按 VO、VI、BE、BK 的顺序选出获胜 AC。其余就绪 AC 触发虚拟碰撞，更新 CW 后重抽退避计数。`EDCA_VIRTUAL_COLLISION` 日志记录 `winner_packet_id`、`cw_before`、`cw_after` 和 `backoff`。未参与碰撞的 AC 保留剩余计数，在信道恢复空闲后重新等待完整 AIFS。
+
+所有同刻就绪的 AC 先按设备完成虚拟碰撞仲裁。若同一信道上仍有多个设备同刻就绪，模拟器按 SFU 优先、STA ID 升序的规则选出一个发送设备。未获得信道的设备保留该 AC 的零计数，等下次空闲后的完整 AIFS。跨设备同刻就绪按此规则串行处理，真实碰撞、ACK 超时和重传留待后续实现。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。
 

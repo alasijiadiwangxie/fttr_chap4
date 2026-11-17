@@ -48,7 +48,7 @@ public final class Simulator {
         List<Sfu> sfus = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             fibers.add(new FiberLink(fiberDelay));
-            sfus.add(new Sfu(i + 1, wifi, stationsBySfu.get(i), config.edcaParameters(), config.edcaCountdownEnabled()));
+            sfus.add(new Sfu(i + 1, wifi, stationsBySfu.get(i), config.edcaParameters(), config.wifiAccessMode()));
         }
         Mfu mfu = new Mfu(config.staSfuIds());
 
@@ -96,6 +96,9 @@ public final class Simulator {
                     break;
                 case WIFI_ACCESS_TIMER:
                     sfus.get(event.sfuId() - 1).advanceAccess(event);
+                    break;
+                case WIFI_ACCESS_RESOLVE:
+                    sfus.get(event.sfuId() - 1).resolveAccess(event, context);
                     break;
                 default:
                     throw new IllegalStateException("Unhandled event: " + event.type());

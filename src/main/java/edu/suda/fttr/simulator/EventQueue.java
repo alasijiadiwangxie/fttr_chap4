@@ -12,6 +12,10 @@ final class EventQueue {
     private long nextSequence;
 
     private static int accessPriority(EventType type) {
+        // 先处理报文与忙闲边界，再推进所有计时器，最后合并同刻归零的候选。
+        if (type == EventType.WIFI_ACCESS_RESOLVE) {
+            return 2;
+        }
         return type == EventType.WIFI_SELECT_NEXT || type == EventType.WIFI_ACCESS_TIMER ? 1 : 0;
     }
 
