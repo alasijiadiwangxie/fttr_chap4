@@ -27,6 +27,9 @@ public final class SimulationContext {
     private long wifiBusyTicks;
     private long wifiBusySinceTicks;
     private int activeRadios;
+    private int wifiCollisionEvents;
+    private int wifiCollisionDroppedPackets;
+    private long wifiCollisionDroppedBytes;
 
     SimulationContext(TraceLogger trace, boolean multiPacket, boolean nanosecondClock) {
         this.trace = trace.withNanosecondClock(nanosecondClock);
@@ -141,10 +144,7 @@ public final class SimulationContext {
     }
 
     public void recordWifiService(Packet packet, int sfuId, long queueEntryTicks, long startTicks, long dataEndTicks) {
-        // 无线资源被预留时计为忙，包括 SIFS。不同 SFU 的并行区间只计一次。
-        if (--activeRadios == 0) {
-            wifiBusyTicks += nowTicks - wifiBusySinceTicks;
-        }
+        recordWifiEnd();
         double queueWaitUs = ticksToMicroseconds(startTicks - queueEntryTicks);
         long endToEndTicks = 0;
         if (packet.isUplink()) {
@@ -158,6 +158,33 @@ public final class SimulationContext {
             overallDelay.add(queueWaitUs, delayUs);
         }
         trace.recordWifiService(packet, sfuId, queueEntryTicks, startTicks, nowTicks, endToEndTicks);
+    }
+
+    public void recordWifiCollisionStart(List<Packet> packets, int sfuId) {
+        // 碰撞中的多次发射仍只占用一份 SFU 信道，忙时从共同起点算到最后一个 DATA 结束。
+        recordWifiStart();
+        wifiCollisionEvents++;
+        for (Packet packet : packets) {
+            trace.recordCollisionPacket(packet, sfuId, nowTicks, "WIFI_COLLISION_START");
+        }
+    }
+
+    public void recordWifiCollisionDrop(Packet packet, int sfuId) {
+        wifiCollisionDroppedPackets++;
+        wifiCollisionDroppedBytes += packet.bytes();
+        trace.recordCollisionPacket(packet, sfuId, nowTicks, "WIFI_COLLISION_DROP");
+    }
+
+    public void recordWifiCollisionEnd(int sfuId) {
+        recordWifiEnd();
+        trace.recordCollisionEnd(sfuId, nowTicks);
+    }
+
+    private void recordWifiEnd() {
+        // 不同 SFU 的忙区间可以重叠，按区间并集计入全局忙时。
+        if (--activeRadios == 0) {
+            wifiBusyTicks += nowTicks - wifiBusySinceTicks;
+        }
     }
 
     public void recordEnqueue(Packet packet, int sfuId, int queueDepth) {
@@ -184,6 +211,9 @@ public final class SimulationContext {
         }
         if (uplinkEnabled) {
             recordUplinkSummary(stations);
+        }
+        if (wifiCollisionEvents > 0) {
+            trace.recordCollisionSummary(wifiCollisionEvents, wifiCollisionDroppedPackets, wifiCollisionDroppedBytes);
         }
         if (multiPacket) {
             trace.recordRunSummary(deliveredPackets, deliveredBytes, wifiBusyTicks, nowTicks);

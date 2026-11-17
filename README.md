@@ -6,11 +6,11 @@
 
 - 配置与日志以微秒为单位。HE SU 场景内部使用整数纳秒，保留 PPDU 的小数微秒；固定时延场景仍使用整数微秒。报文按手动配置或泊松生成的时刻注入源节点，事件处理完毕后结束。
 - 每台 STA 在一次仿真中固定关联一台 SFU。上下行光侧均使用固定时延，收齐报文后可立即转发。光路之间没有共享资源竞争或额外排队。
-- 每台 SFU 与关联 STA 共用一份无线资源。默认按 VO、VI、BE、BK 固定优先级选队。启用 `edca-multi-ac` 后，SFU 和 STA 各自按四类 FIFO 队列竞争信道。不同 SFU 可以并行收发。
-- 等待队列不设容量上限，无线传输按成功交付处理。HE SU 模式根据包长、开销和 PHY 参数计算数据 PPDU 时长，可启用 DATA–SIFS–ACK 交换。固定时延模式可用于回归对照。
+- 每台 SFU 与关联 STA 共用一份无线资源。默认按 VO、VI、BE、BK 固定优先级选队。启用 `edca-multi-ac` 后，SFU 和 STA 各自按四类 FIFO 队列竞争信道，同一信道的多个设备同刻发送会发生碰撞。不同 SFU 可以并行收发。
+- 等待队列不设容量上限。HE SU 模式根据包长、开销和 PHY 参数计算数据 PPDU 时长，可启用 DATA–SIFS–ACK 交换。固定时延模式可用于回归对照。
 - SFU 和 STA 的吞吐量统一按从 0 到最后事件的时间窗口计算。日志同时记录逐包时序，以及按业务类别、设备和全局汇总的统计。
 
-信道干扰、跨设备真实碰撞、OFDMA、DBA 和 AP 节能机制可作为后续独立扩展。
+信道干扰、ACK 超时、重传、OFDMA、DBA 和 AP 节能机制可作为后续独立扩展。
 
 ## 构建与运行
 
@@ -213,7 +213,7 @@ ACK 速率仅用于 `data-sifs-ack`。DATA 继续使用 HE SU PHY。ACK 按 5 GH
 
 ### CCA 信道忙闲检测
 
-每台 SFU 拥有一个独立信道，SFU 和所有关联 STA 通过 `ccaState()` 查询同一份 `WifiChannel.State`。信道初始为 `IDLE`，从 DATA 开始到 ACK 完成保持 `BUSY`，含 SIFS 的资源预留。固定时延和 `data-only` 模式在 DATA 完成后恢复 `IDLE`。
+每台 SFU 拥有一个独立信道，SFU 和所有关联 STA 通过 `ccaState()` 查询同一份 `WifiChannel.State`。信道初始为 `IDLE`。成功交换从 DATA 开始到 ACK 完成保持 `BUSY`，含 SIFS 的资源预留。固定时延和 `data-only` 模式在 DATA 完成后恢复 `IDLE`。跨设备碰撞时，信道在最后一个碰撞 DATA 结束后释放。
 
 报文到达和信道释放先于同一时刻的选队或接入倒计时。同一优先顺序的报文事件按入队顺序处理。不同 SFU 的信道独立，可并行发送。
 
@@ -225,13 +225,15 @@ ACK 速率仅用于 `data-sifs-ack`。DATA 继续使用 HE SU PHY。ACK 按 5 GH
 
 信道转为 `BUSY` 时保存剩余计数，恢复 `IDLE` 后重新等待完整 AIFS，再沿用剩余计数。同一时刻先处理信道状态变化，再处理倒计时事件。如果时隙结束时信道转为 `BUSY`，该时隙不计入退避。计数归零且信道空闲时开始发送，成功完成交换后恢复发送设备的 CWmin 并清空计数。`wifi_queue_wait_us` 包含接入等待，`wifi_service_us` 从 DATA 开始计时。
 
-### 四类 AC 独立竞争与虚拟碰撞
+### 四类 AC 独立竞争与碰撞处理
 
 取消 HE SU 下行示例中 `wifi.mac.access=edca-multi-ac` 的注释可启用该模式。下行按 SFU 的 AC 队列排队，上行按源 STA 的 AC 队列排队。每个设备的 VO、VI、BE、BK 各有一个 FIFO，队首报文按对应 AC 的 AIFS、CW 和退避计数独立竞争。最先完成倒计时的请求获得发送机会，高优先级只用于同一设备内的同刻仲裁。
 
 同一设备的多个 AC 同刻就绪时，按 VO、VI、BE、BK 的顺序选出获胜 AC。其余就绪 AC 触发虚拟碰撞，更新 CW 后重抽退避计数。`EDCA_VIRTUAL_COLLISION` 日志记录 `winner_packet_id`、`cw_before`、`cw_after` 和 `backoff`。未参与碰撞的 AC 保留剩余计数，在信道恢复空闲后重新等待完整 AIFS。
 
-所有同刻就绪的 AC 先按设备完成虚拟碰撞仲裁。若同一信道上仍有多个设备同刻就绪，模拟器按 SFU 优先、STA ID 升序的规则选出一个发送设备。未获得信道的设备保留该 AC 的零计数，等下次空闲后的完整 AIFS。跨设备同刻就绪按此规则串行处理，真实碰撞、ACK 超时和重传留待后续实现。
+同刻就绪的 AC 先按设备完成虚拟碰撞仲裁，再由每个设备的获胜 AC 同刻发送。一个设备发送时沿用正常交换流程。同一信道上有多个设备同刻发送时，所有参与发送的报文均发生真实碰撞，并在各自的 DATA 结束时丢弃。SIFS、ACK、下行交付和上行光侧转发均以 DATA 接收成功为前提。碰撞期间信道保持一个连续忙区间，由最晚结束的 DATA 决定释放时刻。仍在竞争的 AC 在信道恢复空闲后重新等待完整 AIFS。
+
+`WIFI_COLLISION_START` 和 `WIFI_COLLISION_DROP` 分别记录每个碰撞报文的发送开始和丢弃时刻。`WIFI_COLLISION_END` 记录整次碰撞占用结束。发生碰撞的仿真输出 `summary=WIFI_COLLISION`，含 `collision_events`、`dropped_packets` 和 `dropped_bytes`。碰撞采用 DATA 结束即判定失败的简化模型，ACK 超时与重传留待后续实现。真实碰撞后沿用当前 CW 并清空已用退避计数。同一 AC 排在后面的报文重新抽取退避。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。
 

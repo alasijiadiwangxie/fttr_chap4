@@ -73,11 +73,16 @@ public final class EdcaState {
 
         public void onContentionFailure() {
             currentCw = Math.min(2 * currentCw + 1, parameters.cwMax());
-            backoffCounter = NO_BACKOFF;
+            clearBackoff();
         }
 
         public void onTransmissionSuccess() {
             currentCw = parameters.cwMin();
+            clearBackoff();
+        }
+
+        /** 当前帧不再竞争，清除其退避计数并保留 CW。 */
+        public void clearBackoff() {
             backoffCounter = NO_BACKOFF;
         }
     }

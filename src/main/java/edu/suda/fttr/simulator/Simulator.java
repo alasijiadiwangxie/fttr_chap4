@@ -100,6 +100,9 @@ public final class Simulator {
                 case WIFI_ACCESS_RESOLVE:
                     sfus.get(event.sfuId() - 1).resolveAccess(event, context);
                     break;
+                case WIFI_COLLISION_DATA_END:
+                    sfus.get(event.sfuId() - 1).finishCollidedData(event.packet(), context);
+                    break;
                 default:
                     throw new IllegalStateException("Unhandled event: " + event.type());
             }

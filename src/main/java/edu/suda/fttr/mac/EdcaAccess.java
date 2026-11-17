@@ -14,7 +14,7 @@ import java.util.Map;
 
 /** 为同一 SFU 信道上的各发送请求维护接入计时。 */
 public final class EdcaAccess {
-    // 设备内依照 AC 优先级；跨设备同刻就绪时按 SFU、STA ID 升序串行化。
+    // 按设备分组并依照 AC 优先级仲裁，每组的获胜 AC 都参与本次发送。
     private static final Comparator<Attempt> READY_ORDER = Comparator.comparingInt(Attempt::senderKey)
             .thenComparing(attempt -> attempt.packet.type());
 
@@ -85,18 +85,19 @@ public final class EdcaAccess {
         }
     }
 
-    public Packet resolve(Event event) {
+    /** 返回同一时刻具备发送资格的报文，每个设备至多一个。 */
+    public List<Packet> resolve(Event event) {
         if (resolveEvent == null || event != resolveEvent) {
-            return null;
+            return List.of();
         }
         ready.sort(READY_ORDER);
-        Attempt winner = ready.get(0);
-        Attempt deviceWinner = winner;
-        for (int i = 1; i < ready.size(); i++) {
-            Attempt attempt = ready.get(i);
-            if (attempt.senderKey() != deviceWinner.senderKey()) {
-                // 其他设备的本地获胜请求保留计数器 0，下一次空闲时重新等待 AIFS。
+        List<Packet> contenders = new ArrayList<>();
+        Attempt deviceWinner = null;
+        for (Attempt attempt : ready) {
+            if (deviceWinner == null || attempt.senderKey() != deviceWinner.senderKey()) {
                 deviceWinner = attempt;
+                contenders.add(attempt.packet);
+                pending.remove(attempt.packet);
                 continue;
             }
             int cwBefore = attempt.state.currentCw();
@@ -105,10 +106,9 @@ public final class EdcaAccess {
             context.recordVirtualCollision(attempt.packet, deviceWinner.packet, sfuId, cwBefore,
                     attempt.state.currentCw(), backoff);
         }
-        pending.remove(winner.packet);
         ready.clear();
         resolveEvent = null;
-        return winner.packet;
+        return contenders;
     }
 
     private void onChannelChange(WifiChannel.State state) {

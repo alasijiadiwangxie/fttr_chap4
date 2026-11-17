@@ -13,7 +13,10 @@ import edu.suda.fttr.simulator.SimulationContext;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** 每台 SFU 统一协调本信道上的下行和关联 STA 的上行。 */
 public final class Sfu {
@@ -26,6 +29,8 @@ public final class Sfu {
     private final boolean multiAc;
     // 以实际发送设备的 AC 状态为键。每个键独立维护 FIFO 与队首的接入计时。
     private final Map<EdcaState.AcState, Deque<QueuedPacket>> deviceQueues = new HashMap<>();
+    // 同一次碰撞中仍在发射 DATA 的报文。最后一条结束时才释放公共信道。
+    private final Set<Packet> collidedData = new HashSet<>();
     private final Deque<QueuedPacket> voQueue = new ArrayDeque<>();
     private final Deque<QueuedPacket> viQueue = new ArrayDeque<>();
     private final Deque<QueuedPacket> beQueue = new ArrayDeque<>();
@@ -154,14 +159,7 @@ public final class Sfu {
             EdcaState.AcState ac = senderAc(packet);
             ac.onTransmissionSuccess();
             if (multiAc) {
-                // 队首保留到交换完成。此后该 AC 的下一包才可从重置后的 CW 抽取退避。
-                Deque<QueuedPacket> queue = deviceQueues.get(ac);
-                queue.removeFirst();
-                if (queue.isEmpty()) {
-                    deviceQueues.remove(ac);
-                } else {
-                    edcaAccess.start(queue.getFirst().packet, ac, context);
-                }
+                advanceDeviceQueue(ac, context);
                 return;
             }
         }
@@ -197,19 +195,56 @@ public final class Sfu {
     }
 
     public void resolveAccess(Event event, SimulationContext context) {
-        Packet packet = edcaAccess.resolve(event);
-        if (packet == null) {
+        List<Packet> contenders = edcaAccess.resolve(event);
+        if (contenders.isEmpty()) {
             return;
         }
         if (active != null || ccaState() != WifiChannel.State.IDLE) {
-            throw new IllegalStateException("SFU " + id + " cannot grant a second Wi-Fi transmission");
+            throw new IllegalStateException("SFU " + id + " cannot start access on a busy channel");
         }
+        if (contenders.size() > 1) {
+            // 所有设备在同一个时刻开始 DATA。占用一次信道，再分别安排各自的 DATA 结束事件。
+            channel.occupy();
+            collidedData.addAll(contenders);
+            context.recordWifiCollisionStart(contenders, id);
+            for (Packet packet : contenders) {
+                wifi.transmitCollidedData(packet, id, context);
+            }
+            return;
+        }
+        Packet packet = contenders.get(0);
         EdcaState sender = senderEdcaState(packet);
         active = deviceQueues.get(sender.forCategory(packet.type())).getFirst();
         context.recordQueueSelection(packet, id, deviceQueueDepth(sender, AccessCategory.VO),
                 deviceQueueDepth(sender, AccessCategory.VI), deviceQueueDepth(sender, AccessCategory.BE),
                 deviceQueueDepth(sender, AccessCategory.BK));
         context.scheduleAfter(0, EventType.WIFI_TX_START, packet, id);
+    }
+
+    public void finishCollidedData(Packet packet, SimulationContext context) {
+        if (!collidedData.remove(packet)) {
+            throw new IllegalStateException("No collided DATA pending for packet " + packet.id());
+        }
+        context.recordWifiCollisionDrop(packet, id);
+        // 简化为丢弃该队首。保留 CW，清空已用的计数器，下一条新报文独立抽取。
+        EdcaState.AcState ac = senderAc(packet);
+        ac.clearBackoff();
+        advanceDeviceQueue(ac, context);
+        if (collidedData.isEmpty()) {
+            channel.release();
+            context.recordWifiCollisionEnd(id);
+        }
+    }
+
+    private void advanceDeviceQueue(EdcaState.AcState ac, SimulationContext context) {
+        // 队首保留到成功或失败结束，随后才允许下一条报文参与竞争。
+        Deque<QueuedPacket> queue = deviceQueues.get(ac);
+        queue.removeFirst();
+        if (queue.isEmpty()) {
+            deviceQueues.remove(ac);
+        } else {
+            edcaAccess.start(queue.getFirst().packet, ac, context);
+        }
     }
 
     private int deviceQueueDepth(EdcaState sender, AccessCategory category) {

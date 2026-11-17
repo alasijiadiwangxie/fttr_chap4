@@ -31,11 +31,20 @@ public final class WifiLink {
 
     public void transmit(Packet packet, int sfuId, SimulationContext context) {
         EventType arrival = packet.isUplink() ? EventType.WIFI_ARRIVAL_AT_SFU : EventType.PACKET_ARRIVAL_AT_STA;
+        scheduleDataEnd(packet, sfuId, context, arrival);
+    }
+
+    /** 碰撞的 DATA 发完整个 PPDU 后结束，完成事件只用于记录失败。 */
+    public void transmitCollidedData(Packet packet, int sfuId, SimulationContext context) {
+        scheduleDataEnd(packet, sfuId, context, EventType.WIFI_COLLISION_DATA_END);
+    }
+
+    private void scheduleDataEnd(Packet packet, int sfuId, SimulationContext context, EventType dataEnd) {
         if (wirelessPhy != null) {
             // DATA 到达独立于后续的 SIFS 和 ACK。此处使用含 PE 的完整数据 PPDU 时长。
-            context.scheduleAfterNanoseconds(wirelessPhy.ppduDurationNs(packet.bytes()), arrival, packet, sfuId);
+            context.scheduleAfterNanoseconds(wirelessPhy.ppduDurationNs(packet.bytes()), dataEnd, packet, sfuId);
         } else {
-            context.scheduleAfter(delayModel.delayUs(packet), arrival, packet, sfuId);
+            context.scheduleAfter(delayModel.delayUs(packet), dataEnd, packet, sfuId);
         }
     }
 

@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -92,7 +93,7 @@ class EdcaMultiAcTest {
     }
 
     @Test
-    void defersTiedDevicesWithoutMergingTheirQueuesOrGrowingTheirWindows(@TempDir Path directory) throws IOException {
+    void collidesAllTiedDevicesAndThenArmsEachSeparateQueueHead(@TempDir Path directory) throws IOException {
         SimulationConfig config = load(directory, "packet.arrival.us=0,0,0,0,0", "traffic.direction=BOTH",
                 "sta.count=2", "packet.1.direction=DL", "packet.1.type=BK", "packet.2.direction=UL",
                 "packet.2.sta.id=2", "packet.2.type=VO", "packet.3.direction=UL", "packet.3.type=VO",
@@ -100,16 +101,20 @@ class EdcaMultiAcTest {
                 "packet.5.type=VO", "wifi.mac.edca.BK.aifsn=2", "wifi.mac.edca.BK.cwmin=0", "wifi.mac.edca.VO.cwmin=0");
 
         String trace = run(config);
-        // 同刻先安排 SFU，再按 STA ID。STA 2 的包先入队，仍独立等待自己那份 FIFO。
-        assertEquals(List.of("WIFI_TX_START:1@34", "WIFI_ACK_END:1@142", "WIFI_TX_START:3@176",
-                "WIFI_ACK_END:3@284", "WIFI_TX_START:4@318", "WIFI_ACK_END:4@426",
-                "WIFI_TX_START:2@460", "WIFI_ACK_END:2@568", "WIFI_TX_START:5@602",
-                "WIFI_ACK_END:5@710"), exchangeBoundaries(trace));
+        // 首轮三台设备同时发送。第二轮只有两台 STA 的下一条 VO 队首参与。
+        assertTrue(exchangeBoundaries(trace).isEmpty());
+        List<String> starts = packetBoundaries(trace, "WIFI_COLLISION_START");
+        assertEquals(5, starts.size());
+        assertEquals(Set.of("WIFI_COLLISION_START:1@34", "WIFI_COLLISION_START:2@34", "WIFI_COLLISION_START:3@34",
+                "WIFI_COLLISION_START:4@132", "WIFI_COLLISION_START:5@132"), Set.copyOf(starts));
+        assertEquals(List.of("98", "196"), collisionReleaseTimes(trace));
         assertTrue(collisions(trace).isEmpty());
+        assertTrue(trace.contains("summary=WIFI_COLLISION collision_events=2 dropped_packets=5 dropped_bytes=7500"));
+        assertTrue(trace.contains("delivered_packets=0 delivered_bytes=0 wifi_busy_us=128 wifi_idle_us=68 simulation_end_us=196"));
     }
 
     @Test
-    void resolvesATiedStationsTwoCategoriesEvenWhenItsWinnerDefers(@TempDir Path directory) throws IOException {
+    void resolvesVirtualCollisionBeforeTheWinningAcCollidesWithAnotherDevice(@TempDir Path directory) throws IOException {
         SimulationConfig config = load(directory, "packet.arrival.us=0,0,0", "traffic.direction=BOTH",
                 "packet.1.direction=UL", "packet.2.direction=UL", "packet.2.type=VO", "packet.3.direction=DL",
                 "packet.3.type=BK", "wifi.mac.edca.BE.aifsn=2", "wifi.mac.edca.BK.aifsn=2",
@@ -117,13 +122,58 @@ class EdcaMultiAcTest {
                 "wifi.mac.edca.VO.cwmin=0");
 
         String trace = run(config);
-        assertEquals(List.of("WIFI_TX_START:3@34", "WIFI_ACK_END:3@142", "WIFI_TX_START:2@176",
-                "WIFI_ACK_END:2@284", "WIFI_TX_START:1@318", "WIFI_ACK_END:1@426"), exchangeBoundaries(trace));
-        // 两次都是 STA 内部的 BE 输给 VO。SFU 在首轮获准上空口，但不参与 STA 的虚拟碰撞。
-        assertEquals(List.of("34:UL:1:1:2", "176:UL:1:1:2"), collisions(trace).stream()
+        assertEquals(List.of("WIFI_TX_START:1@132", "WIFI_ACK_END:1@240"), exchangeBoundaries(trace));
+        // STA 的 BE 因虚拟碰撞留下。STA 的 VO 与 SFU 的 BK 同时发送并丢弃。
+        assertEquals(List.of("34:UL:1:1:2"), collisions(trace).stream()
                 .map(collision -> String.join(":", collision.get("t_us"), collision.get("direction"),
                         collision.get("sta_id"), collision.get("packet_id"), collision.get("winner_packet_id")))
                 .collect(Collectors.toList()));
+        List<String> drops = packetBoundaries(trace, "WIFI_COLLISION_DROP");
+        assertEquals(2, drops.size());
+        assertEquals(Set.of("WIFI_COLLISION_DROP:2@98", "WIFI_COLLISION_DROP:3@98"), Set.copyOf(drops));
+        assertEquals(List.of("DELIVERED:1@196"), packetBoundaries(trace, "DELIVERED"));
+    }
+
+    @Test
+    void keepsTwoStaCollisionBusyUntilTheLongestDataEnds(@TempDir Path directory) throws IOException {
+        SimulationConfig config = load(directory, "packet.arrival.us=0,9,80", "traffic.direction=UL", "sta.count=2",
+                "wifi.phy.bandwidth.mhz=80", "wifi.phy.nss=1", "wifi.mac.edca.seed=2", "packet.1.type=VO",
+                "packet.1.bytes=215", "packet.2.type=VO", "packet.2.sta.id=2", "packet.3.type=VO", "packet.3.bytes=215");
+
+        String trace = run(config);
+        assertEquals(trace, run(config));
+        // 两台 STA 分别抽取 3 和 2 格，结合各自到达时刻在 61 μs 同时发送。
+        List<String> starts = packetBoundaries(trace, "WIFI_COLLISION_START");
+        assertEquals(2, starts.size());
+        assertEquals(Set.of("WIFI_COLLISION_START:1@61", "WIFI_COLLISION_START:2@61"), Set.copyOf(starts));
+        assertEquals(List.of("WIFI_COLLISION_DROP:1@117.8", "WIFI_COLLISION_DROP:2@131.4"),
+                packetBoundaries(trace, "WIFI_COLLISION_DROP"));
+        assertEquals(List.of("131.4"), collisionReleaseTimes(trace));
+        // 短帧先结束。STA 1 的下一帧用原 CW 抽到 2 格，从信道空闲重新等待 34 + 2 × 9 μs。
+        assertEquals(List.of("WIFI_TX_START:3@183.4", "WIFI_ACK_END:3@284.2"), exchangeBoundaries(trace));
+        assertEquals(List.of("FIBER_TX_START:3@240.2", "DELIVERED:3@240.2", "WIFI_ACK_START:3@256.2"),
+                packetBoundaries(trace, "DELIVERED|FIBER_TX_START|WIFI_ACK_START"));
+        assertTrue(collisions(trace).isEmpty());
+        assertTrue(trace.contains("summary=WIFI_COLLISION collision_events=1 dropped_packets=2 dropped_bytes=1715"));
+        assertTrue(trace.contains("delivered_packets=1 delivered_bytes=215 wifi_busy_us=171.2 wifi_idle_us=113 simulation_end_us=284.2"));
+    }
+
+    @Test
+    void sfuAndStaCollisionDoesNotInterruptAnotherSfusExchange(@TempDir Path directory) throws IOException {
+        SimulationConfig config = load(directory, "packet.arrival.us=0,0,0", "traffic.direction=BOTH", "sfu.count=2",
+                "sta.count=2", "sta.2.sfu.id=2", "packet.1.direction=DL", "packet.1.type=VO",
+                "packet.2.direction=UL", "packet.2.type=VO", "packet.3.direction=DL", "packet.3.type=VO",
+                "packet.3.sta.id=2", "wifi.mac.edca.VO.cwmin=0");
+
+        String trace = run(config);
+        assertEquals(List.of("WIFI_TX_START:3@34", "WIFI_ACK_END:3@142"), exchangeBoundaries(trace));
+        List<String> drops = packetBoundaries(trace, "WIFI_COLLISION_DROP");
+        assertEquals(2, drops.size());
+        assertEquals(Set.of("WIFI_COLLISION_DROP:1@98", "WIFI_COLLISION_DROP:2@98"), Set.copyOf(drops));
+        assertEquals(List.of("98"), collisionReleaseTimes(trace));
+        assertEquals(List.of("DELIVERED:3@98", "WIFI_ACK_START:3@114"), packetBoundaries(trace, "DELIVERED|WIFI_ACK_START"));
+        assertTrue(trace.contains("summary=WIFI_COLLISION collision_events=1 dropped_packets=2 dropped_bytes=3000"));
+        assertTrue(trace.contains("delivered_packets=1 delivered_bytes=1500 wifi_busy_us=108 wifi_idle_us=34 simulation_end_us=142"));
     }
 
     @Test
@@ -152,9 +202,18 @@ class EdcaMultiAcTest {
     }
 
     private static List<String> exchangeBoundaries(String trace) {
-        Pattern event = Pattern.compile("t_us=(\\S+) node=\\S+ event=(WIFI_TX_START|WIFI_ACK_END) packet_id=(\\d+) ");
+        return packetBoundaries(trace, "WIFI_TX_START|WIFI_ACK_END");
+    }
+
+    private static List<String> packetBoundaries(String trace, String actions) {
+        Pattern event = Pattern.compile("t_us=(\\S+) node=\\S+ event=(" + actions + ") packet_id=(\\d+) ");
         return event.matcher(trace).results().map(row -> row.group(2) + ":" + row.group(3) + "@" + row.group(1))
                 .collect(Collectors.toList());
+    }
+
+    private static List<String> collisionReleaseTimes(String trace) {
+        Pattern event = Pattern.compile("t_us=(\\S+) node=\\S+ event=WIFI_COLLISION_END ");
+        return event.matcher(trace).results().map(row -> row.group(1)).collect(Collectors.toList());
     }
 
     private static List<Integer> sentPacketIds(String trace) {
