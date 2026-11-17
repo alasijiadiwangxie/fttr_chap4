@@ -19,12 +19,14 @@ public final class SimulationConfig {
     private final WirelessPhy wirelessPhy;
     private final WifiFrameExchange wifiFrameExchange;
     private final EdcaParameters edcaParameters;
+    private final boolean edcaCountdown;
     private final List<Long> downlinkTrafficWindowsUs;
     private final List<Long> uplinkTrafficWindowsUs;
     private final boolean uplinkEnabled;
 
     SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs, long wifiDelayUs,
                      WirelessPhy wirelessPhy, WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters,
+                     boolean edcaCountdown,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled) {
         this.inputEvents = List.copyOf(inputEvents);
         this.sfuCount = sfuCount;
@@ -34,6 +36,7 @@ public final class SimulationConfig {
         this.wirelessPhy = wirelessPhy;
         this.wifiFrameExchange = wifiFrameExchange;
         this.edcaParameters = edcaParameters;
+        this.edcaCountdown = edcaCountdown;
         this.downlinkTrafficWindowsUs = List.copyOf(downlinkTrafficWindowsUs);
         this.uplinkTrafficWindowsUs = List.copyOf(uplinkTrafficWindowsUs);
         this.uplinkEnabled = uplinkEnabled;
@@ -98,6 +101,10 @@ public final class SimulationConfig {
 
     public EdcaParameters edcaParameters() {
         return edcaParameters;
+    }
+
+    public boolean edcaCountdownEnabled() {
+        return edcaCountdown;
     }
 
     /** 各 SFU 的下行泊松生成窗口，按 ID 排列。手动模式或未开启下行时为空。 */

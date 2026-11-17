@@ -41,14 +41,14 @@ public final class Simulator {
 
         // 每台 SFU 都有各自的收包队列和发送状态，光链路也按目的 SFU 分开实例化。
         FixedDelayModel fiberDelay = new FixedDelayModel(config.fiberDelayUs());
-        // 静态 PHY 没有共享发送状态。实际的收发互斥仍由各个 SFU 的队列控制。
+        // 链路时长模型可共用。每台 SFU 各自维护一个与其 STA 共享的信道。
         WifiLink wifi = wirelessPhy == null ? new WifiLink(new FixedDelayModel(config.wifiDelayUs()))
                 : new WifiLink(wirelessPhy, config.wifiFrameExchange());
         List<FiberLink> fibers = new ArrayList<>(config.sfuCount());
         List<Sfu> sfus = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             fibers.add(new FiberLink(fiberDelay));
-            sfus.add(new Sfu(i + 1, wifi, stationsBySfu.get(i), config.edcaParameters()));
+            sfus.add(new Sfu(i + 1, wifi, stationsBySfu.get(i), config.edcaParameters(), config.edcaCountdownEnabled()));
         }
         Mfu mfu = new Mfu(config.staSfuIds());
 
@@ -93,6 +93,9 @@ public final class Simulator {
                     break;
                 case WIFI_SELECT_NEXT:
                     sfus.get(event.sfuId() - 1).selectNext(context);
+                    break;
+                case WIFI_ACCESS_TIMER:
+                    sfus.get(event.sfuId() - 1).advanceAccess(event);
                     break;
                 default:
                     throw new IllegalStateException("Unhandled event: " + event.type());

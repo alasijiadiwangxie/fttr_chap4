@@ -69,6 +69,9 @@ public final class TraceLogger {
             case WIFI_SELECT_NEXT:
                 // SFU 实际选队时另记队列快照，此处的调度事件没有报文。
                 break;
+            case WIFI_ACCESS_TIMER:
+                // 内部计时事件。接入等待反映在选队与 DATA 开始之间的时间差中。
+                break;
             default:
                 throw new IllegalStateException("Unhandled trace event: " + event.type());
         }

@@ -10,7 +10,7 @@
 - 等待队列不设容量上限，无线传输按成功交付处理。HE SU 模式根据包长、开销和 PHY 参数计算数据 PPDU 时长，可启用 DATA–SIFS–ACK 交换。固定时延模式可用于回归对照。
 - SFU 和 STA 的吞吐量统一按从 0 到最后事件的时间窗口计算。日志同时记录逐包时序，以及按业务类别、设备和全局汇总的统计。
 
-信道干扰、EDCA、OFDMA、DBA 和 AP 节能机制可作为后续独立扩展。
+信道干扰、多个 AC 并行竞争、OFDMA、DBA 和 AP 节能机制可作为后续独立扩展。
 
 ## 构建与运行
 
@@ -190,7 +190,7 @@ ACK 速率仅用于 `data-sifs-ack`。DATA 继续使用 HE SU PHY。ACK 按 5 GH
 
 日志依次记录 `WIFI_TX_START`、`WIFI_DATA_END`、`WIFI_SIFS_START`、`WIFI_ACK_START`、`WIFI_ACK_END` 和 `WIFI_TX_END`。DATA 由原发送端发出，ACK 由 DATA 接收端反向发出，日志中的报文字段均指原 DATA。DATA 收齐时，下行交付到 STA，上行由 SFU 发往光链路。SIFS 和 ACK 计入无线资源占用，端到端时延仍按 DATA 到达最终目的节点计算。
 
-`WIFI_TX_END` 记录 ACK 完成时的资源释放，`wifi_service_us` 包含 DATA、SIFS 和 ACK。此后同一 SFU 才能启动下一次上下行交换。示例中，首个 1500 B 报文在 100 μs 开始无线发送，在 164 μs 交付 DATA，在 180 μs 开始 ACK，并在 208 μs 释放资源。该次交换占用 108 μs，下一包可在 208 μs 启动。模型采用理想信道和零无线传播时延，省略 CCA、退避、碰撞、丢包和重传。
+`WIFI_TX_END` 记录 ACK 完成时的资源释放，`wifi_service_us` 包含 DATA、SIFS 和 ACK。示例按默认接入模式运行时，首个 1500 B 报文在 100 μs 开始无线发送，在 164 μs 交付 DATA，在 180 μs 开始 ACK，并在 208 μs 释放资源。该次交换占用 108 μs，下一包可在 208 μs 启动。模型采用理想信道和零无线传播时延。
 
 ### EDCA 参数与 AIFS
 
@@ -211,7 +211,21 @@ ACK 速率仅用于 `data-sifs-ack`。DATA 继续使用 HE SU PHY。ACK 按 5 GH
 
 通过 `edcaState().forCategory(ac)` 获取某个 AC 的状态。CW 初始为 CWmin，计数器初始为空，调用 `drawBackoff()` 时从 `[0, CW]` 均匀抽取并保存整数。竞争失败时调用 `onContentionFailure()`，将 CW 更新为 `min(2 × CW + 1, CWmax)`。发送成功时调用 `onTransmissionSuccess()`，将 CW 恢复为 CWmin。两种更新均清空本次计数器，下一次抽取沿用该 AC 的随机序列。
 
-竞争状态供后续调度逻辑调用。当前发送仍按固定优先级选队，无线服务时长继续由现有 PHY 和帧交换模型决定。
+### CCA 信道忙闲检测
+
+每台 SFU 拥有一个独立信道，SFU 和所有关联 STA 通过 `ccaState()` 查询同一份 `WifiChannel.State`。信道初始为 `IDLE`，从 DATA 开始到 ACK 完成保持 `BUSY`，含 SIFS 的资源预留。固定时延和 `data-only` 模式在 DATA 完成后恢复 `IDLE`。
+
+上下行共用信道，等待报文在信道空闲后由固定优先级选队。报文到达和信道释放先于同一时刻的下一次选队，各类同刻报文事件按入队顺序处理。不同 SFU 的信道独立，可并行发送。
+
+### AIFS 等待与随机退避倒计时
+
+在 HE SU 下行示例中取消 `wifi.mac.access=edca-countdown` 的注释，即可在 DATA–SIFS–ACK 前加入接入等待。该接入模式也适用于固定时延和 `data-only` 场景。默认模式为 `fixed-priority`，选中的报文在信道空闲时直接开始发送。
+
+每台 SFU 仍按 VO、VI、BE、BK 的固定优先级选队，一次只有一个请求执行 AIFS 与退避。请求选定后会等到发送，新到达的报文参与下一次选队。下行使用 SFU 的 AC 计数器，上行使用发送 STA 的 AC 计数器，首次需要计数器时抽取退避值。信道连续空闲达到 AIFS 后，每完成一个空闲时隙递减一次。若退避值为零，等完 AIFS 即可发送。无中断时，从选队到 DATA 开始的时间为 `AIFS + 退避值 × Slot Time`。
+
+信道转为 `BUSY` 时保存剩余计数，恢复 `IDLE` 后重新等待完整 AIFS，再沿用剩余计数。同一时刻先处理信道状态变化，再处理倒计时事件。如果时隙结束时信道转为 `BUSY`，该时隙不计入退避。计数归零且信道空闲时开始发送，成功完成交换后恢复发送设备的 CWmin 并清空计数。`wifi_queue_wait_us` 包含接入等待，`wifi_service_us` 从 DATA 开始计时。
+
+当前模式只为已选中的请求推进倒计时。测试通过切换信道忙闲状态验证冻结与恢复。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。
 

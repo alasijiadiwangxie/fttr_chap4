@@ -8,7 +8,7 @@ import java.util.Map;
 import java.util.OptionalInt;
 import java.util.SplittableRandom;
 
-/** 一台无线设备的四类 AC 竞争状态。状态由未来的竞争流程推进。 */
+/** 一台无线设备的四类 AC 竞争状态。 */
 public final class EdcaState {
     private final Map<AccessCategory, AcState> byCategory = new EnumMap<>(AccessCategory.class);
 
@@ -61,6 +61,14 @@ public final class EdcaState {
         public int drawBackoff() {
             backoffCounter = random.nextInt(currentCw + 1);
             return backoffCounter;
+        }
+
+        /** 一个完整的空闲退避时隙结束后递减一次。 */
+        public int decrementBackoff() {
+            if (backoffCounter <= 0) {
+                throw new IllegalStateException("No positive backoff counter to decrement");
+            }
+            return --backoffCounter;
         }
 
         public void onContentionFailure() {

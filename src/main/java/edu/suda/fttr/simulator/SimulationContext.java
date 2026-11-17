@@ -67,8 +67,8 @@ public final class SimulationContext {
         }
     }
 
-    public void scheduleAfter(long delayUs, EventType type, Packet packet, int sfuId) {
-        scheduleAfterTicks(microsecondsToTicks(delayUs), type, packet, sfuId);
+    public Event scheduleAfter(long delayUs, EventType type, Packet packet, int sfuId) {
+        return scheduleAfterTicks(microsecondsToTicks(delayUs), type, packet, sfuId);
     }
 
     /** HE PPDU 的时间直接使用纳秒刻度，保留小数微秒部分。 */
@@ -79,16 +79,22 @@ public final class SimulationContext {
         scheduleAfterTicks(delayNs, type, packet, sfuId);
     }
 
-    private void scheduleAfterTicks(long delayTicks, EventType type, Packet packet, int sfuId) {
+    private Event scheduleAfterTicks(long delayTicks, EventType type, Packet packet, int sfuId) {
         if (delayTicks < 0) {
             throw new IllegalArgumentException("Event delay must be non-negative");
         }
         // 以当前事件发生的时刻为基准安排下一跳。零时延允许，但时钟不能倒退。
         try {
-            events.add(Event.atTicks(Math.addExact(nowTicks, delayTicks), nanosecondClock, type, packet, sfuId));
+            Event event = Event.atTicks(Math.addExact(nowTicks, delayTicks), nanosecondClock, type, packet, sfuId);
+            events.add(event);
+            return event;
         } catch (ArithmeticException ex) {
             throw new IllegalArgumentException("Event time exceeds the clock range: " + type, ex);
         }
+    }
+
+    public void cancel(Event event) {
+        events.cancel(event);
     }
 
     public void scheduleWifiSelection(int sfuId) {

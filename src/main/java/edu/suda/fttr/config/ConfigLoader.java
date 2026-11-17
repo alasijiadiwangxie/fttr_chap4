@@ -31,13 +31,14 @@ import java.util.regex.Pattern;
 public final class ConfigLoader {
     private static final String DEFAULT_SCENARIO = "/phase1-minimal-downlink.properties";
     private static final String MAC_EXCHANGE = "wifi.mac.exchange";
+    private static final String MAC_ACCESS = "wifi.mac.access";
     private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
     private static final String MAC_SLOT_US = "wifi.mac.slot.us";
     private static final String MAC_ACK_RATE_MBPS = "wifi.mac.ack.rate.mbps";
     private static final String EDCA_SEED = "wifi.mac.edca.seed";
     private static final Set<String> KEYS = Set.of(
             "fiber.delay.us", "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
-            MAC_EXCHANGE, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, EDCA_SEED);
+            MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, EDCA_SEED);
     private static final Set<String> PHY_KEYS = Set.of(
             "wifi.phy.bandwidth.mhz", "wifi.phy.mcs", "wifi.phy.nss", "wifi.phy.gi.us",
             "wifi.phy.mac.overhead.bytes", "wifi.phy.he-ltf.type", "wifi.phy.nominal.packet.padding.us");
@@ -101,6 +102,7 @@ public final class ConfigLoader {
         long fiberUs = readNonNegativeLong(properties, "fiber.delay.us");
         WirelessPhy wirelessPhy = readWirelessPhy(properties);
         EdcaParameters edcaParameters = readEdcaParameters(properties);
+        boolean edcaCountdown = readEdcaCountdown(properties);
         WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy, edcaParameters.sifsUs());
         long wifiUs = wirelessPhy == null ? readNonNegativeLong(properties, "wifi.delay.us") : 0;
         long durationUs = poisson ? readPositiveDuration(properties, "traffic.duration.us") : 0;
@@ -115,8 +117,17 @@ public final class ConfigLoader {
                 : readManualEvents(properties, arrivalsUs, staCount, directionMode);
 
         validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange);
-        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange, edcaParameters,
-                downlink.windowsUs, uplink.windowsUs, directionMode.allows(Packet.Direction.UL));
+        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange,
+                edcaParameters, edcaCountdown, downlink.windowsUs, uplink.windowsUs, directionMode.allows(Packet.Direction.UL));
+    }
+
+    private static boolean readEdcaCountdown(Properties properties) {
+        String access = properties.getProperty(MAC_ACCESS, "fixed-priority").strip();
+        switch (access) {
+            case "fixed-priority": return false;
+            case "edca-countdown": return true;
+            default: throw new IllegalArgumentException(MAC_ACCESS + " must be fixed-priority or edca-countdown");
+        }
     }
 
     private static EdcaParameters readEdcaParameters(Properties properties) {
