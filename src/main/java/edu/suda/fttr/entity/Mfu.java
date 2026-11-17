@@ -1,19 +1,16 @@
 package edu.suda.fttr.entity;
 
-import edu.suda.fttr.link.FiberLink;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
 
 import java.util.List;
 
-/** MFU 按固定的 STA–SFU 关联选择报文的逻辑下行光链路。 */
+/** MFU 按固定的 STA–SFU 关联发出下行报文，并接收上行报文。 */
 public final class Mfu {
     private final List<Integer> staSfuIds;
-    private final List<FiberLink> downstreamFibers;
 
-    public Mfu(List<Integer> staSfuIds, List<FiberLink> downstreamFibers) {
+    public Mfu(List<Integer> staSfuIds) {
         this.staSfuIds = List.copyOf(staSfuIds);
-        this.downstreamFibers = List.copyOf(downstreamFibers);
     }
 
     public void receive(Packet packet, SimulationContext context) {
@@ -22,7 +19,10 @@ public final class Mfu {
         context.scheduleAfter(0, EventType.FIBER_TX_START, packet, sfuId);
     }
 
-    public void transmit(Packet packet, int sfuId, SimulationContext context) {
-        downstreamFibers.get(sfuId - 1).transmit(packet, sfuId, context);
+    public void receiveUplink(Packet packet, int sfuId, SimulationContext context) {
+        if (packet.destinationNodeId() != Packet.DEFAULT_MFU_ID || staSfuIds.get(packet.staId() - 1) != sfuId) {
+            throw new IllegalStateException("Uplink packet " + packet.id() + " reached MFU on the wrong route");
+        }
+        context.recordUplinkDelivery(packet, sfuId);
     }
 }

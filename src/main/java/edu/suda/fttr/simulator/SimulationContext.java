@@ -7,7 +7,9 @@ import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.trace.TraceLogger;
 
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /** 每次运行使用独立的事件队列、微秒时钟和日志。 */
 public final class SimulationContext {
@@ -16,13 +18,14 @@ public final class SimulationContext {
     private final boolean multiPacket;
     private final EnumMap<AccessCategory, DelayStats> byClass = new EnumMap<>(AccessCategory.class);
     private final DelayStats overallDelay = new DelayStats();
+    private final Map<Integer, UplinkStats> uplinkByStation = new HashMap<>();
     private long nowUs;
     private int deliveredPackets;
     private long deliveredBytes;
     private long lastDeliveryDelayUs;
     private long wifiBusyUs;
     private long wifiBusySinceUs;
-    private int transmittingSfus;
+    private int activeRadios;
 
     SimulationContext(TraceLogger trace, boolean multiPacket) {
         this.trace = trace;
@@ -48,7 +51,11 @@ public final class SimulationContext {
             throw new IllegalArgumentException("Event delay must be non-negative");
         }
         // 以当前事件发生的时刻为基准安排下一跳。零时延允许，但时钟不能倒退。
-        events.add(new Event(Math.addExact(nowUs, delayUs), type, packet, sfuId));
+        try {
+            events.add(new Event(Math.addExact(nowUs, delayUs), type, packet, sfuId));
+        } catch (ArithmeticException ex) {
+            throw new IllegalArgumentException("Event time exceeds the clock range: " + type, ex);
+        }
     }
 
     public void scheduleWifiSelection(int sfuId) {
@@ -65,28 +72,46 @@ public final class SimulationContext {
     }
 
     public void recordDelivery(Packet packet, Sta sta) {
-        deliveredPackets++;
-        deliveredBytes += packet.bytes();
-        lastDeliveryDelayUs = nowUs - packet.mfuArrivalUs();
+        recordDelivered(packet);
         trace.recordDelivery(packet, sta, nowUs);
     }
 
+    public void recordUplinkDelivery(Packet packet, int sfuId) {
+        recordDelivered(packet);
+        UplinkStats stats = uplinkByStation.computeIfAbsent(packet.staId(), id -> new UplinkStats());
+        stats.packets++;
+        stats.bytes += packet.bytes();
+        stats.delaySumUs += lastDeliveryDelayUs;
+        trace.recordUplinkDelivery(packet, sfuId, nowUs);
+    }
+
+    private void recordDelivered(Packet packet) {
+        deliveredPackets++;
+        deliveredBytes += packet.bytes();
+        lastDeliveryDelayUs = nowUs - packet.generationTimeUs();
+    }
+
     public void recordWifiStart() {
-        if (transmittingSfus++ == 0) {
+        if (activeRadios++ == 0) {
             wifiBusySinceUs = nowUs;
         }
     }
 
-    public void recordWifiService(Packet packet, int sfuId, long sfuArrivalUs, long startUs) {
-        // 全局忙时按至少一台 SFU 正在发送的时间计算。并行区间只计一次。
-        if (--transmittingSfus == 0) {
+    public void recordWifiService(Packet packet, int sfuId, long queueEntryUs, long startUs) {
+        // 至少一台 SFU 正在无线发送或接收时计为忙。不同 SFU 的并行区间只计一次。
+        if (--activeRadios == 0) {
             wifiBusyUs += nowUs - wifiBusySinceUs;
         }
-        long queueWaitUs = startUs - sfuArrivalUs;
-        long delayUs = nowUs - packet.mfuArrivalUs();
-        byClass.get(packet.type()).add(queueWaitUs, delayUs);
-        overallDelay.add(queueWaitUs, delayUs);
-        trace.recordWifiService(packet, sfuId, sfuArrivalUs, startUs, nowUs);
+        long queueWaitUs = startUs - queueEntryUs;
+        if (packet.isUplink()) {
+            // 上行此时只完成无线一跳，端到端时延等 MFU 接收后再统计。
+            uplinkByStation.computeIfAbsent(packet.staId(), id -> new UplinkStats()).waitSumUs += queueWaitUs;
+        } else {
+            long delayUs = nowUs - packet.generationTimeUs();
+            byClass.get(packet.type()).add(queueWaitUs, delayUs);
+            overallDelay.add(queueWaitUs, delayUs);
+        }
+        trace.recordWifiService(packet, sfuId, queueEntryUs, startUs, nowUs);
     }
 
     public void recordEnqueue(Packet packet, int sfuId, int queueDepth) {
@@ -97,7 +122,7 @@ public final class SimulationContext {
         trace.recordQueueSelection(packet, nowUs, sfuId, vo, vi, be, bk);
     }
 
-    void recordSummary(List<Sfu> sfus, List<Sta> stations) {
+    void recordSummary(List<Sfu> sfus, List<Sta> stations, boolean uplinkEnabled) {
         byClass.forEach((type, stats) -> trace.recordClassSummary(
                 type, stats.count, stats.averageWaitUs(), stats.averageDelayUs()));
         trace.recordGlobalDelay(overallDelay.count, overallDelay.averageWaitUs(), overallDelay.averageDelayUs());
@@ -107,11 +132,34 @@ public final class SimulationContext {
         for (Sta sta : stations) {
             trace.recordStaSummary(sta, throughputMbps(sta.receivedBytes()));
         }
+        if (uplinkEnabled) {
+            recordUplinkSummary(stations);
+        }
         if (multiPacket) {
             trace.recordRunSummary(deliveredPackets, deliveredBytes, wifiBusyUs, nowUs);
         } else {
             trace.recordSinglePacketSummary(deliveredPackets, deliveredBytes, lastDeliveryDelayUs);
         }
+    }
+
+    private void recordUplinkSummary(List<Sta> stations) {
+        int packets = 0;
+        long bytes = 0;
+        double delaySumUs = 0.0;
+        UplinkStats empty = new UplinkStats();
+        for (Sta sta : stations) {
+            UplinkStats stats = uplinkByStation.getOrDefault(sta.id(), empty);
+            trace.recordUplinkStaSummary(sta, stats.packets, stats.bytes, throughputMbps(stats.bytes),
+                    average(stats.waitSumUs, stats.packets), average(stats.delaySumUs, stats.packets));
+            packets += stats.packets;
+            bytes += stats.bytes;
+            delaySumUs += stats.delaySumUs;
+        }
+        trace.recordUplinkGlobalSummary(packets, bytes, average(delaySumUs, packets));
+    }
+
+    private static double average(double sum, int count) {
+        return count == 0 ? 0.0 : sum / count;
     }
 
     private double throughputMbps(long bytes) {
@@ -138,5 +186,12 @@ public final class SimulationContext {
         double averageDelayUs() {
             return count == 0 ? 0.0 : delaySumUs / count;
         }
+    }
+
+    private static final class UplinkStats {
+        private int packets;
+        private long bytes;
+        private double waitSumUs;
+        private double delaySumUs;
     }
 }

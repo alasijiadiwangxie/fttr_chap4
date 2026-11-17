@@ -26,10 +26,18 @@ public final class ConfigLoader {
     private static final Set<String> KEYS = Set.of(
             "fiber.delay.us", "wifi.delay.us", "sta.count", "sfu.count", "traffic.mode", "traffic.direction");
     private static final Set<String> MANUAL_KEYS = Set.of("packet.bytes", "packet.arrival.us");
-    private static final Pattern PACKET_OVERRIDE = Pattern.compile("packet\\.([1-9][0-9]*)\\.(bytes|type|sta\\.id)");
+    private static final Pattern PACKET_OVERRIDE = Pattern.compile("packet\\.([1-9][0-9]*)\\.(bytes|type|sta\\.id|direction)");
     private static final Pattern STA_ASSOCIATION = Pattern.compile("sta\\.([1-9][0-9]*)\\.sfu\\.id");
     private static final Pattern POISSON_SOURCE = Pattern.compile(
-            "traffic\\.sfu\\.([1-9][0-9]*)\\.(rate\\.pps|packet\\.bytes|seed|class\\.weights|duration\\.us)");
+            "traffic\\.(sfu|sta)\\.([1-9][0-9]*)\\.(rate\\.pps|packet\\.bytes|seed|class\\.weights|duration\\.us)");
+
+    private enum DirectionMode {
+        DL, UL, BOTH;
+
+        boolean allows(Packet.Direction direction) {
+            return this == BOTH || (direction == Packet.Direction.DL ? this == DL : this == UL);
+        }
+    }
 
     private ConfigLoader() {
     }
@@ -53,7 +61,7 @@ public final class ConfigLoader {
     private static SimulationConfig read(Reader reader) throws IOException {
         Properties properties = new Properties();
         properties.load(reader);
-        validateTrafficDirection(properties);
+        DirectionMode directionMode = readDirectionMode(properties);
 
         String mode = properties.getProperty("traffic.mode", "manual").strip();
         if (!mode.equals("manual") && !mode.equals("poisson")) {
@@ -63,51 +71,74 @@ public final class ConfigLoader {
         List<Long> arrivalsUs = poisson ? List.of() : readArrivals(properties);
         int staCount = properties.containsKey("sta.count") ? readPositiveInt(properties, "sta.count") : 1;
         int sfuCount = properties.containsKey("sfu.count") ? readPositiveInt(properties, "sfu.count") : 1;
-        validateKeys(properties, arrivalsUs.size(), staCount, sfuCount, poisson);
+        validateKeys(properties, arrivalsUs.size(), staCount, sfuCount, poisson, directionMode);
         List<Integer> staSfuIds = readStaAssociations(properties, staCount, sfuCount);
         long fiberUs = readNonNegativeLong(properties, "fiber.delay.us");
         long wifiUs = readNonNegativeLong(properties, "wifi.delay.us");
-        List<TrafficGenerator.Source> sources = poisson ? readDownlinkSources(properties, sfuCount, staSfuIds) : List.of();
+        long durationUs = poisson ? readPositiveDuration(properties, "traffic.duration.us") : 0;
+        List<TrafficGenerator.Source> downlinkSources = poisson && directionMode.allows(Packet.Direction.DL)
+                ? readDownlinkSources(properties, sfuCount, staSfuIds, durationUs) : List.of();
+        List<TrafficGenerator.Source> uplinkSources = poisson && directionMode.allows(Packet.Direction.UL)
+                ? readUplinkSources(properties, staCount, durationUs) : List.of();
+        // 保留下行流的原有编号与种子序列，双向模式把上行流追加在下行流之后。
+        List<TrafficGenerator.Source> sources = new ArrayList<>(downlinkSources);
+        sources.addAll(uplinkSources);
         List<Event> inputEvents = poisson
                 ? TrafficGenerator.generate(sources)
-                : readManualEvents(properties, arrivalsUs, staCount);
+                : readManualEvents(properties, arrivalsUs, staCount, directionMode);
 
         validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs);
-        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, sources);
+        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs,
+                downlinkSources, uplinkSources, directionMode.allows(Packet.Direction.UL));
     }
 
-    private static void validateTrafficDirection(Properties properties) {
+    private static DirectionMode readDirectionMode(Properties properties) {
         String direction = properties.getProperty("traffic.direction", "DL").strip();
-        if (direction.equals("UL")) {
-            throw new IllegalArgumentException("Uplink traffic (UL) is not supported: traffic.direction");
-        }
-        if (!direction.equals("DL")) {
-            throw new IllegalArgumentException("traffic.direction must be DL or UL");
-        }
-        for (String key : properties.stringPropertyNames()) {
-            if (key.startsWith("traffic.sta.")) {
-                throw new IllegalArgumentException("Uplink traffic (UL) is not supported: " + key);
-            }
+        try {
+            return DirectionMode.valueOf(direction);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("traffic.direction must be DL, UL or BOTH", e);
         }
     }
 
     private static void validateCompletionClock(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds,
                                                 long fiberUs, long wifiUs) {
-        // 每台 SFU 独立预检最后完成时刻。固定服务时长下，优先级不改变同一台 SFU 的忙闲边界。
+        // 固定无线时长下，同一 SFU 的忙闲边界由实际入队时刻决定，与选队优先级无关。
+        boolean mixed = inputEvents.stream().anyMatch(event -> event.packet().direction() == Packet.Direction.UL)
+                && inputEvents.stream().anyMatch(event -> event.packet().direction() == Packet.Direction.DL);
         long[] completionUs = new long[sfuCount];
         try {
-            for (Event event : inputEvents) {
-                long sfuArrivalUs = Math.addExact(event.timeUs(), fiberUs);
-                int sfuIndex = staSfuIds.get(event.packet().destinationStaId() - 1) - 1;
-                completionUs[sfuIndex] = Math.addExact(Math.max(sfuArrivalUs, completionUs[sfuIndex]), wifiUs);
+            List<Event> wifiArrivals = inputEvents;
+            if (mixed) {
+                // 上行直接进入无线队列，下行先走光路，双向模式的入队顺序可能与生成顺序不同。
+                wifiArrivals = new ArrayList<>(inputEvents);
+                wifiArrivals.sort(Comparator.comparingLong(event -> wifiArrivalUs(event, fiberUs)));
+            }
+            for (Event event : wifiArrivals) {
+                Packet packet = event.packet();
+                boolean uplink = packet.direction() == Packet.Direction.UL;
+                long arrivalUs = wifiArrivalUs(event, fiberUs);
+                int staId = uplink ? packet.sourceNodeId() : packet.destinationStaId();
+                int sfuIndex = staSfuIds.get(staId - 1) - 1;
+                completionUs[sfuIndex] = Math.addExact(Math.max(arrivalUs, completionUs[sfuIndex]), wifiUs);
+                if (uplink) {
+                    // 纯上行的最后一条无线完成记录可给出精确上界。双向时谁最后上行由实际选队决定，
+                    // 这里只检查最早可完成的时刻，剩余的上行光路加法在执行实际事件时校验。
+                    long uplinkEndUs = mixed ? Math.addExact(arrivalUs, wifiUs) : completionUs[sfuIndex];
+                    Math.addExact(uplinkEndUs, fiberUs);
+                }
             }
         } catch (ArithmeticException e) {
             throw new IllegalArgumentException("Packet arrival time plus link delays and queueing exceeds the clock range", e);
         }
     }
 
+    private static long wifiArrivalUs(Event event, long fiberUs) {
+        return event.packet().direction() == Packet.Direction.UL ? event.timeUs() : Math.addExact(event.timeUs(), fiberUs);
+    }
+
     private static void validateKeys(Properties properties, int packetCount, int staCount, int sfuCount,
-                                     boolean poisson) {
+                                     boolean poisson, DirectionMode directionMode) {
         // 模式间的字段不能混用，防止手填报文或流量源的设置被忽略。
         for (String key : properties.stringPropertyNames()) {
             if (KEYS.contains(key)) {
@@ -134,12 +165,20 @@ public final class ConfigLoader {
                 continue;
             }
             Matcher source = POISSON_SOURCE.matcher(key);
-            if (key.equals("traffic.duration.us") || source.matches()) {
+            boolean indexedSource = source.matches();
+            if (key.equals("traffic.duration.us") || indexedSource) {
                 if (!poisson) {
                     throw new IllegalArgumentException(key + " requires traffic.mode=poisson");
                 }
-                if (!key.equals("traffic.duration.us") && parseNonNegativeLong(source.group(1), key) > sfuCount) {
-                    throw new IllegalArgumentException("SFU index out of range: " + key);
+                if (indexedSource) {
+                    boolean uplink = source.group(1).equals("sta");
+                    Packet.Direction direction = uplink ? Packet.Direction.UL : Packet.Direction.DL;
+                    if (!directionMode.allows(direction)) {
+                        throw new IllegalArgumentException(key + " requires traffic.direction=" + direction + " or BOTH");
+                    }
+                    if (parseNonNegativeLong(source.group(2), key) > (uplink ? staCount : sfuCount)) {
+                        throw new IllegalArgumentException((uplink ? "STA" : "SFU") + " index out of range: " + key);
+                    }
                 }
                 continue;
             }
@@ -148,8 +187,7 @@ public final class ConfigLoader {
     }
 
     private static List<TrafficGenerator.Source> readDownlinkSources(Properties properties, int sfuCount,
-                                                                    List<Integer> staSfuIds) {
-        long durationUs = readPositiveDuration(properties, "traffic.duration.us");
+                                                                    List<Integer> staSfuIds, long durationUs) {
         // 配置层把 STA–SFU 关联转换为每条下行流的候选终端，生成器只接收端点列表。
         List<List<Integer>> stationsBySfu = new ArrayList<>(sfuCount);
         for (int i = 0; i < sfuCount; i++) {
@@ -159,30 +197,41 @@ public final class ConfigLoader {
             stationsBySfu.get(staSfuIds.get(i) - 1).add(i + 1);
         }
         List<TrafficGenerator.Source> sources = new ArrayList<>(sfuCount);
-        for (int i = 0; i < sfuCount; i++) {
-            int sfuId = i + 1;
-            String prefix = "traffic.sfu." + sfuId;
-            String rateKey = prefix + ".rate.pps";
-            double ratePps = parseNonNegativeDouble(properties.getProperty(rateKey, "0"), rateKey);
-            String bytesKey = prefix + ".packet.bytes";
-            int bytes = ratePps > 0.0 || properties.containsKey(bytesKey) ? readPositiveInt(properties, bytesKey) : 0;
-            String seedKey = prefix + ".seed";
-            long seed = ratePps > 0.0 || properties.containsKey(seedKey) ? readSeed(properties, seedKey) : 0;
-            String durationKey = prefix + ".duration.us";
-            long sourceDurationUs = properties.containsKey(durationKey)
-                    ? readPositiveDuration(properties, durationKey) : durationUs;
-            if (sourceDurationUs > durationUs) {
-                throw new IllegalArgumentException(durationKey + " must not exceed traffic.duration.us");
-            }
-            double[] weights = readClassWeights(properties, prefix + ".class.weights");
-            List<Integer> destinations = stationsBySfu.get(i);
-            if (ratePps > 0.0 && destinations.isEmpty()) {
-                throw new IllegalArgumentException("SFU " + sfuId + " has positive traffic rate but no associated STA");
-            }
-            sources.add(new TrafficGenerator.Source(Packet.Direction.DL, Packet.DEFAULT_MFU_ID, destinations,
-                    ratePps, bytes, seed, sourceDurationUs, weights));
+        for (int sfuId = 1; sfuId <= sfuCount; sfuId++) {
+            sources.add(readSource(properties, "traffic.sfu." + sfuId, durationUs, Packet.Direction.DL,
+                    Packet.DEFAULT_MFU_ID, stationsBySfu.get(sfuId - 1)));
         }
         return sources;
+    }
+
+    private static List<TrafficGenerator.Source> readUplinkSources(Properties properties, int staCount, long durationUs) {
+        List<TrafficGenerator.Source> sources = new ArrayList<>(staCount);
+        for (int staId = 1; staId <= staCount; staId++) {
+            sources.add(readSource(properties, "traffic.sta." + staId, durationUs, Packet.Direction.UL,
+                    staId, List.of(Packet.DEFAULT_MFU_ID)));
+        }
+        return sources;
+    }
+
+    private static TrafficGenerator.Source readSource(Properties properties, String prefix, long durationUs,
+                                                      Packet.Direction direction, int sourceId, List<Integer> destinations) {
+        String rateKey = prefix + ".rate.pps";
+        double ratePps = parseNonNegativeDouble(properties.getProperty(rateKey, "0"), rateKey);
+        String bytesKey = prefix + ".packet.bytes";
+        int bytes = ratePps > 0.0 || properties.containsKey(bytesKey) ? readPositiveInt(properties, bytesKey) : 0;
+        String seedKey = prefix + ".seed";
+        long seed = ratePps > 0.0 || properties.containsKey(seedKey) ? readSeed(properties, seedKey) : 0;
+        String durationKey = prefix + ".duration.us";
+        long sourceDurationUs = properties.containsKey(durationKey)
+                ? readPositiveDuration(properties, durationKey) : durationUs;
+        if (sourceDurationUs > durationUs) {
+            throw new IllegalArgumentException(durationKey + " must not exceed traffic.duration.us");
+        }
+        double[] weights = readClassWeights(properties, prefix + ".class.weights");
+        if (ratePps > 0.0 && destinations.isEmpty()) {
+            throw new IllegalArgumentException(rateKey + " is positive but the SFU has no associated STA");
+        }
+        return new TrafficGenerator.Source(direction, sourceId, destinations, ratePps, bytes, seed, sourceDurationUs, weights);
     }
 
     private static double[] readClassWeights(Properties properties, String key) {
@@ -244,7 +293,8 @@ public final class ConfigLoader {
         return staSfuIds;
     }
 
-    private static List<Event> readManualEvents(Properties properties, List<Long> arrivalsUs, int staCount) {
+    private static List<Event> readManualEvents(Properties properties, List<Long> arrivalsUs, int staCount,
+                                                DirectionMode directionMode) {
         // 覆盖项对应原始列表位置。报文 ID 仍按时刻编号，稳定排序保留同刻配置顺序。
         List<Integer> positions = new ArrayList<>(arrivalsUs.size());
         for (int i = 0; i < arrivalsUs.size(); i++) {
@@ -273,10 +323,31 @@ public final class ConfigLoader {
             if (staId > staCount) {
                 throw new IllegalArgumentException(staKey + " must refer to a configured STA (1 to " + staCount + ")");
             }
-            Packet packet = new Packet(events.size() + 1, bytes, arrivalsUs.get(position), type, staId);
+            Packet.Direction direction = readPacketDirection(properties, prefix + ".direction", directionMode);
+            boolean uplink = direction == Packet.Direction.UL;
+            // 手动场景的 STA ID 在下行中指目的终端，在上行中指源终端。
+            Packet packet = new Packet(events.size() + 1, bytes, arrivalsUs.get(position), type, direction,
+                    uplink ? staId : Packet.DEFAULT_MFU_ID, uplink ? Packet.DEFAULT_MFU_ID : staId);
             events.add(Event.packetGenerated(packet));
         }
         return events;
+    }
+
+    private static Packet.Direction readPacketDirection(Properties properties, String key, DirectionMode directionMode) {
+        if (directionMode != DirectionMode.BOTH && !properties.containsKey(key)) {
+            return directionMode == DirectionMode.UL ? Packet.Direction.UL : Packet.Direction.DL;
+        }
+        String value = requireProperty(properties, key).strip();
+        Packet.Direction direction;
+        try {
+            direction = Packet.Direction.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(key + " must be DL or UL", e);
+        }
+        if (!directionMode.allows(direction)) {
+            throw new IllegalArgumentException(key + " conflicts with traffic.direction=" + directionMode);
+        }
+        return direction;
     }
 
     private static int readPositiveInt(Properties properties, String key) {

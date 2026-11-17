@@ -8,7 +8,7 @@ import edu.suda.fttr.trace.TraceLogger;
 import java.io.IOException;
 import java.nio.file.Path;
 
-/** 加载一份场景配置，运行一次下行仿真。 */
+/** 加载一份场景配置，运行一次仿真。 */
 public final class App {
     private static final String USAGE = "Usage: java -jar fttr-chap4-0.1.0-SNAPSHOT.jar [scenario.properties]";
 

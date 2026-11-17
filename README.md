@@ -1,16 +1,16 @@
-# FTTR 下行仿真基础版
+# FTTR 仿真基础版
 
-本项目使用 Java 和离散事件模拟 FTTR 的下行单播流程。一个 MFU 根据目的 STA 选择对应的 SFU，SFU 按本地队列调度并交付报文。拓扑可配置为一个 MFU、多台 SFU 和多台 STA，各 SFU 可并行发送。
+本项目使用 Java 和离散事件模拟 FTTR 的上下行单播。下行由 MFU 按目的 STA 选择 SFU，上行由 STA 经关联 SFU 发往 MFU。拓扑可配置为一个 MFU、多台 SFU 和多台 STA。
 
 ## 模型范围与假设
 
-- 仿真以微秒为单位。报文按手动配置或泊松生成的到达时刻进入 MFU，全部事件处理完毕后结束。
-- 每台 STA 在一次仿真中固定关联一台 SFU。光侧用固定时延表示，MFU 可立即转发，光路之间没有共享资源竞争或额外排队。
-- 每台 SFU 独立维护 VO、VI、BE、BK 四类 FIFO 队列和一个无线发送端。业务类别按固定优先级选队，已经开始发送的报文会发完。不同 SFU 的无线发送互不干扰。
+- 仿真以微秒为单位。报文按手动配置或泊松生成的时刻注入源节点，全部事件处理完毕后结束。
+- 每台 STA 在一次仿真中固定关联一台 SFU。上下行光侧均使用固定时延，收齐报文后可立即转发。光路之间没有共享资源竞争或额外排队。
+- 每台 SFU 独立维护 VO、VI、BE、BK 四类 FIFO 等待队列和一份无线资源。该 SFU 的上下行统一按固定优先级选队，已经开始的传输会发完。不同 SFU 可以并行收发。
 - 等待队列不设容量上限，无线传输按成功交付处理。**同一场景中的所有报文使用相同的 Wi-Fi 服务时长**。包长用于统计交付字节数和吞吐量。
 - SFU 和 STA 的吞吐量统一按从 0 到最后事件的时间窗口计算。日志同时记录逐包时序，以及按业务类别、设备和全局汇总的统计。
 
-上行、信道干扰、EDCA、OFDMA、DBA 和 AP 节能机制可作为后续独立扩展。
+信道干扰、EDCA、OFDMA、DBA 和 AP 节能机制可作为后续独立扩展。
 
 ## 构建与运行
 
@@ -108,9 +108,19 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/poisson-multi-sfu-downlin
 
 流量生成与链路传输分开。配置层为每条流提供方向、源节点和候选目的节点，生成器输出携带报文的 `PACKET_GENERATED` 事件。`Packet` 记录生成时刻、业务类型及源和目的节点 ID。方向决定 ID 对应的节点类型，`DL` 表示 MFU → STA，`UL` 表示 STA → MFU。各 `traffic.sfu.N.*` 配置的是发往该 SFU 关联终端的下行流，报文源始终是 MFU 1。仿真器收到入口事件后，从 MFU 注入现有下行流程。
 
-`traffic.direction` 省略时默认为 `DL`。当前仿真只接受下行业务，`traffic.direction=UL` 或 `traffic.sta.N.*` 会在配置加载时明确报错。将来可按每台 STA 建立独立的 `TrafficGenerator.Source`，复用相同的指数间隔采样和入口事件，再接入 STA 的上行入口。
-
 `summary=TRAFFIC_SFU` 和 `summary=TRAFFIC_CLASS` 分别给出 SFU 总量及其各业务类别的生成包数、字节数、实际到达率和平均输入负载。`actual_rate_pps` 按生成包数除以该 SFU 的窗口秒数计算，`offered_load_mbps` 按生成比特数除以该 SFU 的窗口微秒数计算。交付吞吐量仍按原有仿真窗口统计。
+
+### STA 上行与双向业务
+
+```powershell
+java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/poisson-multi-sta-uplink.properties
+```
+
+`traffic.direction` 支持 `DL`（默认）、`UL` 和 `BOTH`。泊松模式下，上行使用 `traffic.sta.N.*` 按源 STA 配置，字段与下行相同，即 `rate.pps`、`packet.bytes`、`seed`、`class.weights` 和可选的 `duration.us`。`BOTH` 可同时配置 `traffic.sfu.N.*` 和 `traffic.sta.N.*`。手动模式下，`packet.N.sta.id` 在上行表示源 STA，在下行表示目的 STA，双向模式还须为每包设置 `packet.N.direction=UL` 或 `DL`。`packet.arrival.us` 始终表示报文进入源节点的时刻。
+
+上行报文在源 STA 等待关联 SFU 的无线资源，SFU 收齐报文后立即走固定时延光链路，抵达 MFU 时计为交付。四类等待队列是集中式调度抽象。上下行共用同一台 SFU 的无线资源，其他 SFU 独立运行。
+
+`TRAFFIC_UL_STA` 与 `TRAFFIC_UL_CLASS` 按源 STA 输出总量及各业务的生成包数、实际到达率和输入负载。`UL_STA` 与 `UL_GLOBAL` 统计 MFU 收到的上行报文，时延从 STA 生成算到 MFU 收齐。`CLASS`、`GLOBAL`、`SFU` 和 `STA` 汇总仍对应下行。最后一行的 `delivered_packets` 为两个方向的交付总数，`wifi_busy_us` 为至少一台 SFU 正在无线发送或接收的时长。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。
 

@@ -4,7 +4,7 @@ import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
 
-/** SFU 到 STA 的无线链路。第一阶段将一次成功服务折算为固定时长。 */
+/** SFU 和关联 STA 之间的无线链路。收发均使用固定服务时长。 */
 public final class WifiLink {
     private final LinkDelayModel delayModel;
 
@@ -13,6 +13,7 @@ public final class WifiLink {
     }
 
     public void transmit(Packet packet, int sfuId, SimulationContext context) {
-        context.scheduleAfter(delayModel.delayUs(packet), EventType.PACKET_ARRIVAL_AT_STA, packet, sfuId);
+        EventType arrival = packet.isUplink() ? EventType.WIFI_ARRIVAL_AT_SFU : EventType.PACKET_ARRIVAL_AT_STA;
+        context.scheduleAfter(delayModel.delayUs(packet), arrival, packet, sfuId);
     }
 }

@@ -8,7 +8,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Map;
 
-/** 单个 SFU 的四类 FIFO 下行队列，共用一份非抢占式无线资源。 */
+/** 每台 SFU 按四类 FIFO 统一调度下行发送和上行接收。 */
 public final class Sfu {
     private final int id;
     private final WifiLink wifi;
@@ -46,7 +46,11 @@ public final class Sfu {
         return sentPackets == 0 ? 0.0 : queueWaitSumUs / sentPackets;
     }
 
-    public void receive(Packet packet, SimulationContext context) {
+    public void enqueueForWifi(Packet packet, SimulationContext context) {
+        if (!stations.containsKey(packet.staId())) {
+            throw new IllegalStateException("Packet " + packet.id() + " reached unassociated SFU " + id);
+        }
+        // 上行报文仍在源 STA 等待。这里入队的是对同一无线资源的发送请求。
         Deque<QueuedPacket> queue = queueFor(packet.type());
         queue.addLast(new QueuedPacket(packet, context.nowUs()));
         context.recordEnqueue(packet, id, queue.size());
@@ -62,15 +66,15 @@ public final class Sfu {
 
     public void completeTransmission(Packet packet, SimulationContext context) {
         checkActive(packet);
-        // 每台 SFU 仅可查找自己关联的终端，避免把错误路由掩盖成成功交付。
-        Sta station = stations.get(packet.destinationStaId());
-        if (station == null) {
-            throw new IllegalStateException("Packet " + packet.id() + " reached unassociated SFU " + id);
+        if (packet.isUplink()) {
+            // SFU 此时才收齐上行报文。光侧作为独立的一跳开始转发，无线资源可以立即接力。
+            context.scheduleAfter(0, EventType.FIBER_TX_START, packet, id);
+        } else {
+            stations.get(packet.destinationStaId()).receive(packet, context);
+            sentPackets++;
+            sentBytes += packet.bytes();
+            queueWaitSumUs += txStartUs - active.arrivalUs;
         }
-        station.receive(packet, context);
-        sentPackets++;
-        sentBytes += packet.bytes();
-        queueWaitSumUs += txStartUs - active.arrivalUs;
         // 记录半开区间 [开始, 完成)。同刻启动的下一条报文不会与这一条重叠。
         context.recordWifiService(packet, id, active.arrivalUs, txStartUs);
         active = null;
@@ -92,7 +96,7 @@ public final class Sfu {
         Deque<QueuedPacket> queue = highestPriorityQueue();
         context.recordQueueSelection(queue.getFirst().packet, id,
                 voQueue.size(), viQueue.size(), beQueue.size(), bkQueue.size());
-        // 先出队并预留资源，再安排发送。预留持续到 STA 完整接收该报文。
+        // 先出队并预留资源，再安排发送。预留持续到无线接收端完整收到该报文。
         active = queue.removeFirst();
         context.scheduleAfter(0, EventType.WIFI_TX_START, active.packet, id);
     }

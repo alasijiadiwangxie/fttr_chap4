@@ -66,6 +66,15 @@ public final class Packet {
         return direction;
     }
 
+    public boolean isUplink() {
+        return direction == Direction.UL;
+    }
+
+    /** 无线一端的 STA。上行取源节点，下行取目的节点。 */
+    public int staId() {
+        return isUplink() ? sourceNodeId : destinationNodeId;
+    }
+
     public int sourceNodeId() {
         return sourceNodeId;
     }

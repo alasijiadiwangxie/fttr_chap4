@@ -10,20 +10,23 @@ import edu.suda.fttr.link.FiberLink;
 import edu.suda.fttr.link.FixedDelayModel;
 import edu.suda.fttr.link.WifiLink;
 import edu.suda.fttr.trace.TraceLogger;
+import edu.suda.fttr.traffic.TrafficGenerator;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** 建立下行拓扑，并将各次事件交给它所属的节点。 */
+/** 建立拓扑，并将上下行事件交给对应的设备或链路。 */
 public final class Simulator {
     private Simulator() {
     }
 
     public static void run(SimulationConfig config, TraceLogger trace) {
-        boolean poisson = !config.poissonSources().isEmpty();
-        SimulationContext context = new SimulationContext(trace, poisson || config.inputEvents().size() > 1);
+        List<TrafficGenerator.Source> downlinkSources = config.downlinkPoissonSources();
+        List<TrafficGenerator.Source> uplinkSources = config.uplinkPoissonSources();
+        boolean runSummary = config.uplinkEnabled() || !downlinkSources.isEmpty() || config.inputEvents().size() > 1;
+        SimulationContext context = new SimulationContext(trace, runSummary);
         List<Map<Integer, Sta>> stationsBySfu = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             stationsBySfu.add(new HashMap<>());
@@ -44,17 +47,10 @@ public final class Simulator {
             fibers.add(new FiberLink(fiberDelay));
             sfus.add(new Sfu(i + 1, new WifiLink(wifiDelay), stationsBySfu.get(i)));
         }
-        Mfu mfu = new Mfu(config.staSfuIds(), fibers);
+        Mfu mfu = new Mfu(config.staSfuIds());
 
-        // 生成器只给出入口事件。仿真器检查当前支持的方向和源节点，再按事件时刻注入。
+        // 输入事件只提供报文和生成时间，实际路径由仿真器和设备根据关联表决定。
         for (Event input : config.inputEvents()) {
-            Packet packet = input.packet();
-            if (packet.direction() != Packet.Direction.DL) {
-                throw new IllegalArgumentException("Uplink traffic (UL) is not supported by the simulator");
-            }
-            if (packet.sourceNodeId() != Packet.DEFAULT_MFU_ID) {
-                throw new IllegalArgumentException("Unknown source MFU ID: " + packet.sourceNodeId());
-            }
             context.scheduleInputEvent(input);
         }
 
@@ -62,20 +58,30 @@ public final class Simulator {
         while ((event = context.nextEvent()) != null) {
             switch (event.type()) {
                 case PACKET_GENERATED:
-                    mfu.receive(event.packet(), context);
+                    Packet packet = event.packet();
+                    if (packet.isUplink()) {
+                        Sta source = stations.get(packet.staId() - 1);
+                        sfus.get(source.sfuId() - 1).enqueueForWifi(packet, context);
+                    } else {
+                        mfu.receive(packet, context);
+                    }
                     break;
                 case FIBER_TX_START:
-                    mfu.transmit(event.packet(), event.sfuId(), context);
+                    fibers.get(event.sfuId() - 1).transmit(event.packet(), event.sfuId(), context);
                     break;
                 case PACKET_ARRIVAL_AT_SFU:
-                    sfus.get(event.sfuId() - 1).receive(event.packet(), context);
+                    sfus.get(event.sfuId() - 1).enqueueForWifi(event.packet(), context);
                     break;
                 case WIFI_TX_START:
                     sfus.get(event.sfuId() - 1).transmit(event.packet(), context);
                     break;
                 case PACKET_ARRIVAL_AT_STA:
-                    // 完成事件只释放本次发送所占用的 SFU 无线资源。
+                case WIFI_ARRIVAL_AT_SFU:
+                    // 上下行完成事件都释放该 SFU 的无线资源。上行还需要转发光侧一跳。
                     sfus.get(event.sfuId() - 1).completeTransmission(event.packet(), context);
+                    break;
+                case PACKET_ARRIVAL_AT_MFU:
+                    mfu.receiveUplink(event.packet(), event.sfuId(), context);
                     break;
                 case WIFI_SELECT_NEXT:
                     sfus.get(event.sfuId() - 1).selectNext(context);
@@ -84,36 +90,54 @@ public final class Simulator {
                     throw new IllegalStateException("Unhandled event: " + event.type());
             }
         }
-        if (poisson) {
-            recordGeneratedTraffic(config, trace);
+        if (!downlinkSources.isEmpty()) {
+            recordGeneratedTraffic(config, trace, downlinkSources, false);
         }
-        context.recordSummary(sfus, stations);
+        if (!uplinkSources.isEmpty()) {
+            recordGeneratedTraffic(config, trace, uplinkSources, true);
+        }
+        context.recordSummary(sfus, stations, config.uplinkEnabled());
     }
 
-    private static void recordGeneratedTraffic(SimulationConfig config, TraceLogger trace) {
+    private static void recordGeneratedTraffic(SimulationConfig config, TraceLogger trace,
+                                               List<TrafficGenerator.Source> sources, boolean uplink) {
         AccessCategory[] categories = AccessCategory.values();
-        int[][] packetCounts = new int[config.sfuCount()][categories.length];
-        long[][] byteCounts = new long[config.sfuCount()][categories.length];
-        // 按实际进入 MFU 的报文统计供给负载。分母是生成窗口，与链路排队或清空时刻无关。
+        int[][] packetCounts = new int[sources.size()][categories.length];
+        long[][] byteCounts = new long[sources.size()][categories.length];
+        // 下行以目的 SFU 的业务源分组，上行以源 STA 分组。负载分母沿用各自的生成窗口。
         for (Event input : config.inputEvents()) {
             Packet packet = input.packet();
-            int sfu = config.staSfuIds().get(packet.destinationStaId() - 1) - 1;
+            if (packet.isUplink() != uplink) {
+                continue;
+            }
+            int staIndex = packet.staId() - 1;
+            int source = uplink ? staIndex : config.staSfuIds().get(staIndex) - 1;
             int type = packet.type().ordinal();
-            packetCounts[sfu][type]++;
-            byteCounts[sfu][type] += packet.bytes();
+            packetCounts[source][type]++;
+            byteCounts[source][type] += packet.bytes();
         }
-        for (int sfu = 0; sfu < config.sfuCount(); sfu++) {
-            long windowUs = config.poissonSources().get(sfu).durationUs();
+        for (int source = 0; source < sources.size(); source++) {
+            long windowUs = sources.get(source).durationUs();
+            int sfuId = uplink ? config.staSfuIds().get(source) : source + 1;
             int totalPackets = 0;
             long totalBytes = 0;
             for (AccessCategory type : categories) {
-                int packets = packetCounts[sfu][type.ordinal()];
-                long bytes = byteCounts[sfu][type.ordinal()];
-                trace.recordTrafficSummary(sfu + 1, type, packets, bytes, windowUs);
+                int packets = packetCounts[source][type.ordinal()];
+                long bytes = byteCounts[source][type.ordinal()];
+                recordTrafficSummary(trace, uplink, source + 1, sfuId, type, packets, bytes, windowUs);
                 totalPackets += packets;
                 totalBytes += bytes;
             }
-            trace.recordTrafficSummary(sfu + 1, null, totalPackets, totalBytes, windowUs);
+            recordTrafficSummary(trace, uplink, source + 1, sfuId, null, totalPackets, totalBytes, windowUs);
+        }
+    }
+
+    private static void recordTrafficSummary(TraceLogger trace, boolean uplink, int sourceId, int sfuId,
+                                             AccessCategory type, int packets, long bytes, long windowUs) {
+        if (uplink) {
+            trace.recordUplinkTrafficSummary(sourceId, sfuId, type, packets, bytes, windowUs);
+        } else {
+            trace.recordTrafficSummary(sfuId, type, packets, bytes, windowUs);
         }
     }
 }
