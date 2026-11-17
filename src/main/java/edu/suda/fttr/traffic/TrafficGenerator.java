@@ -63,9 +63,16 @@ public final class TrafficGenerator {
         private final long seed;
         private final long durationUs;
         private final double[] cumulativeWeights;
+        private final long streamKey;
 
         public Source(Packet.Direction direction, int sourceNodeId, List<Integer> destinationNodeIds,
                       double ratePps, int packetBytes, long seed, long durationUs, double[] classWeights) {
+            this(direction, sourceNodeId, destinationNodeIds, ratePps, packetBytes, seed, durationUs, classWeights, 0);
+        }
+
+        /** 显式流标识用于稳定地派生随机序列。0 表示按列表顺序分配标识。 */
+        public Source(Packet.Direction direction, int sourceNodeId, List<Integer> destinationNodeIds,
+                      double ratePps, int packetBytes, long seed, long durationUs, double[] classWeights, long streamKey) {
             if (!Double.isFinite(ratePps) || ratePps < 0.0 || durationUs <= 0 || packetBytes < 0) {
                 throw new IllegalArgumentException("Invalid Poisson rate, duration or packet size");
             }
@@ -85,6 +92,7 @@ public final class TrafficGenerator {
             this.packetBytes = packetBytes;
             this.seed = seed;
             this.durationUs = durationUs;
+            this.streamKey = streamKey;
 
             // 先按最大权重缩放，避免合法权重相加超出浮点数范围。
             double largestWeight = 0.0;
@@ -120,8 +128,9 @@ public final class TrafficGenerator {
         private ArrivalStream(int streamId, Source source) {
             this.streamId = streamId;
             this.source = source;
-            // 混入流的编号，使使用相同种子的多个流有不同的序列。到达时刻与报文属性各用一个随机流。
-            SplittableRandom random = new SplittableRandom(source.seed ^ (0x9E3779B97F4A7C15L * streamId));
+            // 随机流标识可以独立于归并顺序，添加其他业务时无需改变已有业务的随机序列。
+            long randomKey = source.streamKey == 0 ? streamId : source.streamKey;
+            SplittableRandom random = new SplittableRandom(source.seed ^ (0x9E3779B97F4A7C15L * randomKey));
             arrivalRandom = random.split();
             packetRandom = random.split();
         }

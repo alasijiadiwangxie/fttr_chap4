@@ -29,7 +29,15 @@ public final class ConfigLoader {
     private static final Pattern PACKET_OVERRIDE = Pattern.compile("packet\\.([1-9][0-9]*)\\.(bytes|type|sta\\.id|direction)");
     private static final Pattern STA_ASSOCIATION = Pattern.compile("sta\\.([1-9][0-9]*)\\.sfu\\.id");
     private static final Pattern POISSON_SOURCE = Pattern.compile(
-            "traffic\\.(sfu|sta)\\.([1-9][0-9]*)\\.(rate\\.pps|packet\\.bytes|seed|class\\.weights|duration\\.us)");
+            "traffic\\.(sfu|sta)\\.([1-9][0-9]*)\\.(rate\\.pps|packet\\.bytes|seed|class\\.weights|duration\\.us|"
+                    + "class\\.(VO|VI|BE|BK)\\.(rate\\.pps|rate\\.mbps|packet\\.bytes))");
+    private static final AccessCategory[] CATEGORIES = AccessCategory.values();
+
+    private static final class PoissonTraffic {
+        private final List<TrafficGenerator.Source> streams = new ArrayList<>();
+        // 统计按设备分组。每台设备即便有多条流，也只有一个生成窗口。
+        private final List<Long> windowsUs = new ArrayList<>();
+    }
 
     private enum DirectionMode {
         DL, UL, BOTH;
@@ -76,20 +84,19 @@ public final class ConfigLoader {
         long fiberUs = readNonNegativeLong(properties, "fiber.delay.us");
         long wifiUs = readNonNegativeLong(properties, "wifi.delay.us");
         long durationUs = poisson ? readPositiveDuration(properties, "traffic.duration.us") : 0;
-        List<TrafficGenerator.Source> downlinkSources = poisson && directionMode.allows(Packet.Direction.DL)
-                ? readDownlinkSources(properties, sfuCount, staSfuIds, durationUs) : List.of();
-        List<TrafficGenerator.Source> uplinkSources = poisson && directionMode.allows(Packet.Direction.UL)
-                ? readUplinkSources(properties, staCount, durationUs) : List.of();
-        // 保留下行流的原有编号与种子序列，双向模式把上行流追加在下行流之后。
-        List<TrafficGenerator.Source> sources = new ArrayList<>(downlinkSources);
-        sources.addAll(uplinkSources);
+        PoissonTraffic downlink = poisson && directionMode.allows(Packet.Direction.DL)
+                ? readDownlinkSources(properties, sfuCount, staSfuIds, durationUs) : new PoissonTraffic();
+        PoissonTraffic uplink = poisson && directionMode.allows(Packet.Direction.UL)
+                ? readUplinkSources(properties, staCount, durationUs, downlink.windowsUs.size()) : new PoissonTraffic();
+        List<TrafficGenerator.Source> sources = new ArrayList<>(downlink.streams);
+        sources.addAll(uplink.streams);
         List<Event> inputEvents = poisson
                 ? TrafficGenerator.generate(sources)
                 : readManualEvents(properties, arrivalsUs, staCount, directionMode);
 
         validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs);
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs,
-                downlinkSources, uplinkSources, directionMode.allows(Packet.Direction.UL));
+                downlink.windowsUs, uplink.windowsUs, directionMode.allows(Packet.Direction.UL));
     }
 
     private static DirectionMode readDirectionMode(Properties properties) {
@@ -186,8 +193,8 @@ public final class ConfigLoader {
         }
     }
 
-    private static List<TrafficGenerator.Source> readDownlinkSources(Properties properties, int sfuCount,
-                                                                    List<Integer> staSfuIds, long durationUs) {
+    private static PoissonTraffic readDownlinkSources(Properties properties, int sfuCount,
+                                                      List<Integer> staSfuIds, long durationUs) {
         // 配置层把 STA–SFU 关联转换为每条下行流的候选终端，生成器只接收端点列表。
         List<List<Integer>> stationsBySfu = new ArrayList<>(sfuCount);
         for (int i = 0; i < sfuCount; i++) {
@@ -196,42 +203,93 @@ public final class ConfigLoader {
         for (int i = 0; i < staSfuIds.size(); i++) {
             stationsBySfu.get(staSfuIds.get(i) - 1).add(i + 1);
         }
-        List<TrafficGenerator.Source> sources = new ArrayList<>(sfuCount);
+        PoissonTraffic traffic = new PoissonTraffic();
         for (int sfuId = 1; sfuId <= sfuCount; sfuId++) {
-            sources.add(readSource(properties, "traffic.sfu." + sfuId, durationUs, Packet.Direction.DL,
-                    Packet.DEFAULT_MFU_ID, stationsBySfu.get(sfuId - 1)));
+            readSource(properties, traffic, Packet.Direction.DL, sfuId, durationUs, stationsBySfu.get(sfuId - 1), sfuId);
         }
-        return sources;
+        return traffic;
     }
 
-    private static List<TrafficGenerator.Source> readUplinkSources(Properties properties, int staCount, long durationUs) {
-        List<TrafficGenerator.Source> sources = new ArrayList<>(staCount);
+    private static PoissonTraffic readUplinkSources(Properties properties, int staCount, long durationUs,
+                                                    int downlinkOwnerCount) {
+        PoissonTraffic traffic = new PoissonTraffic();
         for (int staId = 1; staId <= staCount; staId++) {
-            sources.add(readSource(properties, "traffic.sta." + staId, durationUs, Packet.Direction.UL,
-                    staId, List.of(Packet.DEFAULT_MFU_ID)));
+            readSource(properties, traffic, Packet.Direction.UL, staId, durationUs, List.of(Packet.DEFAULT_MFU_ID),
+                    (long) downlinkOwnerCount + staId);
         }
-        return sources;
+        return traffic;
     }
 
-    private static TrafficGenerator.Source readSource(Properties properties, String prefix, long durationUs,
-                                                      Packet.Direction direction, int sourceId, List<Integer> destinations) {
-        String rateKey = prefix + ".rate.pps";
-        double ratePps = parseNonNegativeDouble(properties.getProperty(rateKey, "0"), rateKey);
-        String bytesKey = prefix + ".packet.bytes";
-        int bytes = ratePps > 0.0 || properties.containsKey(bytesKey) ? readPositiveInt(properties, bytesKey) : 0;
-        String seedKey = prefix + ".seed";
-        long seed = ratePps > 0.0 || properties.containsKey(seedKey) ? readSeed(properties, seedKey) : 0;
+    private static void readSource(Properties properties, PoissonTraffic traffic, Packet.Direction direction,
+                                   int ownerId, long durationUs, List<Integer> destinations, long legacyStreamKey) {
+        boolean uplink = direction == Packet.Direction.UL;
+        String prefix = (uplink ? "traffic.sta." : "traffic.sfu.") + ownerId;
         String durationKey = prefix + ".duration.us";
         long sourceDurationUs = properties.containsKey(durationKey)
                 ? readPositiveDuration(properties, durationKey) : durationUs;
         if (sourceDurationUs > durationUs) {
             throw new IllegalArgumentException(durationKey + " must not exceed traffic.duration.us");
         }
-        double[] weights = readClassWeights(properties, prefix + ".class.weights");
-        if (ratePps > 0.0 && destinations.isEmpty()) {
+        traffic.windowsUs.add(sourceDurationUs);
+        int sourceId = uplink ? ownerId : Packet.DEFAULT_MFU_ID;
+        if (hasClassSources(properties, prefix)) {
+            for (String suffix : List.of(".rate.pps", ".packet.bytes", ".class.weights")) {
+                if (properties.containsKey(prefix + suffix)) {
+                    throw new IllegalArgumentException(prefix + suffix + " cannot be combined with per-class traffic");
+                }
+            }
+            for (AccessCategory category : CATEGORIES) {
+                double[] weights = new double[CATEGORIES.length];
+                weights[category.ordinal()] = 1.0;
+                // 类别的随机流标识由方向、设备 ID、类别确定，避免其他流的增减改写随机序列。
+                long streamKey = (1L << 40) | ((long) ownerId << 3) | ((uplink ? 1L : 0L) << 2) | category.ordinal();
+                addStream(properties, traffic, prefix, prefix + ".class." + category, sourceDurationUs,
+                        direction, sourceId, destinations, weights, streamKey);
+            }
+        } else {
+            addStream(properties, traffic, prefix, prefix, sourceDurationUs, direction, sourceId, destinations,
+                    readClassWeights(properties, prefix + ".class.weights"), legacyStreamKey);
+        }
+    }
+
+    private static boolean hasClassSources(Properties properties, String prefix) {
+        for (AccessCategory category : CATEGORIES) {
+            String key = prefix + ".class." + category;
+            if (properties.containsKey(key + ".rate.pps") || properties.containsKey(key + ".rate.mbps")
+                    || properties.containsKey(key + ".packet.bytes")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void addStream(Properties properties, PoissonTraffic traffic, String ownerPrefix, String streamPrefix,
+                                  long durationUs, Packet.Direction direction, int sourceId, List<Integer> destinations,
+                                  double[] weights, long streamKey) {
+        String ppsKey = streamPrefix + ".rate.pps";
+        String mbpsKey = streamPrefix + ".rate.mbps";
+        boolean rateInMbps = properties.containsKey(mbpsKey);
+        if (rateInMbps && properties.containsKey(ppsKey)) {
+            throw new IllegalArgumentException("Configure only one of " + ppsKey + " and " + mbpsKey);
+        }
+        String rateKey = rateInMbps ? mbpsKey : ppsKey;
+        double rate = parseNonNegativeDouble(properties.getProperty(rateKey, "0"), rateKey);
+        String bytesKey = streamPrefix + ".packet.bytes";
+        int bytes = rate > 0.0 || properties.containsKey(bytesKey) ? readPositiveInt(properties, bytesKey) : 0;
+        String seedKey = ownerPrefix + ".seed";
+        long seed = rate > 0.0 || properties.containsKey(seedKey) ? readSeed(properties, seedKey) : 0;
+        if (rate == 0.0) {
+            return;
+        }
+        double ratePps = rateInMbps ? rate * (1_000_000.0 / (8.0 * bytes)) : rate;
+        if (!Double.isFinite(ratePps) || ratePps == 0.0) {
+            throw new IllegalArgumentException(rateKey + " cannot be represented as packets per second");
+        }
+        if (destinations.isEmpty()) {
             throw new IllegalArgumentException(rateKey + " is positive but the SFU has no associated STA");
         }
-        return new TrafficGenerator.Source(direction, sourceId, destinations, ratePps, bytes, seed, sourceDurationUs, weights);
+        traffic.streams.add(new TrafficGenerator.Source(direction, sourceId, destinations, ratePps, bytes, seed,
+                durationUs, weights, streamKey));
     }
 
     private static double[] readClassWeights(Properties properties, String key) {

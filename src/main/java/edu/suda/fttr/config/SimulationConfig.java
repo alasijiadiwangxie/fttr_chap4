@@ -2,7 +2,6 @@ package edu.suda.fttr.config;
 
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.simulator.Event;
-import edu.suda.fttr.traffic.TrafficGenerator;
 
 import java.util.List;
 import java.util.stream.Collectors;
@@ -14,20 +13,19 @@ public final class SimulationConfig {
     private final List<Integer> staSfuIds;
     private final long fiberDelayUs;
     private final long wifiDelayUs;
-    private final List<TrafficGenerator.Source> downlinkPoissonSources;
-    private final List<TrafficGenerator.Source> uplinkPoissonSources;
+    private final List<Long> downlinkTrafficWindowsUs;
+    private final List<Long> uplinkTrafficWindowsUs;
     private final boolean uplinkEnabled;
 
     SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs, long wifiDelayUs,
-                     List<TrafficGenerator.Source> downlinkPoissonSources,
-                     List<TrafficGenerator.Source> uplinkPoissonSources, boolean uplinkEnabled) {
+                     List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled) {
         this.inputEvents = List.copyOf(inputEvents);
         this.sfuCount = sfuCount;
         this.staSfuIds = List.copyOf(staSfuIds);
         this.fiberDelayUs = fiberDelayUs;
         this.wifiDelayUs = wifiDelayUs;
-        this.downlinkPoissonSources = List.copyOf(downlinkPoissonSources);
-        this.uplinkPoissonSources = List.copyOf(uplinkPoissonSources);
+        this.downlinkTrafficWindowsUs = List.copyOf(downlinkTrafficWindowsUs);
+        this.uplinkTrafficWindowsUs = List.copyOf(uplinkTrafficWindowsUs);
         this.uplinkEnabled = uplinkEnabled;
     }
 
@@ -75,14 +73,14 @@ public final class SimulationConfig {
         return wifiDelayUs;
     }
 
-    /** 下行泊松流按 SFU ID 排列，包含零到达率的流。下行未开启或使用手动流量时为空。 */
-    public List<TrafficGenerator.Source> downlinkPoissonSources() {
-        return downlinkPoissonSources;
+    /** 各 SFU 的下行泊松生成窗口，按 ID 排列。手动模式或未开启下行时为空。 */
+    public List<Long> downlinkTrafficWindowsUs() {
+        return downlinkTrafficWindowsUs;
     }
 
-    /** 上行泊松流按 STA ID 排列，包含零到达率的流。上行未开启或使用手动流量时为空。 */
-    public List<TrafficGenerator.Source> uplinkPoissonSources() {
-        return uplinkPoissonSources;
+    /** 各 STA 的上行泊松生成窗口，按 ID 排列。手动模式或未开启上行时为空。 */
+    public List<Long> uplinkTrafficWindowsUs() {
+        return uplinkTrafficWindowsUs;
     }
 
     public boolean uplinkEnabled() {

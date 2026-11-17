@@ -10,7 +10,6 @@ import edu.suda.fttr.link.FiberLink;
 import edu.suda.fttr.link.FixedDelayModel;
 import edu.suda.fttr.link.WifiLink;
 import edu.suda.fttr.trace.TraceLogger;
-import edu.suda.fttr.traffic.TrafficGenerator;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -23,9 +22,9 @@ public final class Simulator {
     }
 
     public static void run(SimulationConfig config, TraceLogger trace) {
-        List<TrafficGenerator.Source> downlinkSources = config.downlinkPoissonSources();
-        List<TrafficGenerator.Source> uplinkSources = config.uplinkPoissonSources();
-        boolean runSummary = config.uplinkEnabled() || !downlinkSources.isEmpty() || config.inputEvents().size() > 1;
+        List<Long> downlinkWindowsUs = config.downlinkTrafficWindowsUs();
+        List<Long> uplinkWindowsUs = config.uplinkTrafficWindowsUs();
+        boolean runSummary = config.uplinkEnabled() || !downlinkWindowsUs.isEmpty() || config.inputEvents().size() > 1;
         SimulationContext context = new SimulationContext(trace, runSummary);
         List<Map<Integer, Sta>> stationsBySfu = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
@@ -90,20 +89,20 @@ public final class Simulator {
                     throw new IllegalStateException("Unhandled event: " + event.type());
             }
         }
-        if (!downlinkSources.isEmpty()) {
-            recordGeneratedTraffic(config, trace, downlinkSources, false);
+        if (!downlinkWindowsUs.isEmpty()) {
+            recordGeneratedTraffic(config, trace, downlinkWindowsUs, false);
         }
-        if (!uplinkSources.isEmpty()) {
-            recordGeneratedTraffic(config, trace, uplinkSources, true);
+        if (!uplinkWindowsUs.isEmpty()) {
+            recordGeneratedTraffic(config, trace, uplinkWindowsUs, true);
         }
         context.recordSummary(sfus, stations, config.uplinkEnabled());
     }
 
     private static void recordGeneratedTraffic(SimulationConfig config, TraceLogger trace,
-                                               List<TrafficGenerator.Source> sources, boolean uplink) {
+                                               List<Long> windowsUs, boolean uplink) {
         AccessCategory[] categories = AccessCategory.values();
-        int[][] packetCounts = new int[sources.size()][categories.length];
-        long[][] byteCounts = new long[sources.size()][categories.length];
+        int[][] packetCounts = new int[windowsUs.size()][categories.length];
+        long[][] byteCounts = new long[windowsUs.size()][categories.length];
         // 下行以目的 SFU 的业务源分组，上行以源 STA 分组。负载分母沿用各自的生成窗口。
         for (Event input : config.inputEvents()) {
             Packet packet = input.packet();
@@ -116,8 +115,8 @@ public final class Simulator {
             packetCounts[source][type]++;
             byteCounts[source][type] += packet.bytes();
         }
-        for (int source = 0; source < sources.size(); source++) {
-            long windowUs = sources.get(source).durationUs();
+        for (int source = 0; source < windowsUs.size(); source++) {
+            long windowUs = windowsUs.get(source);
             int sfuId = uplink ? config.staSfuIds().get(source) : source + 1;
             int totalPackets = 0;
             long totalBytes = 0;

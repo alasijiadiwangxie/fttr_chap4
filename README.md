@@ -85,7 +85,7 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/phase1-multi-sfu-downlink
 
 `summary=SFU` 给出逐 SFU 的发送量、吞吐量和平均排队时延。与 STA 一样，吞吐量以公共仿真窗口计算。全局 `wifi_busy_us` 是**至少一台 SFU 正在发送**的时长，重叠区间只计一次。`wifi_idle_us` 是所有 SFU 均未发送的时长。
 
-### 泊松下行业务
+### 泊松下行的总速率和权重配置
 
 ```powershell
 java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/poisson-multi-sfu-downlink.properties
@@ -116,11 +116,30 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/poisson-multi-sfu-downlin
 java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/poisson-multi-sta-uplink.properties
 ```
 
-`traffic.direction` 支持 `DL`（默认）、`UL` 和 `BOTH`。泊松模式下，上行使用 `traffic.sta.N.*` 按源 STA 配置，字段与下行相同，即 `rate.pps`、`packet.bytes`、`seed`、`class.weights` 和可选的 `duration.us`。`BOTH` 可同时配置 `traffic.sfu.N.*` 和 `traffic.sta.N.*`。手动模式下，`packet.N.sta.id` 在上行表示源 STA，在下行表示目的 STA，双向模式还须为每包设置 `packet.N.direction=UL` 或 `DL`。`packet.arrival.us` 始终表示报文进入源节点的时刻。
+`traffic.direction` 支持 `DL`（默认）、`UL` 和 `BOTH`。泊松模式下，上行使用 `traffic.sta.N.*` 按源 STA 配置。使用总速率加权重时，字段与下行相同，即 `rate.pps`、`packet.bytes`、`seed`、`class.weights` 和可选的 `duration.us`。`BOTH` 可同时配置 `traffic.sfu.N.*` 和 `traffic.sta.N.*`。手动模式下，`packet.N.sta.id` 在上行表示源 STA，在下行表示目的 STA，双向模式还须为每包设置 `packet.N.direction=UL` 或 `DL`。`packet.arrival.us` 始终表示报文进入源节点的时刻。
 
 上行报文在源 STA 等待关联 SFU 的无线资源，SFU 收齐报文后立即走固定时延光链路，抵达 MFU 时计为交付。四类等待队列是集中式调度抽象。上下行共用同一台 SFU 的无线资源，其他 SFU 独立运行。
 
 `TRAFFIC_UL_STA` 与 `TRAFFIC_UL_CLASS` 按源 STA 输出总量及各业务的生成包数、实际到达率和输入负载。`UL_STA` 与 `UL_GLOBAL` 统计 MFU 收到的上行报文，时延从 STA 生成算到 MFU 收齐。`CLASS`、`GLOBAL`、`SFU` 和 `STA` 汇总仍对应下行。最后一行的 `delivered_packets` 为两个方向的交付总数，`wifi_busy_us` 为至少一台 SFU 正在无线发送或接收的时长。
+
+### 为每类业务设置独立的泊松流
+
+```powershell
+java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/poisson-per-class-uplink.properties
+```
+
+同一台 STA 的 VO、VI、BE、BK 可以分别使用不同包长和速率。配置 `traffic.sta.N.class.C.*` 即为该 STA 启用逐类模式。下行按目标 SFU 配置，前缀用 `traffic.sfu.N.class.C.*`。将 `C` 替换为大写的 `VO`、`VI`、`BE` 或 `BK`。
+
+| 字段 | 含义 |
+| --- | --- |
+| `class.C.rate.mbps` 或 `class.C.rate.pps` | 分别以 Mb/s 或包/s 指定该类别的平均输入负载。每类只填一个速率字段。省略或设为 0 时停用该类。 |
+| `class.C.packet.bytes` | 该类报文的固定字节数，速率为正时必填。 |
+| `seed` | STA 或 SFU 的种子，有类别启用时必填。各类使用独立的随机流。 |
+| `duration.us` | 可选。该 STA 或 SFU 所有类别共用的生成窗口，省略时使用 `traffic.duration.us`。 |
+
+逐类模式使用 `class.C.*` 代替同一前缀下的总量字段 `rate.pps`、`packet.bytes` 和 `class.weights`。同一场景的其他 STA 或 SFU 仍可用总速率加权重的配置。
+
+示例中，STA 1 的 VO、VI、BE、BK 分别为 5、10、3、2 Mb/s，包长分别为 200、1000、1500、750 B。STA 2 仅生成 10 Mb/s 的 VO。指定 Mb/s 时，程序按 `Mb/s × 1,000,000 ÷ (8 × 包长)` 换算为平均包/s，然后为各类独立采样到达间隔。不同包长下，按包数和按字节计算的业务比例可能不同，可在 `TRAFFIC_UL_CLASS` 和 `TRAFFIC_CLASS` 中核对。当前 Wi-Fi 模型仍对所有报文使用同一个 `wifi.delay.us` 服务时长。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。
 
