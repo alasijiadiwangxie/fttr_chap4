@@ -3,6 +3,8 @@ package edu.suda.fttr.config;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.link.WifiFrameExchange;
+import edu.suda.fttr.mac.EdcaParameters;
+import edu.suda.fttr.mac.EdcaParameters.AcParameters;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 import edu.suda.fttr.traffic.TrafficGenerator;
@@ -17,7 +19,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -28,20 +32,28 @@ public final class ConfigLoader {
     private static final String DEFAULT_SCENARIO = "/phase1-minimal-downlink.properties";
     private static final String MAC_EXCHANGE = "wifi.mac.exchange";
     private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
+    private static final String MAC_SLOT_US = "wifi.mac.slot.us";
     private static final String MAC_ACK_RATE_MBPS = "wifi.mac.ack.rate.mbps";
     private static final Set<String> KEYS = Set.of(
             "fiber.delay.us", "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
-            MAC_EXCHANGE, MAC_SIFS_US, MAC_ACK_RATE_MBPS);
+            MAC_EXCHANGE, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS);
     private static final Set<String> PHY_KEYS = Set.of(
             "wifi.phy.bandwidth.mhz", "wifi.phy.mcs", "wifi.phy.nss", "wifi.phy.gi.us",
             "wifi.phy.mac.overhead.bytes", "wifi.phy.he-ltf.type", "wifi.phy.nominal.packet.padding.us");
     private static final Set<String> MANUAL_KEYS = Set.of("packet.bytes", "packet.arrival.us");
     private static final Pattern PACKET_OVERRIDE = Pattern.compile("packet\\.([1-9][0-9]*)\\.(bytes|type|sta\\.id|direction)");
     private static final Pattern STA_ASSOCIATION = Pattern.compile("sta\\.([1-9][0-9]*)\\.sfu\\.id");
+    private static final Pattern EDCA_AC_KEY = Pattern.compile("wifi\\.mac\\.edca\\.(VO|VI|BE|BK)\\.(aifsn|cwmin|cwmax)");
     private static final Pattern POISSON_SOURCE = Pattern.compile(
             "traffic\\.(sfu|sta)\\.([1-9][0-9]*)\\.(rate\\.pps|packet\\.bytes|seed|class\\.weights|duration\\.us|"
                     + "class\\.(VO|VI|BE|BK)\\.(rate\\.pps|rate\\.mbps|packet\\.bytes))");
     private static final AccessCategory[] CATEGORIES = AccessCategory.values();
+    // 本仿真实验的默认值，可逐字段覆盖。
+    private static final Map<AccessCategory, AcParameters> DEFAULT_EDCA = Map.of(
+            AccessCategory.VO, new AcParameters(2, 3, 7),
+            AccessCategory.VI, new AcParameters(3, 7, 15),
+            AccessCategory.BE, new AcParameters(6, 15, 1023),
+            AccessCategory.BK, new AcParameters(9, 15, 1023));
 
     private static final class PoissonTraffic {
         private final List<TrafficGenerator.Source> streams = new ArrayList<>();
@@ -93,7 +105,8 @@ public final class ConfigLoader {
         List<Integer> staSfuIds = readStaAssociations(properties, staCount, sfuCount);
         long fiberUs = readNonNegativeLong(properties, "fiber.delay.us");
         WirelessPhy wirelessPhy = readWirelessPhy(properties);
-        WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy);
+        EdcaParameters edcaParameters = readEdcaParameters(properties);
+        WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy, edcaParameters.sifsUs());
         long wifiUs = wirelessPhy == null ? readNonNegativeLong(properties, "wifi.delay.us") : 0;
         long durationUs = poisson ? readPositiveDuration(properties, "traffic.duration.us") : 0;
         PoissonTraffic downlink = poisson && directionMode.allows(Packet.Direction.DL)
@@ -107,15 +120,34 @@ public final class ConfigLoader {
                 : readManualEvents(properties, arrivalsUs, staCount, directionMode);
 
         validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange);
-        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange,
+        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange, edcaParameters,
                 downlink.windowsUs, uplink.windowsUs, directionMode.allows(Packet.Direction.UL));
     }
 
-    private static WifiFrameExchange readWifiFrameExchange(Properties properties, WirelessPhy wirelessPhy) {
+    private static EdcaParameters readEdcaParameters(Properties properties) {
+        long sifsUs = properties.containsKey(MAC_SIFS_US) ? readNonNegativeLong(properties, MAC_SIFS_US) : 16;
+        long slotTimeUs = properties.containsKey(MAC_SLOT_US) ? readNonNegativeLong(properties, MAC_SLOT_US) : 9;
+        Map<AccessCategory, AcParameters> byCategory = new EnumMap<>(AccessCategory.class);
+        for (AccessCategory category : CATEGORIES) {
+            AcParameters defaults = DEFAULT_EDCA.get(category);
+            String prefix = "wifi.mac.edca." + category + ".";
+            int aifsn = readOptionalNonNegativeInt(properties, prefix + "aifsn", defaults.aifsn());
+            int cwMin = readOptionalNonNegativeInt(properties, prefix + "cwmin", defaults.cwMin());
+            int cwMax = readOptionalNonNegativeInt(properties, prefix + "cwmax", defaults.cwMax());
+            try {
+                byCategory.put(category, new AcParameters(aifsn, cwMin, cwMax));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Invalid EDCA parameters for " + category + ": " + e.getMessage(), e);
+            }
+        }
+        return new EdcaParameters(sifsUs, slotTimeUs, byCategory);
+    }
+
+    private static WifiFrameExchange readWifiFrameExchange(Properties properties, WirelessPhy wirelessPhy, long sifsUs) {
         String mode = properties.getProperty(MAC_EXCHANGE, "data-only").strip();
         if (mode.equals("data-only")) {
-            if (properties.containsKey(MAC_SIFS_US) || properties.containsKey(MAC_ACK_RATE_MBPS)) {
-                throw new IllegalArgumentException("SIFS and ACK rate require wifi.mac.exchange=data-sifs-ack");
+            if (properties.containsKey(MAC_ACK_RATE_MBPS)) {
+                throw new IllegalArgumentException(MAC_ACK_RATE_MBPS + " requires wifi.mac.exchange=data-sifs-ack");
             }
             return null;
         }
@@ -125,7 +157,6 @@ public final class ConfigLoader {
         if (wirelessPhy == null) {
             throw new IllegalArgumentException("wifi.mac.exchange=data-sifs-ack requires wifi.model=he-su");
         }
-        long sifsUs = properties.containsKey(MAC_SIFS_US) ? readNonNegativeLong(properties, MAC_SIFS_US) : 16;
         int ackRateMbps = properties.containsKey(MAC_ACK_RATE_MBPS) ? readPositiveInt(properties, MAC_ACK_RATE_MBPS) : 24;
         return new WifiFrameExchange(sifsUs, ackRateMbps);
     }
@@ -153,14 +184,15 @@ public final class ConfigLoader {
         } catch (NumberFormatException | ArithmeticException e) {
             throw new IllegalArgumentException("wifi.phy.gi.us must be 0.8, 1.6 or 3.2", e);
         }
-        return new WirelessPhy(readPhyInt(properties, "wifi.phy.bandwidth.mhz", 160),
-                readPhyInt(properties, "wifi.phy.mcs", 11), readPhyInt(properties, "wifi.phy.nss", 2), giNs,
-                readPhyInt(properties, "wifi.phy.mac.overhead.bytes", 34),
-                readPhyInt(properties, "wifi.phy.he-ltf.type", WirelessPhy.defaultHeLtfType(giNs)),
-                readPhyInt(properties, "wifi.phy.nominal.packet.padding.us", 0));
+        return new WirelessPhy(readOptionalNonNegativeInt(properties, "wifi.phy.bandwidth.mhz", 160),
+                readOptionalNonNegativeInt(properties, "wifi.phy.mcs", 11),
+                readOptionalNonNegativeInt(properties, "wifi.phy.nss", 2), giNs,
+                readOptionalNonNegativeInt(properties, "wifi.phy.mac.overhead.bytes", 34),
+                readOptionalNonNegativeInt(properties, "wifi.phy.he-ltf.type", WirelessPhy.defaultHeLtfType(giNs)),
+                readOptionalNonNegativeInt(properties, "wifi.phy.nominal.packet.padding.us", 0));
     }
 
-    private static int readPhyInt(Properties properties, String key, int defaultValue) {
+    private static int readOptionalNonNegativeInt(Properties properties, String key, int defaultValue) {
         if (!properties.containsKey(key)) {
             return defaultValue;
         }
@@ -225,7 +257,7 @@ public final class ConfigLoader {
                                      boolean poisson, DirectionMode directionMode) {
         // 模式间的字段不能混用，防止手填报文或流量源的设置被忽略。
         for (String key : properties.stringPropertyNames()) {
-            if (KEYS.contains(key) || PHY_KEYS.contains(key)) {
+            if (KEYS.contains(key) || PHY_KEYS.contains(key) || EDCA_AC_KEY.matcher(key).matches()) {
                 continue;
             }
             Matcher packet = PACKET_OVERRIDE.matcher(key);

@@ -183,14 +183,29 @@ HE SU 模式用 `summary=WIFI_PHY` 输出 DATA 的 PHY 速率。`wifi_queue_wait
 
 | 配置项 | 含义 | 默认值 |
 | --- | --- | --- |
-| `wifi.mac.sifs.us` | SIFS 时长，取正整数微秒 | 16 |
+| `wifi.mac.sifs.us` | SIFS 时长，取正整数微秒，供 ACK 和 AIFS 计算共用 | 16 |
 | `wifi.mac.ack.rate.mbps` | ACK 的固定基础速率，可取 6、9、12、18、24、36、48、54 Mb/s | 24 |
 
-这两个参数仅用于 `data-sifs-ack`。DATA 继续使用 HE SU PHY。ACK 按 5 GHz 场景的 20 MHz non-HT OFDM 计算，14 B 包含 FCS。ACK PPDU 时长为 `20 + 4 × ceil((16 + 8 × 14 + 6) / (4 × rate))` μs，其中 20 μs 包含前导码和 L-SIG，分子中的 16 位和 6 位分别对应 SERVICE 和 BCC 尾位。24 Mb/s 对应 28 μs。模型假定所配置的速率已可用，省略 BSS 控制响应速率选择。参见 [non-HT PPDU 结构](https://www.mathworks.com/help/wlan/gs/non-ht-ppdu-structure.html)和 [mac80211 的 OFDM 时长计算](https://cos.googlesource.com/third_party/kernel/+/5e7779f0395833d80d8fa15933737c8dc48759ec/net/mac80211/util.c#137)。
+ACK 速率仅用于 `data-sifs-ack`。DATA 继续使用 HE SU PHY。ACK 按 5 GHz 场景的 20 MHz non-HT OFDM 计算，14 B 包含 FCS。ACK PPDU 时长为 `20 + 4 × ceil((16 + 8 × 14 + 6) / (4 × rate))` μs，其中 20 μs 包含前导码和 L-SIG，分子中的 16 位和 6 位分别对应 SERVICE 和 BCC 尾位。24 Mb/s 对应 28 μs。模型假定所配置的速率已可用，省略 BSS 控制响应速率选择。参见 [non-HT PPDU 结构](https://www.mathworks.com/help/wlan/gs/non-ht-ppdu-structure.html)和 [mac80211 的 OFDM 时长计算](https://cos.googlesource.com/third_party/kernel/+/5e7779f0395833d80d8fa15933737c8dc48759ec/net/mac80211/util.c#137)。
 
 日志依次记录 `WIFI_TX_START`、`WIFI_DATA_END`、`WIFI_SIFS_START`、`WIFI_ACK_START`、`WIFI_ACK_END` 和 `WIFI_TX_END`。DATA 由原发送端发出，ACK 由 DATA 接收端反向发出，日志中的报文字段均指原 DATA。DATA 收齐时，下行交付到 STA，上行由 SFU 发往光链路。SIFS 和 ACK 计入无线资源占用，端到端时延仍按 DATA 到达最终目的节点计算。
 
-`WIFI_TX_END` 记录 ACK 完成时的资源释放，`wifi_service_us` 包含 DATA、SIFS 和 ACK。此后同一 SFU 才能启动下一次上下行交换。示例中，首个 1500 B 报文在 100 μs 开始无线发送，在 164 μs 交付 DATA，在 180 μs 开始 ACK，并在 208 μs 释放资源。该次交换占用 108 μs，下一包可在 208 μs 启动。模型采用理想信道和零无线传播时延，省略 EDCA、CCA、退避、碰撞、丢包和重传。
+`WIFI_TX_END` 记录 ACK 完成时的资源释放，`wifi_service_us` 包含 DATA、SIFS 和 ACK。此后同一 SFU 才能启动下一次上下行交换。示例中，首个 1500 B 报文在 100 μs 开始无线发送，在 164 μs 交付 DATA，在 180 μs 开始 ACK，并在 208 μs 释放资源。该次交换占用 108 μs，下一包可在 208 μs 启动。模型采用理想信道和零无线传播时延，省略 CCA、退避、碰撞、丢包和重传。
+
+### EDCA 参数与 AIFS
+
+`wifi.mac.sifs.us` 和 `wifi.mac.slot.us` 分别配置 SIFS 和 Slot Time，均取正整数微秒，默认分别为 16 和 9。`data-only` 场景也可通过这两个参数计算 AIFS。每类业务可单独覆盖 `wifi.mac.edca.<AC>.aifsn`、`wifi.mac.edca.<AC>.cwmin` 和 `wifi.mac.edca.<AC>.cwmax`，其中 `<AC>` 取大写的 `VO`、`VI`、`BE` 或 `BK`。省略的字段取下表中的场景默认值。
+
+| AC | AIFSN | CWmin | CWmax | AIFS（μs） |
+| --- | ---: | ---: | ---: | ---: |
+| VO | 2 | 3 | 7 | 34 |
+| VI | 3 | 7 | 15 | 43 |
+| BE | 6 | 15 | 1023 | 70 |
+| BK | 9 | 15 | 1023 | 97 |
+
+`AIFS = SIFS + AIFSN × SlotTime`，结果须在 64 位整数纳秒的时钟范围内。上下行共用的参数中，AIFSN 取 2–15，CWmin 和 CWmax 均取 `2^k − 1`（`k` 为 0–15），且 CWmin ≤ CWmax。[IEEE 802.11-2012 §8.4.2.31 和 §9.19.2.3](https://mrncciew.com/wp-content/uploads/2014/10/ieee-802-11-2012.pdf)
+
+程序读取并校验这些参数。实际发送仍按固定优先级选队，AIFS 和 CW 不计入排队或无线服务时长。
 
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。
 
