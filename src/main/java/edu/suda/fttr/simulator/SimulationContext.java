@@ -74,7 +74,8 @@ public final class SimulationContext {
         events.add(nanosecondClock ? Event.atTicks(timeTicks, true, event.type(), event.packet(), event.sfuId()) : event);
     }
 
-    private long microsecondsToTicks(long timeUs) {
+    /** 将整数微秒转换为当前运行使用的整数时钟刻度。 */
+    public long microsecondsToTicks(long timeUs) {
         try {
             return nanosecondClock ? Math.multiplyExact(timeUs, 1_000) : timeUs;
         } catch (ArithmeticException ex) {
@@ -94,7 +95,8 @@ public final class SimulationContext {
         scheduleAfterTicks(delayNs, type, packet, sfuId);
     }
 
-    private Event scheduleAfterTicks(long delayTicks, EventType type, Packet packet, int sfuId) {
+    /** 使用当前仿真时钟的原始刻度安排事件。 */
+    public Event scheduleAfterTicks(long delayTicks, EventType type, Packet packet, int sfuId) {
         if (delayTicks < 0) {
             throw new IllegalArgumentException("Event delay must be non-negative");
         }

@@ -15,6 +15,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -44,6 +45,7 @@ public final class Sfu {
     private boolean selectionPending;
     private long txStartTicks;
     private long dataEndTicks;
+    private long announcedNavEndTicks;
     private int sentPackets;
     private long sentBytes;
     private double queueWaitSumUs;
@@ -91,6 +93,19 @@ public final class Sfu {
     /** 查询本 SFU 与关联 STA 共用的信道。 */
     public WifiChannel.State ccaState() {
         return channel.state();
+    }
+
+    /** 设备键 0 表示本 SFU，正数表示关联 STA。返回该设备最近的 NAV 到期刻度。 */
+    public long navUntilTicks(int listenerKey) {
+        return edcaAccess == null ? 0 : edcaAccess.navUntilTicks(listenerKey);
+    }
+
+    /** 在指定旁听端处理一次成功解码的 MAC Duration，时长使用本次仿真的时钟刻度。 */
+    public void receiveMacDuration(int listenerKey, int frameSenderKey, int frameRecipientKey, long durationTicks,
+                                   SimulationContext context) {
+        if (edcaAccess != null) {
+            edcaAccess.receiveMacDuration(listenerKey, frameSenderKey, frameRecipientKey, durationTicks, context);
+        }
     }
 
     public int sentPackets() {
@@ -154,6 +169,9 @@ public final class Sfu {
 
     private void startData(Packet packet, SimulationContext context) {
         txStartTicks = context.nowTicks();
+        // Duration 随发送的 MAC 帧确定。DATA 发送期间的新到报文不能改写已经发出的预约。
+        announcedNavEndTicks = edcaAccess != null && wifi.hasAckExchange()
+                ? dataReservationEndTicks(packet) : 0;
         if (retryPolicy != null) {
             context.recordWifiMacAttempt(packet, id, active.retries);
         }
@@ -164,6 +182,9 @@ public final class Sfu {
         checkActive(packet);
         dataEndTicks = context.nowTicks();
         boolean ackPending = wifi.scheduleAck(packet, id, context);
+        if (ackPending && edcaAccess != null) {
+            publishMacDuration(packet, false, announcedNavEndTicks - dataEndTicks, context);
+        }
         if (packet.isUplink()) {
             // SFU 已收齐上行 DATA，独立的光纤链路可立即转发。无线资源继续留给本次 ACK。
             context.scheduleAfter(0, EventType.FIBER_TX_START, packet, id);
@@ -185,6 +206,10 @@ public final class Sfu {
 
     public void completeTransmission(Packet packet, SimulationContext context) {
         checkActive(packet);
+        if (announcedNavEndTicks > context.nowTicks()) {
+            // 立即 ACK 沿用本次 DATA 宣布的预约，只报告完成 ACK 之后的剩余部分。
+            publishMacDuration(packet, true, announcedNavEndTicks - context.nowTicks(), context);
+        }
         EdcaState.AcState ac = edcaAccess == null ? null : senderAc(packet);
         QueuedPacket next = null;
         if (multiAc) {
@@ -192,7 +217,7 @@ public final class Sfu {
             queue.removeFirst();
             next = queue.peekFirst();
         }
-        boolean continues = txop != null && next != null && fitsInTxop(next.packet, context.nowTicks());
+        boolean continues = txop != null && next != null && txopContinuationNs(next.packet, context.nowTicks()) > 0;
         if (!continues) {
             channel.release();
         }
@@ -223,10 +248,40 @@ public final class Sfu {
         }
     }
 
-    private boolean fitsInTxop(Packet packet, long nowTicks) {
-        long remainingNs = txop.limitNs - (nowTicks - txop.startTicks);
+    private long dataReservationEndTicks(Packet packet) {
+        long expectedAckEnd = Math.addExact(txStartTicks, wifi.exchangeDurationNs(packet));
+        if (txop == null) {
+            return expectedAckEnd;
+        }
+        // DATA 可同时预约已在队列且能放进 TXOP 的下一次完整交换。当前 DATA 仍在队首。
+        Iterator<QueuedPacket> queue = deviceQueues.get(senderAc(packet)).iterator();
+        queue.next();
+        if (!queue.hasNext()) {
+            return expectedAckEnd;
+        }
+        return Math.addExact(expectedAckEnd, txopContinuationNs(queue.next().packet, expectedAckEnd));
+    }
+
+    private long txopContinuationNs(Packet next, long ackEndTicks) {
+        long remainingNs = txop.limitNs - (ackEndTicks - txop.startTicks);
         long sifsNs = wifi.sifsNs();
-        return remainingNs >= sifsNs && wifi.exchangeDurationNs(packet) <= remainingNs - sifsNs;
+        if (remainingNs < sifsNs) {
+            return 0;
+        }
+        long exchangeNs = wifi.exchangeDurationNs(next);
+        return exchangeNs <= remainingNs - sifsNs ? sifsNs + exchangeNs : 0;
+    }
+
+    private void publishMacDuration(Packet packet, boolean ack, long durationNs, SimulationContext context) {
+        int dataSender = packet.isUplink() ? packet.staId() : 0;
+        int dataRecipient = packet.isUplink() ? 0 : packet.staId();
+        int frameSender = ack ? dataRecipient : dataSender;
+        int frameRecipient = ack ? dataSender : dataRecipient;
+        // 只在本 SFU 所属的信道中发布。当前模型假定所有关联设备都能听到成功的帧。
+        receiveMacDuration(0, frameSender, frameRecipient, durationNs, context);
+        for (int staId : stations.keySet()) {
+            receiveMacDuration(staId, frameSender, frameRecipient, durationNs, context);
+        }
     }
 
     private void requestSelection(SimulationContext context) {

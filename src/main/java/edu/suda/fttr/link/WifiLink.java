@@ -37,10 +37,15 @@ public final class WifiLink {
         return requireAckExchange().sifsNs();
     }
 
+    /** 成功接收 DATA 时，从接收结束到正常 ACK 结束的预约时间。 */
+    public long ackResponseDurationNs() {
+        return requireAckExchange().responseDurationNs();
+    }
+
     /** 由实际 DATA 与 ACK 时长组成的完整单帧交换，供 TXOP 判断剩余预算。 */
     public long exchangeDurationNs(Packet packet) {
-        WifiFrameExchange exchange = requireAckExchange();
-        return Math.addExact(dataDurationNs(packet), exchange.responseDurationNs());
+        long responseNs = ackResponseDurationNs();
+        return Math.addExact(dataDurationNs(packet), responseNs);
     }
 
     public void transmit(Packet packet, int sfuId, SimulationContext context) {

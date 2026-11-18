@@ -260,7 +260,17 @@ TXOP 从首帧 DATA 开始计时，到最后一帧 ACK 完成释放信道。每�
 
 在 HE SU 下行示例中启用 `edca-multi-ac`，将 `packet.2.bytes` 改为 `1500`，并设置 `wifi.mac.edca.BE.txop.limit.us=232`。两包的完整交换各为 108 μs，中间间隔 16 μs，正好在一次 232 μs 的 TXOP 内完成。
 
+### NAV 虚拟载波侦听
+
+在 EDCA 的 DATA–SIFS–ACK 场景中，每台 SFU 和 STA 各自维护一个 NAV 到期时刻。有效帧接收结束时，由同一信道上成功旁听的设备更新 NAV，帧的发送端和目的接收端除外。正值 Duration 将到期时刻延至 `max(当前到期时刻, 接收结束时刻 + Duration)`，零值跳过更新。不同 SFU 的信道分别处理各自的预约。[IEEE 802.11-2012 §9.3.2.4](https://mrncciew.com/wp-content/uploads/2014/10/ieee-802-11-2012.pdf)
+
+DATA 的 Duration 在发送开始时确定，覆盖本次 SIFS 和 ACK。TXOP 中，若同一 AC 已排队的下一次交换能放入剩余预算，DATA 的 Duration 还包含帧间 SIFS 和该次完整交换。ACK 通告此次预约的剩余时间。若报文在 DATA 开始后入队并获准续发，原有 TXOP 仍连续占用信道，后续 DATA 再通告预约。Duration 以整数仿真时钟刻度表示。
+
+设备须同时满足物理 CCA 为 `IDLE`、NAV 已到期、ACK 等待已结束，才能开始完整 AIFS 并继续退避。NAV 生效时保留剩余退避计数，既有 ACK 响应仍按 SIFS 调度。实际无线占用由帧交换和 TXOP 决定，NAV 只约束设备何时竞争。回归测试独立构造了物理信道空闲但 NAV 有效的场景，以核对冻结和恢复时序。
+
 Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。
+
+EDCA 综合验收见 [测试报告](docs/05-edca-acceptance.md)。构建后运行 `python tools/validate_edca.py`，可复现多 STA 双向业务的三档负载、五个种子和两档 TXOP 对照，输出各 AC 的时延、吞吐量、碰撞、重传、丢包及占用统计。该工具从逐事件轨迹合并上下行，分别计算纯排队与队首接入时延，并核对生成、交付、丢弃和信道忙时。
 
 ## 后续研究计划
 

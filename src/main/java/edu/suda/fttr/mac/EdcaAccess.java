@@ -8,6 +8,7 @@ import edu.suda.fttr.simulator.SimulationContext;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,6 +28,7 @@ public final class EdcaAccess {
     private final Map<Packet, Attempt> pending = new LinkedHashMap<>();
     private final List<Attempt> ready = new ArrayList<>();
     private final Set<Integer> suspendedSenders = new HashSet<>();
+    private final Map<Integer, Long> navDeadlines = new HashMap<>();
     private SimulationContext context;
     private Event resolveEvent;
 
@@ -51,14 +53,50 @@ public final class EdcaAccess {
             state.drawBackoff();
         }
         Attempt attempt = new Attempt(packet, state);
-        if (channel.state() == WifiChannel.State.IDLE && !suspendedSenders.contains(attempt.senderKey())) {
-            startAifs(attempt);
-        }
+        startAifs(attempt);
         pending.put(packet, attempt);
     }
 
     public boolean isWaiting() {
         return !pending.isEmpty();
+    }
+
+    /** 设备键 0 表示 SFU，其余设备键为关联 STA 的 ID。 */
+    public long navUntilTicks(int listenerKey) {
+        return navDeadlines.getOrDefault(listenerKey, 0L);
+    }
+
+    /** 处理侦听到的有效 MAC Duration，时长采用当前仿真时钟的刻度。 */
+    public void receiveMacDuration(int listenerKey, int frameSenderKey, int frameRecipientKey, long durationTicks,
+                                   SimulationContext context) {
+        if (durationTicks < 0) {
+            throw new IllegalArgumentException("MAC Duration must be non-negative");
+        }
+        if (durationTicks == 0 || listenerKey == frameSenderKey || listenerKey == frameRecipientKey) {
+            return;
+        }
+        long deadline = Math.addExact(context.nowTicks(), durationTicks);
+        if (deadline <= navUntilTicks(listenerKey)) {
+            return;
+        }
+        navDeadlines.put(listenerKey, deadline);
+        this.context = context;
+        if (channel.state() == WifiChannel.State.BUSY || suspendedSenders.contains(listenerKey)) {
+            // 计时器已冻结。信道释放或 ACK 等待结束时再检查 NAV。
+            return;
+        }
+
+        // NAV 只冻结侦听设备。即使其计数在同刻归零，也要将它移出本次仲裁。
+        ready.removeIf(attempt -> attempt.senderKey() == listenerKey);
+        if (ready.isEmpty()) {
+            cancelResolveEvent();
+        }
+        for (Attempt attempt : pending.values()) {
+            if (attempt.senderKey() == listenerKey) {
+                cancelTimer(attempt);
+                startAifs(attempt);
+            }
+        }
     }
 
     /** 碰撞 DATA 开始后，发送设备的所有 AC 都须等到 ACK 超时才能继续竞争。 */
@@ -74,9 +112,7 @@ public final class EdcaAccess {
         if (!suspendedSenders.remove(sender)) {
             throw new IllegalStateException("No suspended Wi-Fi sender for packet " + packet.id());
         }
-        if (channel.state() == WifiChannel.State.IDLE) {
-            pending.values().stream().filter(attempt -> attempt.senderKey() == sender).forEach(this::startAifs);
-        }
+        pending.values().stream().filter(attempt -> attempt.senderKey() == sender).forEach(this::startAifs);
     }
 
     public void onTimer(Event event) {
@@ -134,28 +170,41 @@ public final class EdcaAccess {
 
     private void onChannelChange(WifiChannel.State state) {
         if (state == WifiChannel.State.IDLE) {
-            pending.values().stream().filter(attempt -> !suspendedSenders.contains(attempt.senderKey()))
-                    .forEach(this::startAifs);
+            pending.values().forEach(this::startAifs);
             return;
         }
 
         // BUSY 冻结未完成的请求。只取消计时，已完成的时隙和剩余计数器保留。
-        for (Attempt attempt : pending.values()) {
-            if (attempt.timer != null) {
-                context.cancel(attempt.timer);
-                attempt.timer = null;
-            }
+        pending.values().forEach(this::cancelTimer);
+        cancelResolveEvent();
+        ready.clear();
+    }
+
+    private void cancelTimer(Attempt attempt) {
+        if (attempt.timer != null) {
+            context.cancel(attempt.timer);
+            attempt.timer = null;
         }
+    }
+
+    private void cancelResolveEvent() {
         if (resolveEvent != null) {
             context.cancel(resolveEvent);
             resolveEvent = null;
-            ready.clear();
         }
     }
 
     private void startAifs(Attempt attempt) {
+        if (attempt.timer != null || channel.state() != WifiChannel.State.IDLE
+                || suspendedSenders.contains(attempt.senderKey())) {
+            return;
+        }
         attempt.waitingForAifs = true;
-        scheduleTimer(attempt, parameters.aifsUs(attempt.packet.type()));
+        // 直接安排 NAV 到期后的完整 AIFS，空队列无须专门的 NAV 到期事件。
+        long navRemainingTicks = Math.max(0, navUntilTicks(attempt.senderKey()) - context.nowTicks());
+        long aifsTicks = context.microsecondsToTicks(parameters.aifsUs(attempt.packet.type()));
+        attempt.timer = context.scheduleAfterTicks(Math.addExact(navRemainingTicks, aifsTicks),
+                EventType.WIFI_ACCESS_TIMER, attempt.packet, sfuId);
     }
 
     private void scheduleTimer(Attempt attempt, long delayUs) {
