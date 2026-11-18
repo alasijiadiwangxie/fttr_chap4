@@ -9,6 +9,8 @@ import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.link.FiberLink;
 import edu.suda.fttr.link.FixedDelayModel;
 import edu.suda.fttr.link.WifiLink;
+import edu.suda.fttr.mac.WifiRetryPolicy;
+import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.trace.TraceLogger;
 
 import java.util.ArrayList;
@@ -25,26 +27,31 @@ public final class Simulator {
         List<Long> downlinkWindowsUs = config.downlinkTrafficWindowsUs();
         List<Long> uplinkWindowsUs = config.uplinkTrafficWindowsUs();
         boolean runSummary = config.uplinkEnabled() || !downlinkWindowsUs.isEmpty() || config.inputEvents().size() > 1;
-        SimulationContext context = new SimulationContext(trace, runSummary);
+        WirelessPhy wirelessPhy = config.wirelessPhy();
+        WifiRetryPolicy retryPolicy = config.wifiRetryPolicy();
+        SimulationContext context = new SimulationContext(trace, runSummary, wirelessPhy != null, retryPolicy != null);
         List<Map<Integer, Sta>> stationsBySfu = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             stationsBySfu.add(new HashMap<>());
         }
         List<Sta> stations = new ArrayList<>(config.staCount());
         for (int i = 0; i < config.staCount(); i++) {
-            Sta sta = new Sta(i + 1, config.staSfuIds().get(i));
+            Sta sta = new Sta(i + 1, config.staSfuIds().get(i), config.edcaParameters());
             stations.add(sta);
             stationsBySfu.get(sta.sfuId() - 1).put(sta.id(), sta);
         }
 
         // 每台 SFU 都有各自的收包队列和发送状态，光链路也按目的 SFU 分开实例化。
         FixedDelayModel fiberDelay = new FixedDelayModel(config.fiberDelayUs());
-        FixedDelayModel wifiDelay = new FixedDelayModel(config.wifiDelayUs());
+        // 链路时长模型可共用。每台 SFU 各自维护一个与其 STA 共享的信道。
+        WifiLink wifi = wirelessPhy == null ? new WifiLink(new FixedDelayModel(config.wifiDelayUs()))
+                : new WifiLink(wirelessPhy, config.wifiFrameExchange());
         List<FiberLink> fibers = new ArrayList<>(config.sfuCount());
         List<Sfu> sfus = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             fibers.add(new FiberLink(fiberDelay));
-            sfus.add(new Sfu(i + 1, new WifiLink(wifiDelay), stationsBySfu.get(i)));
+            sfus.add(new Sfu(i + 1, wifi, stationsBySfu.get(i), config.edcaParameters(), config.wifiAccessMode(),
+                    retryPolicy));
         }
         Mfu mfu = new Mfu(config.staSfuIds());
 
@@ -74,9 +81,17 @@ public final class Simulator {
                 case WIFI_TX_START:
                     sfus.get(event.sfuId() - 1).transmit(event.packet(), context);
                     break;
+                case WIFI_TXOP_DATA_START:
+                    sfus.get(event.sfuId() - 1).transmitWithinTxop(event.packet(), context);
+                    break;
                 case PACKET_ARRIVAL_AT_STA:
                 case WIFI_ARRIVAL_AT_SFU:
-                    // 上下行完成事件都释放该 SFU 的无线资源。上行还需要转发光侧一跳。
+                    sfus.get(event.sfuId() - 1).receiveData(event.packet(), context);
+                    break;
+                case WIFI_ACK_START:
+                    sfus.get(event.sfuId() - 1).transmitAck(event.packet(), context);
+                    break;
+                case WIFI_ACK_END:
                     sfus.get(event.sfuId() - 1).completeTransmission(event.packet(), context);
                     break;
                 case PACKET_ARRIVAL_AT_MFU:
@@ -84,6 +99,18 @@ public final class Simulator {
                     break;
                 case WIFI_SELECT_NEXT:
                     sfus.get(event.sfuId() - 1).selectNext(context);
+                    break;
+                case WIFI_ACCESS_TIMER:
+                    sfus.get(event.sfuId() - 1).advanceAccess(event);
+                    break;
+                case WIFI_ACCESS_RESOLVE:
+                    sfus.get(event.sfuId() - 1).resolveAccess(event, context);
+                    break;
+                case WIFI_COLLISION_DATA_END:
+                    sfus.get(event.sfuId() - 1).finishCollidedData(event.packet(), context);
+                    break;
+                case WIFI_ACK_TIMEOUT:
+                    sfus.get(event.sfuId() - 1).onAckTimeout(event.packet(), context);
                     break;
                 default:
                     throw new IllegalStateException("Unhandled event: " + event.type());
@@ -94,6 +121,9 @@ public final class Simulator {
         }
         if (!uplinkWindowsUs.isEmpty()) {
             recordGeneratedTraffic(config, trace, uplinkWindowsUs, true);
+        }
+        if (wirelessPhy != null) {
+            trace.recordWirelessPhyRate(wirelessPhy.phyRateMbps());
         }
         context.recordSummary(sfus, stations, config.uplinkEnabled());
     }

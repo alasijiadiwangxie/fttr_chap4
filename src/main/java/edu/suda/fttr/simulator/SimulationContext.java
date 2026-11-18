@@ -11,61 +11,117 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** 每次运行使用独立的事件队列、微秒时钟和日志。 */
+/** 每次运行使用独立的事件队列、整数时钟和日志。 */
 public final class SimulationContext {
     private final EventQueue events = new EventQueue();
     private final TraceLogger trace;
     private final boolean multiPacket;
+    private final boolean nanosecondClock;
+    private final boolean wifiRetryEnabled;
     private final EnumMap<AccessCategory, DelayStats> byClass = new EnumMap<>(AccessCategory.class);
     private final DelayStats overallDelay = new DelayStats();
     private final Map<Integer, UplinkStats> uplinkByStation = new HashMap<>();
-    private long nowUs;
+    private long nowTicks;
     private int deliveredPackets;
     private long deliveredBytes;
-    private long lastDeliveryDelayUs;
-    private long wifiBusyUs;
-    private long wifiBusySinceUs;
+    private long lastDeliveryDelayTicks;
+    private long wifiBusyTicks;
+    private long wifiBusySinceTicks;
     private int activeRadios;
+    private long wifiCollisionEvents;
+    private int wifiCollisionDroppedPackets;
+    private long wifiCollisionDroppedBytes;
+    private long wifiRetransmissions;
+    private long wifiAckTimeouts;
+    private int wifiRetryLimitDrops;
+    private int wifiTxops;
+    private int wifiTxopPackets;
+    private double totalWifiTxopDurationUs;
 
-    SimulationContext(TraceLogger trace, boolean multiPacket) {
-        this.trace = trace;
+    SimulationContext(TraceLogger trace, boolean multiPacket, boolean nanosecondClock) {
+        this(trace, multiPacket, nanosecondClock, false);
+    }
+
+    SimulationContext(TraceLogger trace, boolean multiPacket, boolean nanosecondClock, boolean wifiRetryEnabled) {
+        this.trace = trace.withNanosecondClock(nanosecondClock);
         this.multiPacket = multiPacket;
+        this.nanosecondClock = nanosecondClock;
+        this.wifiRetryEnabled = wifiRetryEnabled;
         for (AccessCategory type : AccessCategory.values()) {
             byClass.put(type, new DelayStats());
         }
     }
 
-    public long nowUs() {
-        return nowUs;
+    public long nowTicks() {
+        return nowTicks;
+    }
+
+    /** 先用整数刻度做时间差，再换算到统计所用的微秒。 */
+    public double ticksToMicroseconds(long ticks) {
+        return nanosecondClock ? ticks / 1_000.0 : (double) ticks;
+    }
+
+    public long elapsedSinceGenerationTicks(Packet packet) {
+        return nowTicks - microsecondsToTicks(packet.generationTimeUs());
     }
 
     void scheduleInputEvent(Event event) {
-        if (event.timeUs() < nowUs) {
+        long timeTicks = microsecondsToTicks(event.timeUs());
+        if (timeTicks < nowTicks) {
             throw new IllegalArgumentException("Input event time must not precede the simulation clock");
         }
-        events.add(event);
+        // 手动和泊松输入仍用整数微秒，入队时才统一到本次运行的时钟刻度。
+        events.add(nanosecondClock ? Event.atTicks(timeTicks, true, event.type(), event.packet(), event.sfuId()) : event);
     }
 
-    public void scheduleAfter(long delayUs, EventType type, Packet packet, int sfuId) {
-        if (delayUs < 0) {
+    /** 将整数微秒转换为当前运行使用的整数时钟刻度。 */
+    public long microsecondsToTicks(long timeUs) {
+        try {
+            return nanosecondClock ? Math.multiplyExact(timeUs, 1_000) : timeUs;
+        } catch (ArithmeticException ex) {
+            throw new IllegalArgumentException("Time in microseconds exceeds the nanosecond clock range", ex);
+        }
+    }
+
+    public Event scheduleAfter(long delayUs, EventType type, Packet packet, int sfuId) {
+        return scheduleAfterTicks(microsecondsToTicks(delayUs), type, packet, sfuId);
+    }
+
+    /** HE PPDU 的时间直接使用纳秒刻度，保留小数微秒部分。 */
+    public void scheduleAfterNanoseconds(long delayNs, EventType type, Packet packet, int sfuId) {
+        if (!nanosecondClock) {
+            throw new IllegalStateException("Nanosecond delays require a nanosecond clock");
+        }
+        scheduleAfterTicks(delayNs, type, packet, sfuId);
+    }
+
+    /** 使用当前仿真时钟的原始刻度安排事件。 */
+    public Event scheduleAfterTicks(long delayTicks, EventType type, Packet packet, int sfuId) {
+        if (delayTicks < 0) {
             throw new IllegalArgumentException("Event delay must be non-negative");
         }
         // 以当前事件发生的时刻为基准安排下一跳。零时延允许，但时钟不能倒退。
         try {
-            events.add(new Event(Math.addExact(nowUs, delayUs), type, packet, sfuId));
+            Event event = Event.atTicks(Math.addExact(nowTicks, delayTicks), nanosecondClock, type, packet, sfuId);
+            events.add(event);
+            return event;
         } catch (ArithmeticException ex) {
             throw new IllegalArgumentException("Event time exceeds the clock range: " + type, ex);
         }
     }
 
+    public void cancel(Event event) {
+        events.cancel(event);
+    }
+
     public void scheduleWifiSelection(int sfuId) {
-        events.add(new Event(nowUs, EventType.WIFI_SELECT_NEXT, null, sfuId));
+        events.add(Event.atTicks(nowTicks, nanosecondClock, EventType.WIFI_SELECT_NEXT, null, sfuId));
     }
 
     Event nextEvent() {
         Event event = events.poll();
         if (event != null) {
-            nowUs = event.timeUs();
+            nowTicks = event.timeTicks();
             trace.recordEvent(event);
         }
         return event;
@@ -73,7 +129,7 @@ public final class SimulationContext {
 
     public void recordDelivery(Packet packet, Sta sta) {
         recordDelivered(packet);
-        trace.recordDelivery(packet, sta, nowUs);
+        trace.recordDelivery(packet, sta, nowTicks);
     }
 
     public void recordUplinkDelivery(Packet packet, int sfuId) {
@@ -81,45 +137,129 @@ public final class SimulationContext {
         UplinkStats stats = uplinkByStation.computeIfAbsent(packet.staId(), id -> new UplinkStats());
         stats.packets++;
         stats.bytes += packet.bytes();
-        stats.delaySumUs += lastDeliveryDelayUs;
-        trace.recordUplinkDelivery(packet, sfuId, nowUs);
+        stats.delaySumUs += ticksToMicroseconds(lastDeliveryDelayTicks);
+        trace.recordUplinkDelivery(packet, sfuId, nowTicks, lastDeliveryDelayTicks);
     }
 
     private void recordDelivered(Packet packet) {
         deliveredPackets++;
         deliveredBytes += packet.bytes();
-        lastDeliveryDelayUs = nowUs - packet.generationTimeUs();
+        lastDeliveryDelayTicks = elapsedSinceGenerationTicks(packet);
     }
 
     public void recordWifiStart() {
         if (activeRadios++ == 0) {
-            wifiBusySinceUs = nowUs;
+            wifiBusySinceTicks = nowTicks;
         }
     }
 
-    public void recordWifiService(Packet packet, int sfuId, long queueEntryUs, long startUs) {
-        // 至少一台 SFU 正在无线发送或接收时计为忙。不同 SFU 的并行区间只计一次。
-        if (--activeRadios == 0) {
-            wifiBusyUs += nowUs - wifiBusySinceUs;
+    public void recordWifiDataEnd(Packet packet, int sfuId) {
+        trace.recordWifiDataEnd(packet, sfuId, nowTicks);
+    }
+
+    public void recordWifiService(Packet packet, int sfuId, long queueEntryTicks, long startTicks, long dataEndTicks,
+                                  boolean channelReleased) {
+        if (channelReleased) {
+            recordWifiEnd();
         }
-        long queueWaitUs = startUs - queueEntryUs;
+        double queueWaitUs = ticksToMicroseconds(startTicks - queueEntryTicks);
+        long endToEndTicks = 0;
         if (packet.isUplink()) {
-            // 上行此时只完成无线一跳，端到端时延等 MFU 接收后再统计。
+            // 上行端到端时延由 MFU 的收包时刻统计，无线一跳只记录排队时延。
             uplinkByStation.computeIfAbsent(packet.staId(), id -> new UplinkStats()).waitSumUs += queueWaitUs;
         } else {
-            long delayUs = nowUs - packet.generationTimeUs();
+            // 下行端到端时延止于 STA 收齐 DATA，服务时长止于无线资源释放。
+            endToEndTicks = dataEndTicks - microsecondsToTicks(packet.generationTimeUs());
+            double delayUs = ticksToMicroseconds(endToEndTicks);
             byClass.get(packet.type()).add(queueWaitUs, delayUs);
             overallDelay.add(queueWaitUs, delayUs);
         }
-        trace.recordWifiService(packet, sfuId, queueEntryUs, startUs, nowUs);
+        trace.recordWifiService(packet, sfuId, queueEntryTicks, startTicks, nowTicks, endToEndTicks);
+    }
+
+    public void recordWifiTxopStart(Packet packet, int sfuId, long limitNs) {
+        trace.recordWifiTxopStart(packet, sfuId, nowTicks, limitNs);
+    }
+
+    public void recordWifiTxopEnd(Packet packet, int sfuId, long startTicks, long limitNs, int packetCount) {
+        long durationTicks = nowTicks - startTicks;
+        wifiTxops++;
+        wifiTxopPackets += packetCount;
+        totalWifiTxopDurationUs += ticksToMicroseconds(durationTicks);
+        trace.recordWifiTxopEnd(packet, sfuId, nowTicks, limitNs, durationTicks, packetCount);
+    }
+
+    public void recordWifiCollisionStart(List<Packet> packets, int sfuId) {
+        // 碰撞中的多次发射仍只占用一份 SFU 信道，忙时从共同起点算到最后一个 DATA 结束。
+        recordWifiStart();
+        wifiCollisionEvents++;
+        for (Packet packet : packets) {
+            trace.recordCollisionPacket(packet, sfuId, nowTicks, "WIFI_COLLISION_START");
+        }
+    }
+
+    public void recordWifiCollisionDrop(Packet packet, int sfuId) {
+        recordCollisionLoss(packet);
+        trace.recordCollisionPacket(packet, sfuId, nowTicks, "WIFI_COLLISION_DROP");
+    }
+
+    public void recordWifiCollisionDataEnd(Packet packet, int sfuId) {
+        trace.recordCollisionPacket(packet, sfuId, nowTicks, "WIFI_COLLISION_DATA_END");
+    }
+
+    public void recordWifiMacAttempt(Packet packet, int sfuId, int retries) {
+        if (retries > 0) {
+            wifiRetransmissions++;
+        }
+        trace.recordMacRetryPacket(packet, sfuId, nowTicks, "WIFI_MAC_ATTEMPT", retries);
+    }
+
+    public void recordWifiAckTimeout(Packet packet, int sfuId, int retries) {
+        wifiAckTimeouts++;
+        trace.recordMacRetryPacket(packet, sfuId, nowTicks, "WIFI_ACK_TIMEOUT", retries);
+    }
+
+    public void recordWifiMacRetry(Packet packet, int sfuId, int retries, int cwBefore, int cwAfter, int backoff) {
+        trace.recordMacRetry(packet, sfuId, nowTicks, retries, cwBefore, cwAfter, backoff);
+    }
+
+    public void recordWifiRetryLimitDrop(Packet packet, int sfuId, int retries) {
+        wifiRetryLimitDrops++;
+        recordCollisionLoss(packet);
+        trace.recordMacRetryPacket(packet, sfuId, nowTicks, "WIFI_RETRY_LIMIT_DROP", retries);
+    }
+
+    private void recordCollisionLoss(Packet packet) {
+        wifiCollisionDroppedPackets++;
+        wifiCollisionDroppedBytes += packet.bytes();
+    }
+
+    public void recordWifiMacSuccess(Packet packet, int sfuId, int retries) {
+        trace.recordMacRetryPacket(packet, sfuId, nowTicks, "WIFI_MAC_SUCCESS", retries);
+    }
+
+    public void recordWifiCollisionEnd(int sfuId) {
+        recordWifiEnd();
+        trace.recordCollisionEnd(sfuId, nowTicks);
+    }
+
+    private void recordWifiEnd() {
+        // 不同 SFU 的忙区间可以重叠，按区间并集计入全局忙时。
+        if (--activeRadios == 0) {
+            wifiBusyTicks += nowTicks - wifiBusySinceTicks;
+        }
     }
 
     public void recordEnqueue(Packet packet, int sfuId, int queueDepth) {
-        trace.recordEnqueue(packet, nowUs, sfuId, queueDepth);
+        trace.recordEnqueue(packet, nowTicks, sfuId, queueDepth);
     }
 
     public void recordQueueSelection(Packet packet, int sfuId, int vo, int vi, int be, int bk) {
-        trace.recordQueueSelection(packet, nowUs, sfuId, vo, vi, be, bk);
+        trace.recordQueueSelection(packet, nowTicks, sfuId, vo, vi, be, bk);
+    }
+
+    public void recordVirtualCollision(Packet loser, Packet winner, int sfuId, int cwBefore, int cwAfter, int backoff) {
+        trace.recordVirtualCollision(loser, winner, sfuId, nowTicks, cwBefore, cwAfter, backoff);
     }
 
     void recordSummary(List<Sfu> sfus, List<Sta> stations, boolean uplinkEnabled) {
@@ -135,10 +275,19 @@ public final class SimulationContext {
         if (uplinkEnabled) {
             recordUplinkSummary(stations);
         }
+        if (wifiCollisionEvents > 0) {
+            trace.recordCollisionSummary(wifiCollisionEvents, wifiCollisionDroppedPackets, wifiCollisionDroppedBytes);
+        }
+        if (wifiRetryEnabled) {
+            trace.recordRetrySummary(wifiRetransmissions, wifiAckTimeouts, wifiRetryLimitDrops);
+        }
+        if (wifiTxops > 0) {
+            trace.recordTxopSummary(wifiTxops, totalWifiTxopDurationUs, wifiTxopPackets);
+        }
         if (multiPacket) {
-            trace.recordRunSummary(deliveredPackets, deliveredBytes, wifiBusyUs, nowUs);
+            trace.recordRunSummary(deliveredPackets, deliveredBytes, wifiBusyTicks, nowTicks);
         } else {
-            trace.recordSinglePacketSummary(deliveredPackets, deliveredBytes, lastDeliveryDelayUs);
+            trace.recordSinglePacketSummary(deliveredPackets, deliveredBytes, lastDeliveryDelayTicks);
         }
     }
 
@@ -164,7 +313,7 @@ public final class SimulationContext {
 
     private double throughputMbps(long bytes) {
         // SFU 和 STA 统一采用 0 至最后事件的观察窗口。bit/μs 与 Mb/s 等值。
-        return nowUs == 0 ? 0.0 : bytes * 8.0 / nowUs;
+        return nowTicks == 0 ? 0.0 : bytes * 8.0 / ticksToMicroseconds(nowTicks);
     }
 
     private static final class DelayStats {
@@ -173,7 +322,7 @@ public final class SimulationContext {
         private double waitSumUs;
         private double delaySumUs;
 
-        void add(long waitUs, long delayUs) {
+        void add(double waitUs, double delayUs) {
             count++;
             waitSumUs += waitUs;
             delaySumUs += delayUs;

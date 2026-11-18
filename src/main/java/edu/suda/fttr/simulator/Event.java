@@ -4,7 +4,8 @@ import edu.suda.fttr.entity.Packet;
 
 /** 事件不可变。生成事件标记报文的入口时刻，进入链路后的事件可携带 SFU ID。 */
 public final class Event {
-    private final long timeUs;
+    private final long timeTicks;
+    private final boolean nanosecondClock;
     private final EventType type;
     private final Packet packet;
     private final int sfuId;
@@ -14,7 +15,12 @@ public final class Event {
     }
 
     Event(long timeUs, EventType type, Packet packet, int sfuId) {
-        this.timeUs = timeUs;
+        this(timeUs, false, type, packet, sfuId);
+    }
+
+    private Event(long timeTicks, boolean nanosecondClock, EventType type, Packet packet, int sfuId) {
+        this.timeTicks = timeTicks;
+        this.nanosecondClock = nanosecondClock;
         this.type = type;
         this.packet = packet;
         this.sfuId = sfuId;
@@ -25,8 +31,24 @@ public final class Event {
         return new Event(packet.generationTimeUs(), EventType.PACKET_GENERATED, packet);
     }
 
+    static Event atTicks(long timeTicks, boolean nanosecondClock, EventType type, Packet packet, int sfuId) {
+        return new Event(timeTicks, nanosecondClock, type, packet, sfuId);
+    }
+
+    /** 配置中的输入事件使用整数微秒。内部的小数微秒事件不得用此方法取整。 */
     public long timeUs() {
-        return timeUs;
+        if (!nanosecondClock) {
+            return timeTicks;
+        }
+        if (timeTicks % 1_000 != 0) {
+            throw new IllegalStateException("Event time is not a whole microsecond");
+        }
+        return timeTicks / 1_000;
+    }
+
+    /** 同一队列内的事件使用相同的时钟刻度。 */
+    public long timeTicks() {
+        return timeTicks;
     }
 
     public EventType type() {

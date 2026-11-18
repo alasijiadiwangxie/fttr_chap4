@@ -2,6 +2,12 @@ package edu.suda.fttr.config;
 
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.link.WifiFrameExchange;
+import edu.suda.fttr.mac.EdcaParameters;
+import edu.suda.fttr.mac.EdcaParameters.AcParameters;
+import edu.suda.fttr.mac.WifiAccessMode;
+import edu.suda.fttr.mac.WifiRetryPolicy;
+import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 import edu.suda.fttr.traffic.TrafficGenerator;
 
@@ -9,12 +15,15 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -23,11 +32,26 @@ import java.util.regex.Pattern;
 /** 读取并校验完整的场景配置，再开始处理仿真事件。 */
 public final class ConfigLoader {
     private static final String DEFAULT_SCENARIO = "/phase1-minimal-downlink.properties";
+    private static final String MAC_EXCHANGE = "wifi.mac.exchange";
+    private static final String MAC_ACCESS = "wifi.mac.access";
+    private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
+    private static final String MAC_SLOT_US = "wifi.mac.slot.us";
+    private static final String MAC_ACK_RATE_MBPS = "wifi.mac.ack.rate.mbps";
+    private static final String MAC_ACK_TIMEOUT_US = "wifi.mac.ack.timeout.us";
+    private static final String MAC_MAX_RETRIES = "wifi.mac.retry.max";
+    private static final String EDCA_SEED = "wifi.mac.edca.seed";
     private static final Set<String> KEYS = Set.of(
-            "fiber.delay.us", "wifi.delay.us", "sta.count", "sfu.count", "traffic.mode", "traffic.direction");
+            "fiber.delay.us", "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
+            MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
+            MAC_MAX_RETRIES, EDCA_SEED);
+    private static final Set<String> PHY_KEYS = Set.of(
+            "wifi.phy.bandwidth.mhz", "wifi.phy.mcs", "wifi.phy.nss", "wifi.phy.gi.us",
+            "wifi.phy.mac.overhead.bytes", "wifi.phy.he-ltf.type", "wifi.phy.nominal.packet.padding.us");
     private static final Set<String> MANUAL_KEYS = Set.of("packet.bytes", "packet.arrival.us");
     private static final Pattern PACKET_OVERRIDE = Pattern.compile("packet\\.([1-9][0-9]*)\\.(bytes|type|sta\\.id|direction)");
     private static final Pattern STA_ASSOCIATION = Pattern.compile("sta\\.([1-9][0-9]*)\\.sfu\\.id");
+    private static final Pattern EDCA_AC_KEY = Pattern.compile(
+            "wifi\\.mac\\.edca\\.(VO|VI|BE|BK)\\.(aifsn|cwmin|cwmax|txop\\.limit\\.us)");
     private static final Pattern POISSON_SOURCE = Pattern.compile(
             "traffic\\.(sfu|sta)\\.([1-9][0-9]*)\\.(rate\\.pps|packet\\.bytes|seed|class\\.weights|duration\\.us|"
                     + "class\\.(VO|VI|BE|BK)\\.(rate\\.pps|rate\\.mbps|packet\\.bytes))");
@@ -82,7 +106,12 @@ public final class ConfigLoader {
         validateKeys(properties, arrivalsUs.size(), staCount, sfuCount, poisson, directionMode);
         List<Integer> staSfuIds = readStaAssociations(properties, staCount, sfuCount);
         long fiberUs = readNonNegativeLong(properties, "fiber.delay.us");
-        long wifiUs = readNonNegativeLong(properties, "wifi.delay.us");
+        WirelessPhy wirelessPhy = readWirelessPhy(properties);
+        EdcaParameters edcaParameters = readEdcaParameters(properties);
+        WifiAccessMode accessMode = readWifiAccessMode(properties);
+        WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy, edcaParameters.sifsUs());
+        WifiRetryPolicy retryPolicy = readWifiRetryPolicy(properties, accessMode, frameExchange, edcaParameters);
+        long wifiUs = wirelessPhy == null ? readNonNegativeLong(properties, "wifi.delay.us") : 0;
         long durationUs = poisson ? readPositiveDuration(properties, "traffic.duration.us") : 0;
         PoissonTraffic downlink = poisson && directionMode.allows(Packet.Direction.DL)
                 ? readDownlinkSources(properties, sfuCount, staSfuIds, durationUs) : new PoissonTraffic();
@@ -94,9 +123,120 @@ public final class ConfigLoader {
                 ? TrafficGenerator.generate(sources)
                 : readManualEvents(properties, arrivalsUs, staCount, directionMode);
 
-        validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs);
-        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs,
-                downlink.windowsUs, uplink.windowsUs, directionMode.allows(Packet.Direction.UL));
+        validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange);
+        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange,
+                edcaParameters, accessMode, retryPolicy, downlink.windowsUs, uplink.windowsUs,
+                directionMode.allows(Packet.Direction.UL));
+    }
+
+    private static WifiRetryPolicy readWifiRetryPolicy(Properties properties, WifiAccessMode accessMode,
+                                                       WifiFrameExchange frameExchange, EdcaParameters edcaParameters) {
+        boolean timeoutConfigured = properties.containsKey(MAC_ACK_TIMEOUT_US);
+        if (accessMode != WifiAccessMode.EDCA_MULTI_AC || frameExchange == null) {
+            if (timeoutConfigured || properties.containsKey(MAC_MAX_RETRIES)) {
+                throw new IllegalArgumentException("ACK retry parameters require edca-multi-ac and data-sifs-ack");
+            }
+            return null;
+        }
+        // 近似的缺失 ACK 等待窗口。默认覆盖一次正常 SIFS、ACK 和一个空闲时隙。
+        long timeoutUs = timeoutConfigured ? readNonNegativeLong(properties, MAC_ACK_TIMEOUT_US)
+                : frameExchange.responseDurationNs() / 1_000L + edcaParameters.slotTimeUs();
+        return new WifiRetryPolicy(timeoutUs, readOptionalNonNegativeInt(properties, MAC_MAX_RETRIES, 3));
+    }
+
+    private static WifiAccessMode readWifiAccessMode(Properties properties) {
+        String access = properties.getProperty(MAC_ACCESS, "fixed-priority").strip();
+        switch (access) {
+            case "fixed-priority": return WifiAccessMode.FIXED_PRIORITY;
+            case "edca-countdown": return WifiAccessMode.EDCA_COUNTDOWN;
+            case "edca-multi-ac": return WifiAccessMode.EDCA_MULTI_AC;
+            default: throw new IllegalArgumentException(MAC_ACCESS + " must be fixed-priority, edca-countdown or edca-multi-ac");
+        }
+    }
+
+    private static EdcaParameters readEdcaParameters(Properties properties) {
+        EdcaParameters defaults = EdcaParameters.defaults();
+        long sifsUs = properties.containsKey(MAC_SIFS_US) ? readNonNegativeLong(properties, MAC_SIFS_US) : defaults.sifsUs();
+        long slotTimeUs = properties.containsKey(MAC_SLOT_US) ? readNonNegativeLong(properties, MAC_SLOT_US)
+                : defaults.slotTimeUs();
+        long seed = properties.containsKey(EDCA_SEED) ? readSeed(properties, EDCA_SEED) : defaults.seed();
+        Map<AccessCategory, AcParameters> byCategory = new EnumMap<>(AccessCategory.class);
+        for (AccessCategory category : CATEGORIES) {
+            AcParameters acDefaults = defaults.forCategory(category);
+            String prefix = "wifi.mac.edca." + category + ".";
+            int aifsn = readOptionalNonNegativeInt(properties, prefix + "aifsn", acDefaults.aifsn());
+            int cwMin = readOptionalNonNegativeInt(properties, prefix + "cwmin", acDefaults.cwMin());
+            int cwMax = readOptionalNonNegativeInt(properties, prefix + "cwmax", acDefaults.cwMax());
+            String txopKey = prefix + "txop.limit.us";
+            long txopLimitUs = properties.containsKey(txopKey) ? readNonNegativeLong(properties, txopKey)
+                    : acDefaults.txopLimitUs();
+            try {
+                byCategory.put(category, new AcParameters(aifsn, cwMin, cwMax, txopLimitUs));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Invalid EDCA parameters for " + category + ": " + e.getMessage(), e);
+            }
+        }
+        return new EdcaParameters(sifsUs, slotTimeUs, byCategory, seed);
+    }
+
+    private static WifiFrameExchange readWifiFrameExchange(Properties properties, WirelessPhy wirelessPhy, long sifsUs) {
+        String mode = properties.getProperty(MAC_EXCHANGE, "data-only").strip();
+        if (mode.equals("data-only")) {
+            if (properties.containsKey(MAC_ACK_RATE_MBPS)) {
+                throw new IllegalArgumentException(MAC_ACK_RATE_MBPS + " requires wifi.mac.exchange=data-sifs-ack");
+            }
+            return null;
+        }
+        if (!mode.equals("data-sifs-ack")) {
+            throw new IllegalArgumentException("wifi.mac.exchange must be data-only or data-sifs-ack");
+        }
+        if (wirelessPhy == null) {
+            throw new IllegalArgumentException("wifi.mac.exchange=data-sifs-ack requires wifi.model=he-su");
+        }
+        int ackRateMbps = properties.containsKey(MAC_ACK_RATE_MBPS) ? readPositiveInt(properties, MAC_ACK_RATE_MBPS) : 24;
+        return new WifiFrameExchange(sifsUs, ackRateMbps);
+    }
+
+    private static WirelessPhy readWirelessPhy(Properties properties) {
+        // 旧配置只要包含 wifi.delay.us 就继续使用固定时延。新场景默认使用 HE SU。
+        String defaultMode = properties.containsKey("wifi.delay.us") ? "fixed" : "he-su";
+        String mode = properties.getProperty("wifi.model", defaultMode).strip();
+        if (mode.equals("fixed")) {
+            if (PHY_KEYS.stream().anyMatch(properties::containsKey)) {
+                throw new IllegalArgumentException("wifi.phy.* requires wifi.model=he-su");
+            }
+            return null;
+        }
+        if (!mode.equals("he-su")) {
+            throw new IllegalArgumentException("wifi.model must be fixed or he-su");
+        }
+        if (properties.containsKey("wifi.delay.us")) {
+            throw new IllegalArgumentException("wifi.delay.us requires wifi.model=fixed");
+        }
+        int giNs;
+        try {
+            giNs = new BigDecimal(properties.getProperty("wifi.phy.gi.us", "0.8").strip())
+                    .movePointRight(3).intValueExact();
+        } catch (NumberFormatException | ArithmeticException e) {
+            throw new IllegalArgumentException("wifi.phy.gi.us must be 0.8, 1.6 or 3.2", e);
+        }
+        return new WirelessPhy(readOptionalNonNegativeInt(properties, "wifi.phy.bandwidth.mhz", 160),
+                readOptionalNonNegativeInt(properties, "wifi.phy.mcs", 11),
+                readOptionalNonNegativeInt(properties, "wifi.phy.nss", 2), giNs,
+                readOptionalNonNegativeInt(properties, "wifi.phy.mac.overhead.bytes", 34),
+                readOptionalNonNegativeInt(properties, "wifi.phy.he-ltf.type", WirelessPhy.defaultHeLtfType(giNs)),
+                readOptionalNonNegativeInt(properties, "wifi.phy.nominal.packet.padding.us", 0));
+    }
+
+    private static int readOptionalNonNegativeInt(Properties properties, String key, int defaultValue) {
+        if (!properties.containsKey(key)) {
+            return defaultValue;
+        }
+        long value = readNonNegativeLong(properties, key);
+        if (value > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(key + " must fit in a 32-bit integer");
+        }
+        return (int) value;
     }
 
     private static DirectionMode readDirectionMode(Properties properties) {
@@ -109,30 +249,34 @@ public final class ConfigLoader {
     }
 
     private static void validateCompletionClock(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds,
-                                                long fiberUs, long wifiUs) {
-        // 固定无线时长下，同一 SFU 的忙闲边界由实际入队时刻决定，与选队优先级无关。
+                                                long fiberUs, long wifiUs, WirelessPhy wirelessPhy,
+                                                WifiFrameExchange frameExchange) {
+        // 同一 SFU 按到达时刻累计无线工作量即可计算忙闲边界，优先级只改变其中的发送顺序。
         boolean mixed = inputEvents.stream().anyMatch(event -> event.packet().direction() == Packet.Direction.UL)
                 && inputEvents.stream().anyMatch(event -> event.packet().direction() == Packet.Direction.DL);
-        long[] completionUs = new long[sfuCount];
+        long[] completion = new long[sfuCount];
+        long ticksPerUs = wirelessPhy == null ? 1 : 1000;
+        long responseTicks = frameExchange == null ? 0 : frameExchange.responseDurationNs();
         try {
+            long fiberTicks = Math.multiplyExact(fiberUs, ticksPerUs);
             List<Event> wifiArrivals = inputEvents;
             if (mixed) {
                 // 上行直接进入无线队列，下行先走光路，双向模式的入队顺序可能与生成顺序不同。
                 wifiArrivals = new ArrayList<>(inputEvents);
-                wifiArrivals.sort(Comparator.comparingLong(event -> wifiArrivalUs(event, fiberUs)));
+                wifiArrivals.sort(Comparator.comparingLong(event -> wifiArrivalTicks(event, ticksPerUs, fiberTicks)));
             }
             for (Event event : wifiArrivals) {
                 Packet packet = event.packet();
-                boolean uplink = packet.direction() == Packet.Direction.UL;
-                long arrivalUs = wifiArrivalUs(event, fiberUs);
-                int staId = uplink ? packet.sourceNodeId() : packet.destinationStaId();
-                int sfuIndex = staSfuIds.get(staId - 1) - 1;
-                completionUs[sfuIndex] = Math.addExact(Math.max(arrivalUs, completionUs[sfuIndex]), wifiUs);
-                if (uplink) {
-                    // 纯上行的最后一条无线完成记录可给出精确上界。双向时谁最后上行由实际选队决定，
-                    // 这里只检查最早可完成的时刻，剩余的上行光路加法在执行实际事件时校验。
-                    long uplinkEndUs = mixed ? Math.addExact(arrivalUs, wifiUs) : completionUs[sfuIndex];
-                    Math.addExact(uplinkEndUs, fiberUs);
+                long arrival = wifiArrivalTicks(event, ticksPerUs, fiberTicks);
+                int sfuIndex = staSfuIds.get(packet.staId() - 1) - 1;
+                long dataTicks = wirelessPhy == null ? wifiUs : wirelessPhy.ppduDurationNs(packet.bytes());
+                long exchangeTicks = Math.addExact(dataTicks, responseTicks);
+                completion[sfuIndex] = Math.addExact(Math.max(arrival, completion[sfuIndex]), exchangeTicks);
+                if (packet.isUplink()) {
+                    // 光路从 DATA 结束起算。纯上行可由资源释放时刻减去 SIFS 和 ACK 得到上界。
+                    // 双向时上行顺序由实际选队决定，此处只检查最早出发的光路时刻，运行时再校验实际时刻。
+                    long dataEnd = mixed ? Math.addExact(arrival, dataTicks) : completion[sfuIndex] - responseTicks;
+                    Math.addExact(dataEnd, fiberTicks);
                 }
             }
         } catch (ArithmeticException e) {
@@ -140,15 +284,16 @@ public final class ConfigLoader {
         }
     }
 
-    private static long wifiArrivalUs(Event event, long fiberUs) {
-        return event.packet().direction() == Packet.Direction.UL ? event.timeUs() : Math.addExact(event.timeUs(), fiberUs);
+    private static long wifiArrivalTicks(Event event, long ticksPerUs, long fiberTicks) {
+        long input = Math.multiplyExact(event.timeUs(), ticksPerUs);
+        return event.packet().isUplink() ? input : Math.addExact(input, fiberTicks);
     }
 
     private static void validateKeys(Properties properties, int packetCount, int staCount, int sfuCount,
                                      boolean poisson, DirectionMode directionMode) {
         // 模式间的字段不能混用，防止手填报文或流量源的设置被忽略。
         for (String key : properties.stringPropertyNames()) {
-            if (KEYS.contains(key)) {
+            if (KEYS.contains(key) || PHY_KEYS.contains(key) || EDCA_AC_KEY.matcher(key).matches()) {
                 continue;
             }
             Matcher packet = PACKET_OVERRIDE.matcher(key);
