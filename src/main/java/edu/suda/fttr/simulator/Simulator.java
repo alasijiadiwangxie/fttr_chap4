@@ -8,6 +8,7 @@ import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.link.FiberLink;
 import edu.suda.fttr.link.FixedDelayModel;
+import edu.suda.fttr.link.PonDownlink;
 import edu.suda.fttr.link.WifiLink;
 import edu.suda.fttr.mac.WifiRetryPolicy;
 import edu.suda.fttr.phy.WirelessPhy;
@@ -29,7 +30,11 @@ public final class Simulator {
         boolean runSummary = config.uplinkEnabled() || !downlinkWindowsUs.isEmpty() || config.inputEvents().size() > 1;
         WirelessPhy wirelessPhy = config.wirelessPhy();
         WifiRetryPolicy retryPolicy = config.wifiRetryPolicy();
-        SimulationContext context = new SimulationContext(trace, runSummary, wirelessPhy != null, retryPolicy != null);
+        SimulationConfig.PonDownlink ponConfig = config.ponDownlink();
+        PonDownlink ponDownlink = ponConfig == null ? null
+                : new PonDownlink(ponConfig.rateMbps(), ponConfig.propagationNs());
+        SimulationContext context = new SimulationContext(trace, runSummary, config.usesNanosecondTicks(),
+                retryPolicy != null);
         List<Map<Integer, Sta>> stationsBySfu = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             stationsBySfu.add(new HashMap<>());
@@ -41,7 +46,7 @@ public final class Simulator {
             stationsBySfu.get(sta.sfuId() - 1).put(sta.id(), sta);
         }
 
-        // 每台 SFU 都有各自的收包队列和发送状态，光链路也按目的 SFU 分开实例化。
+        // 原有逻辑光链路继续服务上行和固定时延模式的下行。
         FixedDelayModel fiberDelay = new FixedDelayModel(config.fiberDelayUs());
         // 链路时长模型可共用。每台 SFU 各自维护一个与其 STA 共享的信道。
         WifiLink wifi = wirelessPhy == null ? new WifiLink(new FixedDelayModel(config.wifiDelayUs()))
@@ -53,7 +58,7 @@ public final class Simulator {
             sfus.add(new Sfu(i + 1, wifi, stationsBySfu.get(i), config.edcaParameters(), config.wifiAccessMode(),
                     retryPolicy));
         }
-        Mfu mfu = new Mfu(config.staSfuIds());
+        Mfu mfu = new Mfu(config.staSfuIds(), ponDownlink);
 
         // 输入事件只提供报文和生成时间，实际路径由仿真器和设备根据关联表决定。
         for (Event input : config.inputEvents()) {
@@ -73,7 +78,14 @@ public final class Simulator {
                     }
                     break;
                 case FIBER_TX_START:
-                    fibers.get(event.sfuId() - 1).transmit(event.packet(), event.sfuId(), context);
+                    if (ponDownlink != null && !event.packet().isUplink()) {
+                        ponDownlink.start(event.packet(), event.sfuId(), context);
+                    } else {
+                        fibers.get(event.sfuId() - 1).transmit(event.packet(), event.sfuId(), context);
+                    }
+                    break;
+                case FIBER_TX_END:
+                    ponDownlink.finish(event.packet(), event.sfuId(), context);
                     break;
                 case PACKET_ARRIVAL_AT_SFU:
                     sfus.get(event.sfuId() - 1).enqueueForWifi(event.packet(), context);
@@ -124,6 +136,9 @@ public final class Simulator {
         }
         if (wirelessPhy != null) {
             trace.recordWirelessPhyRate(wirelessPhy.phyRateMbps());
+        }
+        if (ponDownlink != null) {
+            ponDownlink.recordSummary(context);
         }
         context.recordSummary(sfus, stations, config.uplinkEnabled());
     }

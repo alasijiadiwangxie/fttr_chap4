@@ -8,15 +8,17 @@ import edu.suda.fttr.mac.WifiRetryPolicy;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.stream.Collectors;
 
-/** 场景的已校验输入。配置中的事件时刻和固定时延使用整数微秒。 */
+/** 场景的已校验输入。入口时刻和原有固定链路时延使用整数微秒。 */
 public final class SimulationConfig {
     private final List<Event> inputEvents;
     private final int sfuCount;
     private final List<Integer> staSfuIds;
     private final long fiberDelayUs;
+    private final PonDownlink ponDownlink;
     private final long wifiDelayUs;
     private final WirelessPhy wirelessPhy;
     private final WifiFrameExchange wifiFrameExchange;
@@ -27,14 +29,16 @@ public final class SimulationConfig {
     private final List<Long> uplinkTrafficWindowsUs;
     private final boolean uplinkEnabled;
 
-    SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs, long wifiDelayUs,
-                     WirelessPhy wirelessPhy, WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters,
-                     WifiAccessMode wifiAccessMode, WifiRetryPolicy wifiRetryPolicy,
+    SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs,
+                     PonDownlink ponDownlink, long wifiDelayUs, WirelessPhy wirelessPhy,
+                     WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters, WifiAccessMode wifiAccessMode,
+                     WifiRetryPolicy wifiRetryPolicy,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled) {
         this.inputEvents = List.copyOf(inputEvents);
         this.sfuCount = sfuCount;
         this.staSfuIds = List.copyOf(staSfuIds);
         this.fiberDelayUs = fiberDelayUs;
+        this.ponDownlink = ponDownlink;
         this.wifiDelayUs = wifiDelayUs;
         this.wirelessPhy = wirelessPhy;
         this.wifiFrameExchange = wifiFrameExchange;
@@ -82,8 +86,19 @@ public final class SimulationConfig {
         return staSfuIds;
     }
 
+    /** 固定光链路时延。共享下行启用时只用于原有上行光链路。 */
     public long fiberDelayUs() {
         return fiberDelayUs;
+    }
+
+    /** 启用共享下行时提供速率和传播时延，固定下行模式返回 null。 */
+    public PonDownlink ponDownlink() {
+        return ponDownlink;
+    }
+
+    /** 共享光发送与 HE SU 都可能引入小数微秒，使用整数纳秒时钟。 */
+    public boolean usesNanosecondTicks() {
+        return wirelessPhy != null || ponDownlink != null;
     }
 
     public long wifiDelayUs() {
@@ -131,5 +146,24 @@ public final class SimulationConfig {
 
     public boolean uplinkEnabled() {
         return uplinkEnabled;
+    }
+
+    /** MFU 共用下行光发送器的配置。传播时延独立于原有的固定光链路时延。 */
+    public static final class PonDownlink {
+        private final BigDecimal rateMbps;
+        private final long propagationNs;
+
+        PonDownlink(BigDecimal rateMbps, long propagationNs) {
+            this.rateMbps = rateMbps;
+            this.propagationNs = propagationNs;
+        }
+
+        public BigDecimal rateMbps() {
+            return rateMbps;
+        }
+
+        public long propagationNs() {
+            return propagationNs;
+        }
     }
 }

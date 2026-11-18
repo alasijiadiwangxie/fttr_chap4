@@ -4,6 +4,7 @@ package edu.suda.fttr.simulator;
 public enum EventType {
     PACKET_GENERATED,
     FIBER_TX_START,
+    FIBER_TX_END,
     PACKET_ARRIVAL_AT_SFU,
     WIFI_ARRIVAL_AT_SFU,
     WIFI_TX_START,

@@ -47,6 +47,9 @@ public final class TraceLogger {
             case FIBER_TX_START:
                 write(event, packet.isUplink() ? "SFU" : "MFU", "FIBER_TX_START");
                 break;
+            case FIBER_TX_END:
+                write(event, "MFU", "FIBER_TX_END");
+                break;
             case PACKET_ARRIVAL_AT_SFU:
                 write(event, "SFU", "ARRIVAL");
                 break;
@@ -85,6 +88,10 @@ public final class TraceLogger {
 
     private void write(Event event, String node, String action) {
         write(event.packet(), event.timeTicks(), node, action, event.sfuId());
+    }
+
+    public void recordPonDownlinkEnqueue(Packet packet, int sfuId, long timeTicks) {
+        write(packet, timeTicks, "MFU", "PON_DOWNLINK_ENQUEUE", sfuId);
     }
 
     private void write(Packet packet, long timeTicks, String node, String action, int sfuId) {
@@ -226,6 +233,14 @@ public final class TraceLogger {
 
     public void recordWirelessPhyRate(double rateMbps) {
         output.printf(Locale.ROOT, "summary=WIFI_PHY model=HE_SU phy_rate_mbps=%.6f%n", rateMbps);
+    }
+
+    public void recordPonDownlinkSummary(long sentPackets, double averageWaitUs, double averageSerializationUs,
+                                         long busyTicks, long windowTicks, double utilization) {
+        output.printf(Locale.ROOT, "summary=PON_DOWNLINK sent_packets=%d avg_queue_wait_us=%.6f "
+                        + "avg_serialization_us=%.6f busy_us=%s window_us=%s utilization=%.6f%n",
+                sentPackets, averageWaitUs, averageSerializationUs, formatMicroseconds(busyTicks),
+                formatMicroseconds(windowTicks), utilization);
     }
 
     public void recordClassSummary(AccessCategory type, int sentPackets, double waitUs, double delayUs) {
