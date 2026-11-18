@@ -88,9 +88,10 @@ class Occupancy:
 
 
 class TraceAnalysis:
-    def __init__(self, sfu_count: int, duration_us: int):
+    def __init__(self, sfu_count: int, duration_us: int, *, data_duration_ns: int = 64_000):
         self.sfu_count = sfu_count
         self.duration_ns = duration_us * 1000
+        self.data_duration_ns = data_duration_ns
         self.packets: dict[int, PacketTrace] = {}
         self.queues: dict[tuple[int, int, str], deque[int]] = defaultdict(deque)
         self.channels: dict[int, Occupancy] = {}
@@ -148,7 +149,7 @@ class TraceAnalysis:
         elif event == "WIFI_DATA_END":
             require(packet.last_kind == "normal", "Collided DATA was decoded")
             require(packet.data_end is None, "Duplicate DATA reception")
-            require(time == packet.last_start + 64000, "Benchmark DATA PPDU duration mismatch")
+            require(time == packet.last_start + self.data_duration_ns, "Benchmark DATA PPDU duration mismatch")
             packet.data_end = time
         elif event == "WIFI_SIFS_START":
             require(packet.last_kind == "normal" and packet.data_end == time, "Invalid SIFS")
@@ -160,7 +161,7 @@ class TraceAnalysis:
             self._ack_end(packet, time)
         elif event == "WIFI_COLLISION_DATA_END":
             require(packet.last_kind == "collision", "Collision end without a collision")
-            require(time == packet.last_start + 64000, "Collided DATA PPDU duration mismatch")
+            require(time == packet.last_start + self.data_duration_ns, "Collided DATA PPDU duration mismatch")
             packet.data_end = time
             self.channels[packet.sfu].collision_ends[packet.id] = time
         elif event == "WIFI_ACK_TIMEOUT":
@@ -410,11 +411,12 @@ def interval_union(intervals: list[tuple[int, int, int]]) -> int:
     return total
 
 
-def scenario(total_pps: int, seed: int, profile: str, duration_us: int, sfus: int = 1) -> str:
+def scenario(total_pps: float, seed: int, profile: str, duration_us: int, sfus: int = 1,
+             *, bandwidth_mhz: int = 160) -> str:
     """负载是每台 SFU 的输入。每类业务各占四分之一，上下行各占一半。"""
     settings = ["traffic.mode=poisson", "traffic.direction=BOTH", f"traffic.duration.us={duration_us}",
                 f"sfu.count={sfus}", f"sta.count={4 * sfus}", "fiber.delay.us=100", "wifi.model=he-su",
-                "wifi.phy.bandwidth.mhz=160", "wifi.phy.mcs=11", "wifi.phy.nss=2", "wifi.phy.gi.us=0.8",
+                f"wifi.phy.bandwidth.mhz={bandwidth_mhz}", "wifi.phy.mcs=11", "wifi.phy.nss=2", "wifi.phy.gi.us=0.8",
                 "wifi.mac.exchange=data-sifs-ack", "wifi.mac.access=edca-multi-ac", f"wifi.mac.edca.seed={seed}",
                 "wifi.mac.retry.max=3"]
     for ac in ACS:
@@ -435,8 +437,9 @@ def scenario(total_pps: int, seed: int, profile: str, duration_us: int, sfus: in
     return "\n".join(settings) + "\n"
 
 
-def run(jar: Path, config: str, sfus: int, duration_us: int) -> tuple[TraceAnalysis, dict]:
-    analysis = TraceAnalysis(sfus, duration_us)
+def run(jar: Path, config: str, sfus: int, duration_us: int,
+        *, data_duration_ns: int = 64_000) -> tuple[TraceAnalysis, dict]:
+    analysis = TraceAnalysis(sfus, duration_us, data_duration_ns=data_duration_ns)
     digest = hashlib.sha256()
     with tempfile.TemporaryDirectory(prefix="fttr-edca-") as directory:
         path = Path(directory) / "scenario.properties"
@@ -469,8 +472,7 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
-def aggregate(rows: list[dict]) -> list[dict]:
-    keys = ("profile", "offered_pps_per_sfu", "sfus", "duration_us", "direction", "ac")
+def aggregate(rows: list[dict], keys=("profile", "offered_pps_per_sfu", "sfus", "duration_us", "direction", "ac")) -> list[dict]:
     numeric = [key for key in rows[0] if key not in keys + ("seed",)]
     groups = defaultdict(list)
     for row in rows:
