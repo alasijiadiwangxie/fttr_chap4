@@ -16,6 +16,7 @@ public final class Mfu {
     private final PonDownlink ponDownlink;
     private final Map<Integer, ReceivedUplinkReport> latestUplinkReports = new HashMap<>();
     private final PonDemandLedger demandLedger;
+    private final PonDbaShadowPlanner shadowPlanner;
     private long receivedUplinkReports;
 
     public Mfu(List<Integer> staSfuIds) {
@@ -27,9 +28,15 @@ public final class Mfu {
     }
 
     public Mfu(List<Integer> staSfuIds, PonDownlink ponDownlink, boolean demandLedgerEnabled) {
+        this(staSfuIds, ponDownlink, demandLedgerEnabled, null);
+    }
+
+    public Mfu(List<Integer> staSfuIds, PonDownlink ponDownlink, boolean demandLedgerEnabled,
+               PonDbaShadowPlanner shadowPlanner) {
         this.staSfuIds = List.copyOf(staSfuIds);
         this.ponDownlink = ponDownlink;
         this.demandLedger = demandLedgerEnabled ? new PonDemandLedger() : null;
+        this.shadowPlanner = shadowPlanner;
     }
 
     public void receive(Packet packet, SimulationContext context) {
@@ -110,6 +117,14 @@ public final class Mfu {
 
     public void recordUplinkDemand(int sfuId, String trigger, SimulationContext context) {
         context.recordDemandLedgerState(sfuId, trigger, estimateUplinkDemand(sfuId, context.nowTicks()));
+    }
+
+    public void planUplinkBudget(long targetFrameId, long controlReservedNs, SimulationContext context) {
+        if (shadowPlanner != null) {
+            PonDbaShadowPlanner.Decision decision = shadowPlanner.plan(context.nowTicks(), targetFrameId,
+                    controlReservedNs, sfuId -> estimateUplinkDemand(sfuId, context.nowTicks()));
+            context.recordDbaShadow(decision);
+        }
     }
 
     /** 返回该 SFU 最新的已接收快照。首份快照到达前返回 null，表示未知。 */

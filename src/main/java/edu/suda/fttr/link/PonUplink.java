@@ -189,6 +189,7 @@ public final class PonUplink {
         boolean pollDue = polling != null && !pollingPorts.isEmpty() && frameId == nextPollFrame
                 && frameStart < polling.endNs();
         if (bwmapEnabled && !pollDue && (head == null || head.enqueueTicks >= frameStart)) {
+            context.planDbaShadow(frameId + 1, 0);
             if (frameReports != null) {
                 reportsWithoutGrant += frameReports.size();
             }
@@ -220,6 +221,8 @@ public final class PonUplink {
             nextPollFrame = lastEligibleFrame - frameId >= polling.intervalFrames()
                     ? frameId + polling.intervalFrames() : 0;
         }
+        // 此刻控制预约已确定，真实 DATA 预约尚未创建。影子结果仅记录，后续 FCFS 继续原流程。
+        context.planDbaShadow(targetFrameId, controlNs);
         int allocated = 0;
         while ((head = scheduler.peekHead()) != null && head.enqueueTicks < frameStart) {
             long durationNs = serializationNs(head);

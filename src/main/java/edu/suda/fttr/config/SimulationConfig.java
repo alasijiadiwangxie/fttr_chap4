@@ -30,13 +30,14 @@ public final class SimulationConfig {
     private final List<Long> uplinkTrafficWindowsUs;
     private final boolean uplinkEnabled;
     private final boolean demandLedgerEnabled;
+    private final boolean dbaShadowEnabled;
 
     SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs,
                      PonLink ponDownlink, PonLink ponUplink, long wifiDelayUs, WirelessPhy wirelessPhy,
                      WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters, WifiAccessMode wifiAccessMode,
                      WifiRetryPolicy wifiRetryPolicy,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled,
-                     boolean demandLedgerEnabled) {
+                     boolean demandLedgerEnabled, boolean dbaShadowEnabled) {
         this.inputEvents = List.copyOf(inputEvents);
         this.sfuCount = sfuCount;
         this.staSfuIds = List.copyOf(staSfuIds);
@@ -53,6 +54,7 @@ public final class SimulationConfig {
         this.uplinkTrafficWindowsUs = List.copyOf(uplinkTrafficWindowsUs);
         this.uplinkEnabled = uplinkEnabled;
         this.demandLedgerEnabled = demandLedgerEnabled;
+        this.dbaShadowEnabled = dbaShadowEnabled;
     }
 
     /** 首个报文的长度，兼容原有单包调用。多包场景从各报文读取长度。 */
@@ -160,6 +162,10 @@ public final class SimulationConfig {
 
     public boolean demandLedgerEnabled() {
         return demandLedgerEnabled;
+    }
+
+    public boolean dbaShadowEnabled() {
+        return dbaShadowEnabled;
     }
 
     /** 单方向的共享光发送器配置，传播时延与原有固定光链路时延分别设置。 */

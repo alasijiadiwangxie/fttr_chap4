@@ -12,10 +12,15 @@ public final class PonLinkTiming {
 
     /** Mb/s 等于 bit/μs。将结果换算为 ns，非整纳秒向上取整以保留正发送时长。 */
     public static long serializationNs(int packetBytes, BigDecimal rateMbps) {
+        return serializationNs((long) packetBytes, rateMbps);
+    }
+
+    /** 字节预算可跨多个报文，使用 long 计算，同时避免字节到纳秒换算的乘法溢出。 */
+    public static long serializationNs(long packetBytes, BigDecimal rateMbps) {
         if (packetBytes <= 0 || rateMbps.signum() <= 0) {
             throw new IllegalArgumentException("PON packet size and link rate must be positive");
         }
-        BigDecimal scaledBits = BigDecimal.valueOf(packetBytes * 8_000L);
+        BigDecimal scaledBits = BigDecimal.valueOf(packetBytes).multiply(BigDecimal.valueOf(8_000));
         // 极端速率先检查边界，避免精确除法构造巨大的十进制数。
         if (scaledBits.compareTo(rateMbps) <= 0) {
             return 1;

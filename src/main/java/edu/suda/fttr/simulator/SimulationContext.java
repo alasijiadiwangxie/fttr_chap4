@@ -4,6 +4,7 @@ import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.PonDemandLedger;
+import edu.suda.fttr.entity.PonDbaShadowPlanner;
 import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.link.PonUplinkReport;
@@ -235,6 +236,16 @@ public final class SimulationContext {
 
     public void recordDemandLedgerState(int sfuId, String trigger, PonDemandLedger.Estimate estimate) {
         trace.recordDemandLedgerState(sfuId, nowTicks, trigger, estimate);
+    }
+
+    public void planDbaShadow(long targetFrameId, long controlReservedNs) {
+        if (demandObserver != null) {
+            demandObserver.planUplinkBudget(targetFrameId, controlReservedNs, this);
+        }
+    }
+
+    public void recordDbaShadow(PonDbaShadowPlanner.Decision decision) {
+        trace.recordDbaShadow(decision);
     }
 
     public void recordPonBwmap(Packet packet, int sfuId, long grantFrameId, long targetFrameId,

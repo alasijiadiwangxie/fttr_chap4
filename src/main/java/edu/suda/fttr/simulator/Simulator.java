@@ -4,6 +4,7 @@ import edu.suda.fttr.config.SimulationConfig;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.entity.PonDbaShadowPlanner;
 import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.link.FiberLink;
@@ -39,7 +40,9 @@ public final class Simulator {
                 : new PonUplink(uplinkConfig.rateMbps(), uplinkConfig.propagationNs(), uplinkConfig.framePeriodNs(),
                         uplinkConfig.reportEnabled(), uplinkConfig.bwmapPropagationNs(), uplinkConfig.polling());
         boolean demandLedgerEnabled = config.demandLedgerEnabled();
-        Mfu mfu = new Mfu(config.staSfuIds(), ponDownlink, demandLedgerEnabled);
+        PonDbaShadowPlanner shadowPlanner = config.dbaShadowEnabled()
+                ? new PonDbaShadowPlanner(config.staSfuIds(), uplinkConfig.rateMbps(), uplinkConfig.framePeriodNs()) : null;
+        Mfu mfu = new Mfu(config.staSfuIds(), ponDownlink, demandLedgerEnabled, shadowPlanner);
         SimulationContext context = new SimulationContext(trace, runSummary, config.usesNanosecondTicks(),
                 retryPolicy != null, demandLedgerEnabled ? mfu : null);
         List<Map<Integer, Sta>> stationsBySfu = new ArrayList<>(config.sfuCount());

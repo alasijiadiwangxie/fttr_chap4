@@ -47,6 +47,7 @@ public final class ConfigLoader {
     private static final String UPLINK_POLL_BYTES = FIBER_UPLINK + "poll.bytes";
     private static final String UPLINK_POLL_INTERVAL_FRAMES = FIBER_UPLINK + "poll.interval.frames";
     private static final String UPLINK_POLL_END_US = FIBER_UPLINK + "poll.end.us";
+    private static final String UPLINK_DBA_MODE = FIBER_UPLINK + "dba.mode";
     private static final String MAC_EXCHANGE = "wifi.mac.exchange";
     private static final String MAC_ACCESS = "wifi.mac.access";
     private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
@@ -60,6 +61,7 @@ public final class ConfigLoader {
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
             UPLINK_REPORT_ENABLED, UPLINK_BWMAP_ENABLED, UPLINK_DEMAND_LEDGER_ENABLED,
             UPLINK_POLL_ENABLED, UPLINK_POLL_BYTES, UPLINK_POLL_INTERVAL_FRAMES, UPLINK_POLL_END_US,
+            UPLINK_DBA_MODE,
             "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
             MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
             MAC_MAX_RETRIES, EDCA_SEED);
@@ -128,6 +130,7 @@ public final class ConfigLoader {
         SimulationConfig.PonLink ponDownlink = readPonLink(properties, FIBER_DOWNLINK, "10000", bwmapPropagationNs);
         SimulationConfig.PonLink ponUplink = readPonLink(properties, FIBER_UPLINK, "2500", bwmapPropagationNs);
         boolean demandLedgerEnabled = readDemandLedgerEnabled(properties, ponUplink);
+        boolean dbaShadowEnabled = readDbaShadowEnabled(properties, ponUplink, demandLedgerEnabled);
         boolean hasFixedDelay = properties.containsKey(FIBER_DELAY_US);
         long fiberUs = hasFixedDelay || (ponDownlink == null && ponUplink == null)
                 ? readNonNegativeLong(properties, FIBER_DELAY_US) : 0;
@@ -160,7 +163,23 @@ public final class ConfigLoader {
                 frameExchange);
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
                 frameExchange, edcaParameters, accessMode, retryPolicy, downlink.windowsUs, uplink.windowsUs,
-                directionMode.allows(Packet.Direction.UL), demandLedgerEnabled);
+                directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled);
+    }
+
+    private static boolean readDbaShadowEnabled(Properties properties, SimulationConfig.PonLink uplink,
+                                                 boolean demandLedgerEnabled) {
+        String mode = properties.getProperty(UPLINK_DBA_MODE, "fcfs").strip();
+        if (mode.equals("fcfs")) {
+            return false;
+        }
+        if (!mode.equals("shadow-rr")) {
+            throw new IllegalArgumentException(UPLINK_DBA_MODE + " must be fcfs or shadow-rr");
+        }
+        if (uplink == null || uplink.framePeriodNs() == 0 || uplink.bwmapPropagationNs() < 0
+                || !uplink.reportEnabled() || !demandLedgerEnabled || uplink.polling() == null) {
+            throw new IllegalArgumentException("shadow-rr requires pon-framed, BWmap, REPORT, demand ledger and polling");
+        }
+        return true;
     }
 
     private static boolean readDemandLedgerEnabled(Properties properties, SimulationConfig.PonLink ponUplink) {

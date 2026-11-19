@@ -4,6 +4,7 @@ import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.PonDemandLedger;
+import edu.suda.fttr.entity.PonDbaShadowPlanner;
 import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.link.PonUplinkReport;
@@ -215,6 +216,19 @@ public final class TraceLogger {
                         + "report_age_ns=%d%n",
                 prefix, report.frameId(), report.snapshotTimeNs(), received.receiveTimeNs(), report.pendingBytes(),
                 estimate.grantedBytesSinceSnapshot(), estimate.effectiveKnownBytes(), estimate.reportAgeNs());
+    }
+
+    public void recordDbaShadow(PonDbaShadowPlanner.Decision decision) {
+        output.printf(Locale.ROOT, "node=MFU event=PON_DBA_SHADOW decision_time_ns=%d target_frame_id=%d "
+                        + "selected_sfu_id=%d report_frame_id=%d report_age_ns=%d effective_known_bytes=%d "
+                        + "control_reserved_ns=%d available_data_ns=%d data_capacity_bytes=%s planned_grant_bytes=%d "
+                        + "planned_grant_ns=%d decision_reason=%s unknown_sfus=%d known_zero_sfus=%d%n",
+                decision.decisionTimeNs(), decision.targetFrameId(), decision.selectedSfuId(),
+                decision.reportFrameId() == null ? -1 : decision.reportFrameId(),
+                decision.reportAgeNs() == null ? -1 : decision.reportAgeNs(), decision.effectiveKnownBytes(),
+                decision.controlReservedNs(), decision.availableDataNs(), decision.dataCapacityBytes(),
+                decision.plannedGrantBytes(), decision.plannedGrantNs(), decision.decisionReason(),
+                decision.unknownSfus(), decision.knownZeroSfus());
     }
 
     public void recordPonBwmap(Packet packet, int sfuId, long grantFrameId, long targetFrameId, long grantTxNs,
