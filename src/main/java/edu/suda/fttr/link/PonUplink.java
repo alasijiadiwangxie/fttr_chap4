@@ -2,6 +2,8 @@ package edu.suda.fttr.link;
 
 import edu.suda.fttr.config.SimulationConfig;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.entity.Mfu;
+import edu.suda.fttr.dba.DbaPlan;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
 
@@ -42,6 +44,14 @@ public final class PonUplink {
     private double totalReservedWaitTicks;
     private long generatedReports;
     private long reportsWithoutGrant;
+    private Mfu dbaMfu;
+    private PonGrantPacketFiller dbaFiller;
+    private final Map<Long, PonDbaGrant> budgetGrants = new HashMap<>();
+    private long budgetSequence;
+    private long budgetBytes;
+    private long budgetActualBytes;
+    private long budgetReservedNs;
+    private long budgetActualNs;
 
     public PonUplink(BigDecimal rateMbps, long propagationNs) {
         this(rateMbps, propagationNs, 0);
@@ -71,11 +81,24 @@ public final class PonUplink {
     }
 
     public Port attachSfu(int sfuId) {
+        if (dbaMfu != null && sfuId != 1) {
+            throw new IllegalArgumentException("Real rr DBA currently supports one SFU with ID 1");
+        }
         Port port = new Port(sfuId);
         if (reportEnabled) {
             reportPorts.add(port);
         }
         return port;
+    }
+
+    /** 可选真实路径；原构造和 FCFS 执行完全保持原样。 */
+    public void enableDbaExecution(Mfu mfu) {
+        if (dbaMfu != null || mfu == null || framePeriodNs <= 0 || bwmapPropagationNs < 0
+                || bwmapPropagationNs >= framePeriodNs || !reportEnabled || polling == null) {
+            throw new IllegalArgumentException("Real rr DBA requires framed/report/BWmap/finite polling");
+        }
+        dbaMfu = mfu;
+        dbaFiller = new PonGrantPacketFiller(rateMbps, Map.of(2L, 1));
     }
 
     /** 只根据固定关联和 SFU ID 建立轮询顺序，与队列是否有业务无关。 */
@@ -106,7 +129,9 @@ public final class PonUplink {
             pendingBytes += packet.bytes();
             context.recordPonUplinkEnqueue(packet, sfuId);
             if (queue.size() == 1) {
-                scheduler.submitHead(request);
+                if (dbaMfu == null) {
+                    scheduler.submitHead(request);
+                }
                 if (framePeriodNs == 0) {
                     scheduleShared(context);
                 } else {
@@ -170,6 +195,15 @@ public final class PonUplink {
             context.recordPollEvent(poll, "PON_POLL_BWMAP_RX");
         }
 
+        public void receiveDbaBwmap(PonDbaGrant grant, SimulationContext context) {
+            requireBudget(grant);
+            if (grant.sfuId() != sfuId) {
+                throw new IllegalStateException("DATA budget BWmap reached the wrong SFU");
+            }
+            grant.receive(context.nowTicks());
+            context.recordDbaExecution("PON_DBA_BWMAP_RX", grant, "");
+        }
+
         private PonUplinkReport snapshot(long frameId, long frameStartNs) {
             int pendingPackets = queue.size();
             int eligiblePackets = pendingPackets;
@@ -202,12 +236,20 @@ public final class PonUplink {
         // 只为积压业务唤醒调度。入队正好落在边界时，下一次可用边界仍在一整帧之后。
         if (!framePending) {
             long delayNs = framePeriodNs - context.nowTicks() % framePeriodNs;
+            // 真实模式只在现有有限轮询创建窗口内调度。队首始终装不下时也不会无限空转。
+            if (dbaMfu != null && Math.addExact(context.nowTicks(), delayNs) >= polling.endNs()) {
+                return;
+            }
             context.scheduleAfterNanoseconds(delayNs, EventType.PON_UPLINK_FRAME, null, 0);
             framePending = true;
         }
     }
 
     public void scheduleFrame(SimulationContext context) {
+        if (dbaMfu != null) {
+            scheduleDbaFrame(context);
+            return;
+        }
         boolean bwmapEnabled = bwmapPropagationNs >= 0;
         boolean hasScheduledGrant = !grants.isEmpty() || !polls.isEmpty();
         if (!bwmapEnabled && hasScheduledGrant) {
@@ -294,6 +336,119 @@ public final class PonUplink {
         if (scheduler.peekHead() != null || hasFuturePoll(frameStart)
                 || (bwmapEnabled && reportEnabled && (allocated > 0 || pollDue))) {
             requestFrame(context);
+        }
+    }
+
+    /**
+     * 真实模式不查看 scheduler/远端FIFO来决定 DATA 预算。控制预约确定后，
+     * 唯一的 DATA 决策输入来自 MFU 已接收的 REPORT 和预算账本。
+     */
+    private void scheduleDbaFrame(SimulationContext context) {
+        framePending = false;
+        long now = context.nowTicks();
+        if (now >= polling.endNs()) {
+            return;
+        }
+        long frameId = now / framePeriodNs;
+        recordReports(frameId, now, context);
+        reportsWithoutGrant += reportPorts.size(); // 边界快照仅本地保存，预算执行另发时隙末快照。
+        long targetStart = Math.addExact(now, framePeriodNs);
+        long targetFrame = frameId + 1;
+        long controlNs = 0;
+        if (!pollingPorts.isEmpty() && frameId == nextPollFrame) {
+            controlNs = PonLinkTiming.serializationNs(polling.bytes(), rateMbps);
+            Port port = pollingPorts.get((int) (createdPolls % pollingPorts.size()));
+            PonReportPoll poll = new PonReportPoll(++createdPolls, port.sfuId, frameId, now,
+                    targetStart, Math.addExact(targetStart, controlNs));
+            polls.addLast(poll);
+            context.recordPollEvent(poll, "PON_POLL_BWMAP_TX");
+            context.schedulePollEvent(bwmapPropagationNs, EventType.PON_POLL_BWMAP_RX, poll);
+            context.schedulePollEvent(targetStart - now, EventType.PON_POLL_START, poll);
+            long last = (polling.endNs() - 1) / framePeriodNs;
+            nextPollFrame = last - frameId >= polling.intervalFrames() ? frameId + polling.intervalFrames() : 0;
+        }
+        DbaPlan plan = dbaMfu.planDbaExecution(targetFrame, controlNs, rateMbps, framePeriodNs, context);
+        for (DbaPlan.Grant proposed : plan.grants()) {
+            long start = Math.addExact(targetStart, controlNs);
+            long end = Math.addExact(start, proposed.plannedDurationNs());
+            PonDbaGrant grant = new PonDbaGrant(++budgetSequence, proposed.allocationId(), proposed.sfuId(),
+                    now, targetFrame, start, end, proposed.plannedBytes());
+            dbaMfu.recordDbaBudgetCreated(grant, context);
+            budgetGrants.put(grant.id(), grant);
+            budgetBytes = Math.addExact(budgetBytes, grant.budgetBytes());
+            budgetReservedNs = Math.addExact(budgetReservedNs, end - start);
+            context.recordDbaExecution("PON_DBA_BWMAP_TX", grant, "");
+            context.scheduleDbaEvent(bwmapPropagationNs, EventType.PON_DBA_BWMAP_RX, grant);
+            context.scheduleDbaEvent(start - now, EventType.PON_DBA_SLOT_START, grant);
+            context.scheduleDbaEvent(end - now, EventType.PON_DBA_SLOT_END, grant);
+        }
+        frames = Math.max(frames, targetFrame + 1);
+        requestFrame(context);
+    }
+
+    public void receiveDbaBwmap(PonDbaGrant grant, SimulationContext context) {
+        budgetPort(grant).receiveDbaBwmap(grant, context);
+    }
+
+    /** SFU 收到预算后，在窗口起点用本地完整报文装载器选择并原子移出队首前缀。 */
+    public void startDbaGrant(PonDbaGrant grant, SimulationContext context) {
+        Port port = budgetPort(grant);
+        if (!grant.received() || grant.started() || context.nowTicks() != grant.startNs() || !grants.isEmpty()) {
+            throw new IllegalStateException("DATA cannot start without BWmap or outside its exclusive budget slot");
+        }
+        PonGrantPacketFiller.Result filled = port.previewGrant(dbaFiller, grant.allocationId(), grant.budgetBytes(),
+                grant.endNs() - grant.startNs(), grant.startNs(), context);
+        grant.load(context.nowTicks(), filled);
+        long cursor = grant.startNs();
+        for (int packetId : filled.selectedPacketIds()) {
+            Request request = port.queue.removeFirst();
+            if (request.packet.id() != packetId) {
+                throw new IllegalStateException("SFU FIFO changed during atomic budget loading");
+            }
+            port.pendingBytes -= request.packet.bytes();
+            long end = Math.addExact(cursor, serializationNs(request));
+            Grant child = new Grant(request, cursor, end, null, grant.createNs(), grant);
+            child.bwmapReceived = true;
+            grants.addLast(child);
+            totalGrantWaitTicks += Math.max(0, grant.createNs() - request.enqueueTicks);
+            cursor = end;
+        }
+        String ids = filled.selectedPacketIds().isEmpty() ? "-" : filled.selectedPacketIds().stream()
+                .map(String::valueOf).collect(java.util.stream.Collectors.joining(";"));
+        context.recordDbaExecution("PON_DBA_FILL", grant,
+                "selected_packet_ids=" + ids + " selected_duration_ns=" + filled.selectedDurationNs()
+                        + " unused_duration_ns=" + filled.unusedDurationNs() + " remaining_packets="
+                        + filled.remainingPacketCount() + " fill_reason=" + filled.fillReason());
+        scheduleDbaPacketHead(context);
+    }
+
+    public void finishDbaGrant(PonDbaGrant grant, SimulationContext context) {
+        Port port = budgetPort(grant);
+        PonUplinkReport report = port.snapshot(grant.targetFrameId(), context.nowTicks());
+        grant.finish(context.nowTicks(), report);
+        generatedReports++;
+        context.recordPonUplinkReport(report);
+        context.recordDbaExecution("PON_DBA_SLOT_END", grant,
+                "snapshot_time_ns=" + report.snapshotTimeNs() + " pending_bytes=" + report.pendingBytes());
+        context.scheduleDbaEvent(propagationNs, EventType.PON_DBA_SETTLEMENT_RX, grant);
+    }
+
+    private void requireBudget(PonDbaGrant grant) {
+        if (dbaMfu == null || grant == null || budgetGrants.get(grant.id()) != grant) {
+            throw new IllegalStateException("Unknown real DATA budget");
+        }
+    }
+
+    private Port budgetPort(PonDbaGrant grant) {
+        requireBudget(grant);
+        return reportPorts.stream().filter(port -> port.sfuId == grant.sfuId()).findFirst().orElseThrow();
+    }
+
+    private void scheduleDbaPacketHead(SimulationContext context) {
+        Grant child = grants.peekFirst();
+        if (child != null) {
+            context.scheduleAfterTicks(child.startTicks - context.nowTicks(), EventType.FIBER_TX_START,
+                    child.request.packet, child.request.port.sfuId);
         }
     }
 
@@ -401,7 +556,9 @@ public final class PonUplink {
         pollBusyNs += poll.endNs() - poll.startNs();
         context.recordPollEvent(poll, "PON_POLL_TX_END");
         context.schedulePollEvent(propagationNs, EventType.PON_POLL_REPORT_RX, poll);
-        scheduleGrantedHead(context);
+        if (dbaMfu == null) {
+            scheduleGrantedHead(context);
+        }
     }
 
     private void requirePollHead(PonReportPoll poll) {
@@ -419,6 +576,9 @@ public final class PonUplink {
             throw new IllegalStateException("SFU " + sfuId + " cannot transmit packet " + packet.id()
                     + " before receiving its BWmap");
         }
+        if (grant.budget != null) {
+            context.recordDbaExecution("PON_DBA_DATA_START", grant.budget, "packet_id=" + packet.id());
+        }
         context.scheduleAfterTicks(grant.endTicks - grant.startTicks,
                 EventType.FIBER_TX_END, packet, sfuId);
     }
@@ -432,16 +592,25 @@ public final class PonUplink {
         sentPackets++;
         totalQueueWaitTicks += grant.startTicks - grant.request.enqueueTicks;
         if (bwmapPropagationNs >= 0) {
-            totalReservedWaitTicks += grant.startTicks - grant.grantTicks;
+            totalReservedWaitTicks += grant.startTicks - (grant.budget == null ? grant.grantTicks
+                    : Math.max(grant.grantTicks, grant.request.enqueueTicks));
         }
         busyTicks += grant.endTicks - grant.startTicks;
+        if (grant.budget != null) {
+            grant.budget.recordSent(packet.bytes());
+            budgetActualBytes = Math.addExact(budgetActualBytes, packet.bytes());
+            budgetActualNs = Math.addExact(budgetActualNs, grant.endTicks - grant.startTicks);
+            context.recordDbaExecution("PON_DBA_DATA_END", grant.budget, "packet_id=" + packet.id());
+        }
         // 同刻按插入序先交付 DATA，再处理所携带的 REPORT。两者使用同一传播时延。
         context.scheduleAfterNanoseconds(propagationNs, EventType.PACKET_ARRIVAL_AT_MFU, packet, sfuId);
         if (grant.report != null) {
             context.schedulePonUplinkReportReception(propagationNs, packet, grant.report);
         }
 
-        if (framePeriodNs == 0) {
+        if (dbaMfu != null) {
+            scheduleDbaPacketHead(context);
+        } else if (framePeriodNs == 0) {
             scheduleShared(context);
         } else {
             // 只启动已经获授权的报文。当前帧中途收到的新报文仍等待帧边界。
@@ -463,6 +632,11 @@ public final class PonUplink {
             double ungrantedWaitUs = sentPackets == 0 ? 0.0 : totalGrantWaitTicks / sentPackets / 1_000.0;
             double serializationUs = sentPackets == 0 ? 0.0 : context.ticksToMicroseconds(busyTicks) / sentPackets;
             context.recordPonBwmapSummary(sentPackets, ungrantedWaitUs, reservedWaitUs, serializationUs);
+        }
+        if (dbaMfu != null) {
+            long pendingPackets = reportPorts.stream().mapToLong(port -> port.queue.size()).sum();
+            context.recordDbaSummary(budgetSequence, budgetBytes, budgetActualBytes, budgetBytes - budgetActualBytes,
+                    budgetReservedNs, budgetActualNs, pendingPackets);
         }
     }
 
@@ -487,13 +661,20 @@ public final class PonUplink {
         private final PonUplinkReport report;
         private final long grantTicks;
         private boolean bwmapReceived;
+        private final PonDbaGrant budget;
 
         private Grant(Request request, long startTicks, long endTicks, PonUplinkReport report, long grantTicks) {
+            this(request, startTicks, endTicks, report, grantTicks, null);
+        }
+
+        private Grant(Request request, long startTicks, long endTicks, PonUplinkReport report, long grantTicks,
+                      PonDbaGrant budget) {
             this.request = request;
             this.startTicks = startTicks;
             this.endTicks = endTicks;
             this.report = report;
             this.grantTicks = grantTicks;
+            this.budget = budget;
         }
     }
 

@@ -41,14 +41,74 @@ public final class PonDemandLedger {
         if (history != null) {
             // 同一帧事件先采样、后授权。因此快照边界同刻创建的授权计入区间。
             granted = history.prefixBytes(timeNs, true) - history.prefixBytes(report.snapshotTimeNs(), false);
+            // 预算在创建时锁定需求，装载前生成的新 REPORT 仍含这些报文，不能因快照较新而漏扣。
+            // 装载后快照已排除所选数据，不能再次扣减。结算反馈到达之前只知道完整预算。
+            for (Budget budget : history.budgets.values()) {
+                if (budget.createNs <= timeNs && report.snapshotTimeNs() < budget.startNs) {
+                    long debit = budget.settleNs >= 0 && budget.settleNs <= timeNs
+                            ? budget.actualBytes : budget.bytes;
+                    granted = Math.addExact(granted, debit);
+                }
+            }
         }
         return new Estimate(latest, granted, Math.max(0, report.pendingBytes() - granted),
                 timeNs - report.snapshotTimeNs());
     }
 
+    /** 真实预算有独立身份，不以 packetId 写入原 FCFS 逐包授权历史。 */
+    public boolean recordBudgetGrant(int sfuId, long grantId, long createNs, long startNs, long endNs, long bytes) {
+        if (sfuId < 1 || grantId < 1 || createNs < 0 || startNs <= createNs || endNs <= startNs || bytes < 1) {
+            throw new IllegalArgumentException("Invalid real budget ledger entry");
+        }
+        SfuHistory history = histories.computeIfAbsent(sfuId, key -> new SfuHistory());
+        Budget previous = history.budgets.get(grantId);
+        if (previous != null) {
+            if (previous.createNs != createNs || previous.startNs != startNs
+                    || previous.endNs != endNs || previous.bytes != bytes) {
+                throw new IllegalArgumentException("Conflicting duplicate DATA budget");
+            }
+            return false;
+        }
+        if (hasOutstandingBudget(sfuId, createNs)) {
+            throw new IllegalStateException("SFU already has an unsettled DATA budget");
+        }
+        history.budgets.put(grantId, new Budget(createNs, startNs, endNs, bytes));
+        return true;
+    }
+
+    /** 仅在 MFU 收到逻辑结算后，以实际发送量替换预算扣减；不用未收到的 SFU 执行信息。 */
+    public boolean settleBudgetGrant(int sfuId, long grantId, long receiveNs, long actualBytes) {
+        SfuHistory history = histories.get(sfuId);
+        Budget budget = history == null ? null : history.budgets.get(grantId);
+        if (budget == null || receiveNs < budget.endNs || actualBytes < 0 || actualBytes > budget.bytes) {
+            throw new IllegalArgumentException("Unknown, premature or over-budget DATA settlement");
+        }
+        if (budget.settleNs >= 0) {
+            if (budget.actualBytes != actualBytes) {
+                throw new IllegalArgumentException("Conflicting duplicate DATA settlement");
+            }
+            return false;
+        }
+        budget.settleNs = receiveNs;
+        budget.actualBytes = actualBytes;
+        return true;
+    }
+
+    public boolean hasOutstandingBudget(int sfuId, long timeNs) {
+        SfuHistory history = histories.get(sfuId);
+        return history != null && history.budgets.values().stream().anyMatch(budget -> budget.createNs <= timeNs
+                && (budget.settleNs < 0 || budget.settleNs > timeNs));
+    }
+
+    public boolean hasBudgetGrant(int sfuId, long grantId) {
+        SfuHistory history = histories.get(sfuId);
+        return history != null && history.budgets.containsKey(grantId);
+    }
+
     private static final class SfuHistory {
         private final List<Grant> grants = new ArrayList<>();
         private final Map<Integer, Grant> grantsById = new HashMap<>();
+        private final Map<Long, Budget> budgets = new HashMap<>();
 
         /** 用二分法取得快照和查询边界的已授权字节前缀，避免逐次扫描历史。 */
         private long prefixBytes(long timeNs, boolean inclusive) {
@@ -64,6 +124,22 @@ public final class PonDemandLedger {
                 }
             }
             return first == 0 ? 0 : grants.get(first - 1).cumulativeBytes();
+        }
+    }
+
+    private static final class Budget {
+        private final long createNs;
+        private final long startNs;
+        private final long endNs;
+        private final long bytes;
+        private long settleNs = -1;
+        private long actualBytes;
+
+        private Budget(long createNs, long startNs, long endNs, long bytes) {
+            this.createNs = createNs;
+            this.startNs = startNs;
+            this.endNs = endNs;
+            this.bytes = bytes;
         }
     }
 
@@ -108,6 +184,10 @@ public final class PonDemandLedger {
             return report;
         }
 
+        /**
+         * 保留旧接口名：FCFS 为快照后逐包授权；真实预算还包括快照之前创建、
+         * 但快照仍包含其数据的在途预算。结算前后分别按预算/实际量计入。
+         */
         public long grantedBytesSinceSnapshot() {
             requireKnown();
             return grantedBytesSinceSnapshot;

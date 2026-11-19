@@ -9,6 +9,8 @@ import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.link.PonUplinkReport;
 import edu.suda.fttr.link.PonReportPoll;
+import edu.suda.fttr.link.PonDbaGrant;
+import edu.suda.fttr.dba.DbaPlan;
 import edu.suda.fttr.simulator.Event;
 
 import java.io.PrintStream;
@@ -63,6 +65,10 @@ public final class TraceLogger {
             case PON_POLL_START:
             case PON_POLL_END:
             case PON_POLL_REPORT_RX:
+            case PON_DBA_BWMAP_RX:
+            case PON_DBA_SLOT_START:
+            case PON_DBA_SLOT_END:
+            case PON_DBA_SETTLEMENT_RX:
                 // 目标 SFU 核对预约及接收时刻后，再记录 BWmap 接收。
                 break;
             case PACKET_ARRIVAL_AT_SFU:
@@ -237,6 +243,38 @@ public final class TraceLogger {
                 decision.effectiveKnownBytes(), decision.plannedGrantBytes(), decision.plannedGrantNs(),
                 decision.decisionReason(), decision.preview().isEmpty() ? -1 : decision.preview().get(0).startNs(),
                 decision.preview().isEmpty() ? -1 : decision.preview().get(0).endNs());
+    }
+
+    public void recordDbaDecision(DbaPlan plan, long controlNs) {
+        DbaPlan.Grant choice = plan.grants().isEmpty() ? null : plan.grants().get(0);
+        output.printf(Locale.ROOT, "node=MFU event=PON_DBA_DECISION time_ns=%d target_frame_id=%d "
+                        + "allocation_id=%d sfu_id=%d planned_bytes=%d planned_duration_ns=%d "
+                        + "control_reserved_ns=%d decision_reason=%s%n",
+                plan.decisionTimeNs(), plan.targetFrameId(), choice == null ? 0 : choice.allocationId(),
+                choice == null ? 0 : choice.sfuId(), choice == null ? 0 : choice.plannedBytes(),
+                choice == null ? 0 : choice.plannedDurationNs(), controlNs, plan.decisionReason());
+    }
+
+    /** 真实预算日志显式保留 D 前缀，不与原逐包 grant_id 或轮询 R 前缀混用。 */
+    public void recordDbaExecution(String action, PonDbaGrant grant, long nowNs, String details) {
+        output.printf(Locale.ROOT, "node=%s event=%s time_ns=%d grant_id=D%d allocation_id=%d sfu_id=%d "
+                        + "grant_create_ns=%d target_frame_id=%d tx_start_ns=%d tx_end_ns=%d "
+                        + "budget_bytes=%d selected_bytes=%d actual_bytes=%d unused_bytes=%d execution_state=%s%s%n",
+                action.endsWith("_TX") || action.endsWith("_RX") && action.contains("SETTLEMENT")
+                        || action.contains("LEDGER") ? "MFU" : "SFU",
+                action, nowNs, grant.id(), grant.allocationId(), grant.sfuId(), grant.createNs(),
+                grant.targetFrameId(), grant.startNs(), grant.endNs(), grant.budgetBytes(),
+                grant.selectedBytes(), grant.actualBytes(), grant.unusedBytes(),
+                grant.finished() ? "COMPLETED" : grant.started() ? "LOADED" : grant.received() ? "RECEIVED" : "CREATED",
+                details.isEmpty() ? "" : " " + details);
+    }
+
+    public void recordDbaSummary(long budgets, long grantedBytes, long actualBytes, long unusedBytes,
+                                  long reservedNs, long actualNs, long pendingPackets) {
+        output.printf(Locale.ROOT, "summary=PON_DBA_EXECUTION grants=%d budget_bytes=%d actual_bytes=%d "
+                        + "unused_bytes=%d reserved_ns=%d actual_data_ns=%d unused_ns=%d pending_packets=%d%n",
+                budgets, grantedBytes, actualBytes, unusedBytes, reservedNs, actualNs, reservedNs - actualNs,
+                pendingPackets);
     }
 
     public void recordPonBwmap(Packet packet, int sfuId, long grantFrameId, long targetFrameId, long grantTxNs,

@@ -43,6 +43,9 @@ public final class Simulator {
         PonDbaShadowPlanner shadowPlanner = config.dbaShadowEnabled()
                 ? new PonDbaShadowPlanner(config.staSfuIds(), uplinkConfig.rateMbps(), uplinkConfig.framePeriodNs()) : null;
         Mfu mfu = new Mfu(config.staSfuIds(), ponDownlink, demandLedgerEnabled, shadowPlanner);
+        if (config.dbaExecutionEnabled()) {
+            ponUplink.enableDbaExecution(mfu);
+        }
         SimulationContext context = new SimulationContext(trace, runSummary, config.usesNanosecondTicks(),
                 retryPolicy != null, demandLedgerEnabled ? mfu : null);
         List<Map<Integer, Sta>> stationsBySfu = new ArrayList<>(config.sfuCount());
@@ -134,6 +137,18 @@ public final class Simulator {
                     break;
                 case PON_POLL_REPORT_RX:
                     mfu.receivePolledReport(event.reportPoll(), context);
+                    break;
+                case PON_DBA_BWMAP_RX:
+                    ponUplink.receiveDbaBwmap(event.dbaGrant(), context);
+                    break;
+                case PON_DBA_SLOT_START:
+                    ponUplink.startDbaGrant(event.dbaGrant(), context);
+                    break;
+                case PON_DBA_SLOT_END:
+                    ponUplink.finishDbaGrant(event.dbaGrant(), context);
+                    break;
+                case PON_DBA_SETTLEMENT_RX:
+                    mfu.receiveDbaSettlement(event.dbaGrant(), context);
                     break;
                 case PACKET_ARRIVAL_AT_SFU:
                     sfus.get(event.sfuId() - 1).enqueueForWifi(event.packet(), context);

@@ -3,12 +3,21 @@ package edu.suda.fttr.entity;
 import edu.suda.fttr.link.PonDownlink;
 import edu.suda.fttr.link.PonUplinkReport;
 import edu.suda.fttr.link.PonReportPoll;
+import edu.suda.fttr.link.PonDbaGrant;
+import edu.suda.fttr.dba.DbaContext;
+import edu.suda.fttr.dba.DbaPlan;
+import edu.suda.fttr.dba.DbaPlanValidator;
+import edu.suda.fttr.dba.DbaPolicy;
+import edu.suda.fttr.dba.RoundRobinDbaPolicy;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.TreeSet;
+import java.math.BigDecimal;
 
 /** MFU 按固定的 STA–SFU 关联发出下行报文，并接收上行报文。 */
 public final class Mfu {
@@ -18,6 +27,7 @@ public final class Mfu {
     private final PonDemandLedger demandLedger;
     private final PonDbaShadowPlanner shadowPlanner;
     private long receivedUplinkReports;
+    private final DbaPolicy executionPolicy = new RoundRobinDbaPolicy();
 
     public Mfu(List<Integer> staSfuIds) {
         this(staSfuIds, null);
@@ -125,6 +135,67 @@ public final class Mfu {
                     controlReservedNs, sfuId -> estimateUplinkDemand(sfuId, context.nowTicks()));
             context.recordDbaShadow(decision);
         }
+    }
+
+    /** 真正的 MFU 决策入口，仅复制已接收 REPORT 和需求账本中的数值，不读取远端 FIFO。 */
+    public DbaPlan planDbaExecution(long targetFrameId, long controlNs, BigDecimal rateMbps,
+                                    long periodNs, SimulationContext simulation) {
+        List<DbaContext.Allocation> allocations = new ArrayList<>();
+        boolean outstanding = false;
+        for (int sfuId : new TreeSet<>(staSfuIds)) {
+            PonDemandLedger.Estimate estimate = estimateUplinkDemand(sfuId, simulation.nowTicks());
+            allocations.add(new DbaContext.Allocation(2L * sfuId, sfuId,
+                    estimate.known() ? estimate.effectiveKnownBytes() : null,
+                    estimate.known() ? estimate.report().report().frameId() : null,
+                    estimate.known() ? estimate.reportAgeNs() : null));
+            outstanding |= demandLedger.hasOutstandingBudget(sfuId, simulation.nowTicks());
+        }
+        DbaContext input = new DbaContext(simulation.nowTicks(), targetFrameId, rateMbps, periodNs,
+                controlNs, allocations);
+        // 第12步仅单SFU。未结算预算尚占用已知需求，不创建下一预算，也不清空原报告。
+        DbaPlan plan = outstanding ? new DbaPlan(simulation.nowTicks(), targetFrameId, List.of(),
+                "AWAITING_BUDGET_SETTLEMENT") : executionPolicy.plan(input);
+        new DbaPlanValidator().validateAndPreview(input, plan);
+        simulation.recordDbaDecision(plan, controlNs);
+        return plan;
+    }
+
+    public void recordDbaBudgetCreated(PonDbaGrant grant, SimulationContext context) {
+        if (demandLedger == null || !staSfuIds.contains(grant.sfuId())
+                || grant.allocationId() != 2L * grant.sfuId() || context.nowTicks() != grant.createNs()) {
+            throw new IllegalArgumentException("DATA budget does not match MFU topology or creation time");
+        }
+        PonDemandLedger.Estimate before = estimateUplinkDemand(grant.sfuId(), context.nowTicks());
+        if (!demandLedger.hasBudgetGrant(grant.sfuId(), grant.id())
+                && (!before.known() || grant.budgetBytes() > before.effectiveKnownBytes())) {
+            throw new IllegalArgumentException("DATA budget exceeds MFU known effective demand");
+        }
+        if (demandLedger.recordBudgetGrant(grant.sfuId(), grant.id(), grant.createNs(), grant.startNs(),
+                grant.endNs(), grant.budgetBytes())) {
+            context.recordDbaExecution("PON_DBA_LEDGER_CREATED", grant, "ledger_debit_bytes=" + grant.budgetBytes()
+                    + " effective_before=" + before.effectiveKnownBytes() + " effective_after="
+                    + estimateUplinkDemand(grant.sfuId(), context.nowTicks()).effectiveKnownBytes());
+            recordUplinkDemand(grant.sfuId(), "DBA_BUDGET_CREATED", context);
+        }
+    }
+
+    public void receiveDbaSettlement(PonDbaGrant grant, SimulationContext context) {
+        if (demandLedger == null || !grant.finished() || !staSfuIds.contains(grant.sfuId())) {
+            throw new IllegalStateException("Invalid DATA execution settlement at MFU");
+        }
+        PonDemandLedger.Estimate before = estimateUplinkDemand(grant.sfuId(), context.nowTicks());
+        if (!demandLedger.settleBudgetGrant(grant.sfuId(), grant.id(), context.nowTicks(), grant.actualBytes())) {
+            return; // 重复反馈不再收报告、不再累计字节或更新账本。
+        }
+        boolean applied = acceptUplinkReport(grant.report(), context.nowTicks());
+        PonDemandLedger.Estimate after = estimateUplinkDemand(grant.sfuId(), context.nowTicks());
+        context.recordDbaExecution("PON_DBA_SETTLEMENT_RX", grant,
+                "snapshot_time_ns=" + grant.report().snapshotTimeNs()
+                        + " pending_bytes=" + grant.report().pendingBytes() + " report_applied=" + applied
+                        + " effective_before=" + (before.known() ? before.effectiveKnownBytes() : -1)
+                        + " effective_after=" + (after.known() ? after.effectiveKnownBytes() : -1)
+                        + " released_unused_bytes=" + grant.unusedBytes());
+        recordUplinkDemand(grant.sfuId(), "DBA_SETTLED", context);
     }
 
     /** 返回该 SFU 最新的已接收快照。首份快照到达前返回 null，表示未知。 */

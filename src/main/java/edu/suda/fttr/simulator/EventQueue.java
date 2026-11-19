@@ -18,7 +18,7 @@ final class EventQueue {
         }
         // 一包恰好在光帧边界发完时，先释放前一帧资源，再执行本帧的授权。
         return type == EventType.WIFI_SELECT_NEXT || type == EventType.WIFI_ACCESS_TIMER
-                || type == EventType.PON_UPLINK_FRAME ? 1 : 0;
+                || type == EventType.PON_UPLINK_FRAME || type == EventType.PON_DBA_SLOT_END ? 1 : 0;
     }
 
     void add(Event event) {

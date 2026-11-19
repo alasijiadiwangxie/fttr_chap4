@@ -131,6 +131,10 @@ public final class ConfigLoader {
         SimulationConfig.PonLink ponUplink = readPonLink(properties, FIBER_UPLINK, "2500", bwmapPropagationNs);
         boolean demandLedgerEnabled = readDemandLedgerEnabled(properties, ponUplink);
         boolean dbaShadowEnabled = readDbaShadowEnabled(properties, ponUplink, demandLedgerEnabled);
+        boolean dbaExecutionEnabled = properties.getProperty(UPLINK_DBA_MODE, "fcfs").strip().equals("rr");
+        if (dbaExecutionEnabled && sfuCount != 1) {
+            throw new IllegalArgumentException("Real rr DBA currently supports exactly one SFU");
+        }
         boolean hasFixedDelay = properties.containsKey(FIBER_DELAY_US);
         long fiberUs = hasFixedDelay || (ponDownlink == null && ponUplink == null)
                 ? readNonNegativeLong(properties, FIBER_DELAY_US) : 0;
@@ -163,7 +167,7 @@ public final class ConfigLoader {
                 frameExchange);
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
                 frameExchange, edcaParameters, accessMode, retryPolicy, downlink.windowsUs, uplink.windowsUs,
-                directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled);
+                directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled);
     }
 
     private static boolean readDbaShadowEnabled(Properties properties, SimulationConfig.PonLink uplink,
@@ -172,14 +176,14 @@ public final class ConfigLoader {
         if (mode.equals("fcfs")) {
             return false;
         }
-        if (!mode.equals("shadow-rr")) {
-            throw new IllegalArgumentException(UPLINK_DBA_MODE + " must be fcfs or shadow-rr");
+        if (!mode.equals("shadow-rr") && !mode.equals("rr")) {
+            throw new IllegalArgumentException(UPLINK_DBA_MODE + " must be fcfs, shadow-rr or rr");
         }
         if (uplink == null || uplink.framePeriodNs() == 0 || uplink.bwmapPropagationNs() < 0
                 || !uplink.reportEnabled() || !demandLedgerEnabled || uplink.polling() == null) {
-            throw new IllegalArgumentException("shadow-rr requires pon-framed, BWmap, REPORT, demand ledger and polling");
+            throw new IllegalArgumentException(mode + " requires pon-framed, BWmap, REPORT, demand ledger and polling");
         }
-        return true;
+        return mode.equals("shadow-rr");
     }
 
     private static boolean readDemandLedgerEnabled(Properties properties, SimulationConfig.PonLink ponUplink) {

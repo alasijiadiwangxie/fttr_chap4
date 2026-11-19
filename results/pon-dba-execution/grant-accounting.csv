@@ -1,0 +1,5 @@
+scenario_id,grant_id,allocation_id,sfu_id,grant_create_ns,bwmap_receive_ns,slot_start_ns,slot_end_ns,settlement_receive_ns,budget_bytes,selected_bytes,actual_bytes,unused_bytes,reserved_ns,actual_data_ns,unused_duration_ns,known_before_create,known_after_create,known_before_settlement,known_after_settlement,settlement_report_snapshot_ns,pending_bytes_after_settlement
+success_1200,D1,2,1,375000,385000,500205,504045,514070,1200,1200,1200,0,3840,3840,0,1200,0,0,0,504045,0
+head_blocked,D1,2,1,375000,385000,500205,624999,635024,38998,0,0,38998,124794,0,124794,39062,64,64,39062,624999,39062
+partial_rounding,D1,2,1,375000,385000,500205,500212,510237,2,1,1,1,7,4,3,2,0,0,1,500212,1
+partial_rounding,D2,2,1,625000,635000,750205,750209,760234,1,1,1,0,4,4,0,1,0,0,0,750209,0

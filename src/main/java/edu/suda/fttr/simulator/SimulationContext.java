@@ -9,6 +9,8 @@ import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.link.PonUplinkReport;
 import edu.suda.fttr.link.PonReportPoll;
+import edu.suda.fttr.link.PonDbaGrant;
+import edu.suda.fttr.dba.DbaPlan;
 import edu.suda.fttr.trace.TraceLogger;
 
 import java.util.EnumMap;
@@ -246,6 +248,26 @@ public final class SimulationContext {
 
     public void recordDbaShadow(PonDbaShadowPlanner.Decision decision) {
         trace.recordDbaShadow(decision);
+    }
+
+    public void scheduleDbaEvent(long delayNs, EventType type, PonDbaGrant grant) {
+        if (!nanosecondClock) {
+            throw new IllegalStateException("Real DBA events require a nanosecond clock");
+        }
+        events.add(Event.dbaEvent(eventTimeAfter(delayNs, type), type, grant));
+    }
+
+    public void recordDbaDecision(DbaPlan plan, long controlNs) {
+        trace.recordDbaDecision(plan, controlNs);
+    }
+
+    public void recordDbaExecution(String action, PonDbaGrant grant, String details) {
+        trace.recordDbaExecution(action, grant, nowTicks, details);
+    }
+
+    public void recordDbaSummary(long budgets, long grantedBytes, long actualBytes, long unusedBytes,
+                                 long reservedNs, long actualNs, long pendingPackets) {
+        trace.recordDbaSummary(budgets, grantedBytes, actualBytes, unusedBytes, reservedNs, actualNs, pendingPackets);
     }
 
     public void recordPonBwmap(Packet packet, int sfuId, long grantFrameId, long targetFrameId,
