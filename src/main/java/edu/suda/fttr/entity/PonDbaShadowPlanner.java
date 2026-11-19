@@ -1,27 +1,38 @@
 package edu.suda.fttr.entity;
 
-import edu.suda.fttr.link.PonLinkTiming;
+import edu.suda.fttr.dba.DbaContext;
+import edu.suda.fttr.dba.DbaPlan;
+import edu.suda.fttr.dba.DbaPlanValidator;
+import edu.suda.fttr.dba.DbaPolicy;
+import edu.suda.fttr.dba.RoundRobinDbaPolicy;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.TreeSet;
 import java.util.function.IntFunction;
 
-/** 只依据 MFU 可见需求提出字节预算。规划器没有远端队列或真实授权的写入接口。 */
+/**
+ * MFU 与统一 DBA 策略之间的只读适配层。
+ * 将已知需求复制为上下文，再调用策略、校验与预览；保留第 9 步的 Decision 日志接口。
+ */
 public final class PonDbaShadowPlanner {
-    private static final BigDecimal BITS_PER_BYTE_NS = BigDecimal.valueOf(8_000);
-
     private final List<Integer> sfuIds;
     private final BigDecimal rateMbps;
     private final long framePeriodNs;
-    private int nextIndex;
+    private final DbaPolicy policy;
+    private final DbaPlanValidator validator = new DbaPlanValidator();
 
     public PonDbaShadowPlanner(List<Integer> sfuIds, BigDecimal rateMbps, long framePeriodNs) {
+        this(sfuIds, rateMbps, framePeriodNs, new RoundRobinDbaPolicy());
+    }
+
+    /** 策略可以显式注入，现有构造及 shadow-rr 默认仍使用 RR，不需要反射或注册框架。 */
+    public PonDbaShadowPlanner(List<Integer> sfuIds, BigDecimal rateMbps, long framePeriodNs, DbaPolicy policy) {
         Objects.requireNonNull(sfuIds);
+        this.policy = Objects.requireNonNull(policy);
         this.rateMbps = Objects.requireNonNull(rateMbps);
         if (rateMbps.signum() <= 0 || framePeriodNs <= 0) {
             throw new IllegalArgumentException("Shadow planner rate and frame period must be positive");
@@ -39,11 +50,8 @@ public final class PonDbaShadowPlanner {
             throw new IllegalArgumentException("Shadow planner time or frame reservation is outside its valid range");
         }
         Objects.requireNonNull(estimates);
-        long availableNs = framePeriodNs - controlReservedNs;
-        // BigInteger 保留容量原值。高 PHY 速率或大帧不能让中间字节乘法溢出 long。
-        BigInteger capacityBytes = BigDecimal.valueOf(availableNs).multiply(rateMbps)
-                .divide(BITS_PER_BYTE_NS, 0, RoundingMode.FLOOR).toBigIntegerExact();
         List<PonDemandLedger.Estimate> visible = new ArrayList<>(sfuIds.size());
+        List<DbaContext.Allocation> allocations = new ArrayList<>(sfuIds.size());
         int unknown = 0;
         int knownZero = 0;
         for (int sfuId : sfuIds) {
@@ -51,35 +59,34 @@ public final class PonDbaShadowPlanner {
             visible.add(estimate);
             if (!estimate.known()) {
                 unknown++;
+                allocations.add(new DbaContext.Allocation(allocationIdFor(sfuId), sfuId, null, null, null));
             } else if (estimate.effectiveKnownBytes() == 0) {
                 knownZero++;
             }
-        }
-
-        if (capacityBytes.signum() == 0) {
-            return new Decision(decisionTimeNs, targetFrameId, 0, null, controlReservedNs, availableNs,
-                    capacityBytes, 0, 0, "NO_DATA_CAPACITY", unknown, knownZero);
-        }
-        for (int offset = 0; offset < sfuIds.size(); offset++) {
-            int index = (nextIndex + offset) % sfuIds.size();
-            PonDemandLedger.Estimate estimate = visible.get(index);
-            if (estimate.known() && estimate.effectiveKnownBytes() > 0) {
-                long demandBytes = estimate.effectiveKnownBytes();
-                long plannedBytes = BigInteger.valueOf(demandBytes).min(capacityBytes).longValueExact();
-                long plannedNs = PonLinkTiming.serializationNs(plannedBytes, rateMbps);
-                if (plannedNs > availableNs) {
-                    throw new IllegalStateException("Shadow budget serialization exceeds the remaining frame");
-                }
-                // 只推进影子 RR 游标。后续帧仍须重新查询实际 REPORT–Grant 账本。
-                nextIndex = (index + 1) % sfuIds.size();
-                String reason = plannedBytes < demandBytes ? "FRAME_CAPACITY_LIMIT" : "KNOWN_DEMAND";
-                return new Decision(decisionTimeNs, targetFrameId, sfuIds.get(index), estimate, controlReservedNs,
-                        availableNs, capacityBytes, plannedBytes, plannedNs, reason, unknown, knownZero);
+            if (estimate.known()) {
+                allocations.add(new DbaContext.Allocation(allocationIdFor(sfuId), sfuId,
+                        estimate.effectiveKnownBytes(), estimate.report().report().frameId(), estimate.reportAgeNs()));
             }
         }
-        String reason = unknown == sfuIds.size() ? "ALL_UNKNOWN" : "NO_KNOWN_POSITIVE_DEMAND";
-        return new Decision(decisionTimeNs, targetFrameId, 0, null, controlReservedNs, availableNs,
-                capacityBytes, 0, 0, reason, unknown, knownZero);
+        DbaContext context = new DbaContext(decisionTimeNs, targetFrameId, rateMbps, framePeriodNs,
+                controlReservedNs, allocations);
+        DbaPlan plan = policy.plan(context);
+        List<DbaPlanValidator.Slot> preview = validator.validateAndPreview(context, plan);
+        // 当前 RR 每轮至多一个对象。旧标量字段继续只描述该对象，新模型本身使用集合。
+        DbaPlan.Grant grant = plan.grants().isEmpty() ? null : plan.grants().get(0);
+        PonDemandLedger.Estimate selected = grant == null ? null : visible.get(sfuIds.indexOf(grant.sfuId()));
+        return new Decision(decisionTimeNs, targetFrameId, grant == null ? 0 : grant.sfuId(), selected,
+                controlReservedNs, context.availableNs(), context.capacityBytes(),
+                grant == null ? 0 : grant.plannedBytes(), grant == null ? 0 : grant.plannedDurationNs(),
+                plan.decisionReason(), unknown, knownZero, grant == null ? 0 : grant.allocationId(), preview);
+    }
+
+    /**
+     * 当前每台 SFU 一个逻辑对象。偶数 ID 仅为稳定、独立的本地命名约定，非真实 Alloc-ID 编码；
+     * 将来多个对象的映射应由拓扑提供，策略和校验器都无需依赖此命名公式。
+     */
+    private static long allocationIdFor(int sfuId) {
+        return 2L * sfuId;
     }
 
     /** 预算仅为按字节估计的建议，未表示任何完整报文已经获得真实时隙。 */
@@ -96,11 +103,14 @@ public final class PonDbaShadowPlanner {
         private final String decisionReason;
         private final int unknownSfus;
         private final int knownZeroSfus;
+        private final long allocationId;
+        private final List<DbaPlanValidator.Slot> preview;
 
         private Decision(long decisionTimeNs, long targetFrameId, int selectedSfuId,
                          PonDemandLedger.Estimate estimate, long controlReservedNs, long availableDataNs,
                          BigInteger dataCapacityBytes, long plannedGrantBytes, long plannedGrantNs,
-                         String decisionReason, int unknownSfus, int knownZeroSfus) {
+                         String decisionReason, int unknownSfus, int knownZeroSfus,
+                         long allocationId, List<DbaPlanValidator.Slot> preview) {
             this.decisionTimeNs = decisionTimeNs;
             this.targetFrameId = targetFrameId;
             this.selectedSfuId = selectedSfuId;
@@ -113,6 +123,8 @@ public final class PonDbaShadowPlanner {
             this.decisionReason = decisionReason;
             this.unknownSfus = unknownSfus;
             this.knownZeroSfus = knownZeroSfus;
+            this.allocationId = allocationId;
+            this.preview = List.copyOf(preview);
         }
 
         public long decisionTimeNs() {
@@ -173,6 +185,14 @@ public final class PonDbaShadowPlanner {
 
         public int knownZeroSfus() {
             return knownZeroSfus;
+        }
+
+        public long allocationId() {
+            return allocationId;
+        }
+
+        public List<DbaPlanValidator.Slot> preview() {
+            return preview;
         }
     }
 }

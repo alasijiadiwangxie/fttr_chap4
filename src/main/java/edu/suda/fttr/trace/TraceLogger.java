@@ -229,6 +229,14 @@ public final class TraceLogger {
                 decision.controlReservedNs(), decision.availableDataNs(), decision.dataCapacityBytes(),
                 decision.plannedGrantBytes(), decision.plannedGrantNs(), decision.decisionReason(),
                 decision.unknownSfus(), decision.knownZeroSfus());
+        // 独立观测行保留第 9 步原始日志逐字兼容；预览时间不是实际 BWmap 或 DATA 时隙。
+        output.printf(Locale.ROOT, "node=MFU event=PON_DBA_POLICY decision_time_ns=%d target_frame_id=%d "
+                        + "policy_name=shadow-rr allocation_id=%d sfu_id=%d known_demand_bytes=%d planned_bytes=%d "
+                        + "planned_duration_ns=%d decision_reason=%s preview_start_ns=%d preview_end_ns=%d%n",
+                decision.decisionTimeNs(), decision.targetFrameId(), decision.allocationId(), decision.selectedSfuId(),
+                decision.effectiveKnownBytes(), decision.plannedGrantBytes(), decision.plannedGrantNs(),
+                decision.decisionReason(), decision.preview().isEmpty() ? -1 : decision.preview().get(0).startNs(),
+                decision.preview().isEmpty() ? -1 : decision.preview().get(0).endNs());
     }
 
     public void recordPonBwmap(Packet packet, int sfuId, long grantFrameId, long targetFrameId, long grantTxNs,

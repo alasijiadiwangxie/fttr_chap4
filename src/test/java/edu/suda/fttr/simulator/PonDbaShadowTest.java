@@ -274,7 +274,8 @@ class PonDbaShadowTest {
     }
 
     private static List<String> withoutShadow(List<String> trace) {
-        return trace.stream().filter(line -> !line.contains("event=PON_DBA_SHADOW ")).collect(Collectors.toList());
+        return trace.stream().filter(line -> !line.contains("event=PON_DBA_SHADOW ")
+                && !line.contains("event=PON_DBA_POLICY ")).collect(Collectors.toList());
     }
 
     private static Map<String, String> fields(String line) {

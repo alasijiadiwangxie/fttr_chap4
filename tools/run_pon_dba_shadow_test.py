@@ -38,7 +38,8 @@ def execute(jar: Path, config: Path, settings: str) -> str:
 
 
 def without_shadow(log: str) -> str:
-    return "".join(line for line in log.splitlines(keepends=True) if f"event={ACTION}" not in line.split())
+    return "".join(line for line in log.splitlines(keepends=True)
+                   if not {f"event={ACTION}", "event=PON_DBA_POLICY"}.intersection(line.split()))
 
 
 def compare_history(filename: str, columns: tuple[str, ...], rows: list[dict]) -> None:
