@@ -4,6 +4,7 @@ import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
+import edu.suda.fttr.link.PonUplinkReport;
 import edu.suda.fttr.trace.TraceLogger;
 
 import java.util.EnumMap;
@@ -153,6 +154,10 @@ public final class SimulationContext {
 
     public void recordPonUplinkEnqueue(Packet packet, int sfuId) {
         trace.recordPonUplinkEnqueue(packet, sfuId, nowTicks);
+    }
+
+    public void recordPonUplinkReport(PonUplinkReport report) {
+        trace.recordPonUplinkReport(report);
     }
 
     public void recordPonUplinkGrant(Packet packet, int sfuId, long frameId, long enqueueNs, long startNs, long endNs) {

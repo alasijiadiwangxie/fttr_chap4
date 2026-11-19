@@ -39,6 +39,7 @@ public final class ConfigLoader {
     private static final String FIBER_DOWNLINK = "fiber.downlink.";
     private static final String FIBER_UPLINK = "fiber.uplink.";
     private static final String UPLINK_FRAME_PERIOD_US = FIBER_UPLINK + "frame.period.us";
+    private static final String UPLINK_REPORT_ENABLED = FIBER_UPLINK + "report.enabled";
     private static final String MAC_EXCHANGE = "wifi.mac.exchange";
     private static final String MAC_ACCESS = "wifi.mac.access";
     private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
@@ -50,6 +51,7 @@ public final class ConfigLoader {
     private static final Set<String> KEYS = Set.of(
             FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", FIBER_DOWNLINK + "propagation.us",
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
+            UPLINK_REPORT_ENABLED,
             "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
             MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
             MAC_MAX_RETRIES, EDCA_SEED);
@@ -165,6 +167,9 @@ public final class ConfigLoader {
         if (uplink && !framed && properties.containsKey(UPLINK_FRAME_PERIOD_US)) {
             throw new IllegalArgumentException(UPLINK_FRAME_PERIOD_US + " requires " + modeKey + "=pon-framed");
         }
+        if (uplink && !framed && properties.containsKey(UPLINK_REPORT_ENABLED)) {
+            throw new IllegalArgumentException(UPLINK_REPORT_ENABLED + " requires " + modeKey + "=pon-framed");
+        }
         if (mode.equals("fixed")) {
             if (properties.containsKey(rateKey) || properties.containsKey(propagationKey)) {
                 throw new IllegalArgumentException("PON rate and propagation require " + modeKey + "=pon-shared"
@@ -186,7 +191,11 @@ public final class ConfigLoader {
         }
         long propagationNs = readPonDurationNs(properties, propagationKey, "0", false);
         long framePeriodNs = framed ? readPonDurationNs(properties, UPLINK_FRAME_PERIOD_US, "125", true) : 0;
-        return new SimulationConfig.PonLink(rateMbps, propagationNs, framePeriodNs);
+        String reportEnabled = framed ? properties.getProperty(UPLINK_REPORT_ENABLED, "false").strip() : "false";
+        if (!reportEnabled.equals("true") && !reportEnabled.equals("false")) {
+            throw new IllegalArgumentException(UPLINK_REPORT_ENABLED + " must be true or false");
+        }
+        return new SimulationConfig.PonLink(rateMbps, propagationNs, framePeriodNs, reportEnabled.equals("true"));
     }
 
     private static long readPonDurationNs(Properties properties, String key, String defaultUs, boolean positive) {

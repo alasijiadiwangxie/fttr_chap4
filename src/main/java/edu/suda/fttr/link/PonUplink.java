@@ -6,13 +6,18 @@ import edu.suda.fttr.simulator.SimulationContext;
 
 import java.math.BigDecimal;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.Iterator;
+import java.util.List;
 
 /** 各 SFU 的光发送端口共用一条上行链路。链路负责执行调度结果和交付报文。 */
 public final class PonUplink {
     private final BigDecimal rateMbps;
     private final long propagationNs;
     private final long framePeriodNs;
+    private final boolean reportEnabled;
+    private final List<Port> reportPorts = new ArrayList<>();
     private final PonUplinkScheduler scheduler = new PonUplinkScheduler();
     private final Deque<Grant> grants = new ArrayDeque<>();
     private long nextSequence;
@@ -28,19 +33,29 @@ public final class PonUplink {
     }
 
     public PonUplink(BigDecimal rateMbps, long propagationNs, long framePeriodNs) {
+        this(rateMbps, propagationNs, framePeriodNs, false);
+    }
+
+    public PonUplink(BigDecimal rateMbps, long propagationNs, long framePeriodNs, boolean reportEnabled) {
         this.rateMbps = rateMbps;
         this.propagationNs = propagationNs;
         this.framePeriodNs = framePeriodNs;
+        this.reportEnabled = reportEnabled;
     }
 
     public Port attachSfu(int sfuId) {
-        return new Port(sfuId);
+        Port port = new Port(sfuId);
+        if (reportEnabled) {
+            reportPorts.add(port);
+        }
+        return port;
     }
 
     /** 每台 SFU 持有自己的端口和光侧 FIFO，队首由共享调度器统一安排。 */
     public final class Port {
         private final int sfuId;
         private final Deque<Request> queue = new ArrayDeque<>();
+        private long pendingBytes;
 
         private Port(int sfuId) {
             this.sfuId = sfuId;
@@ -49,6 +64,7 @@ public final class PonUplink {
         public void enqueue(Packet packet, SimulationContext context) {
             Request request = new Request(this, packet, context.nowTicks(), nextSequence++);
             queue.addLast(request);
+            pendingBytes += packet.bytes();
             context.recordPonUplinkEnqueue(packet, sfuId);
             if (queue.size() == 1) {
                 scheduler.submitHead(request);
@@ -58,6 +74,24 @@ public final class PonUplink {
                     requestFrame(context);
                 }
             }
+        }
+
+        private PonUplinkReport snapshot(long frameId, long frameStartNs) {
+            int pendingPackets = queue.size();
+            int eligiblePackets = pendingPackets;
+            long eligibleBytes = pendingBytes;
+            // FIFO 按入队时间增长。只需从队尾剔除已入队、但恰逢本帧边界的报文。
+            Iterator<Request> newestFirst = queue.descendingIterator();
+            while (newestFirst.hasNext()) {
+                Request request = newestFirst.next();
+                if (request.enqueueTicks < frameStartNs) {
+                    break;
+                }
+                eligiblePackets--;
+                eligibleBytes -= request.packet.bytes();
+            }
+            return new PonUplinkReport(frameId, sfuId, frameStartNs, pendingPackets, pendingBytes,
+                    eligiblePackets, eligibleBytes);
         }
     }
 
@@ -87,6 +121,9 @@ public final class PonUplink {
         long frameStart = context.nowTicks();
         long frameId = frameStart / framePeriodNs;
         long frameEnd = Math.addExact(frameStart, framePeriodNs);
+        if (reportEnabled) {
+            recordReports(frameId, frameStart, context);
+        }
         long cursor = frameStart;
         Request head;
         while ((head = scheduler.peekHead()) != null && head.enqueueTicks < frameStart) {
@@ -112,6 +149,19 @@ public final class PonUplink {
         }
     }
 
+    private void recordReports(long frameId, long frameStart, SimulationContext context) {
+        // 空帧由现有的按积压唤醒机制跳过。补记其中各 SFU 的零需求，不额外安排事件。
+        for (long id = frames; id < frameId; id++) {
+            for (Port port : reportPorts) {
+                context.recordPonUplinkReport(new PonUplinkReport(id, port.sfuId, id * framePeriodNs, 0, 0, 0, 0));
+            }
+        }
+        // 在任何授权消费队首之前读取全部 SFU 的快照。FCFS 仍只从原有候选队首取报文。
+        for (Port port : reportPorts) {
+            context.recordPonUplinkReport(port.snapshot(frameId, frameStart));
+        }
+    }
+
     private void recordFrame(long frameId, long frameStart, long frameEnd, int packets, long usedNs,
                              SimulationContext context) {
         // 按帧号补记未唤醒的空帧，无需逐个空帧推进仿真时钟。
@@ -133,6 +183,7 @@ public final class PonUplink {
         grants.addLast(grant);
         Port port = request.port;
         port.queue.removeFirst();
+        port.pendingBytes -= request.packet.bytes();
         Request head = port.queue.peekFirst();
         if (head != null) {
             // 连续授权同一 SFU 时仍将下一队首放回全局 FCFS，沿用原始入队时间和流水号。

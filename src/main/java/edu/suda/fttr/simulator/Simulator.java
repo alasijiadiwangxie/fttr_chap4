@@ -36,7 +36,8 @@ public final class Simulator {
         PonDownlink ponDownlink = downlinkConfig == null ? null
                 : new PonDownlink(downlinkConfig.rateMbps(), downlinkConfig.propagationNs());
         PonUplink ponUplink = uplinkConfig == null ? null
-                : new PonUplink(uplinkConfig.rateMbps(), uplinkConfig.propagationNs(), uplinkConfig.framePeriodNs());
+                : new PonUplink(uplinkConfig.rateMbps(), uplinkConfig.propagationNs(), uplinkConfig.framePeriodNs(),
+                        uplinkConfig.reportEnabled());
         SimulationContext context = new SimulationContext(trace, runSummary, config.usesNanosecondTicks(),
                 retryPolicy != null);
         List<Map<Integer, Sta>> stationsBySfu = new ArrayList<>(config.sfuCount());

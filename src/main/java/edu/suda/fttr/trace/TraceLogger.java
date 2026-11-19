@@ -4,6 +4,7 @@ import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
+import edu.suda.fttr.link.PonUplinkReport;
 import edu.suda.fttr.simulator.Event;
 
 import java.io.PrintStream;
@@ -99,6 +100,13 @@ public final class TraceLogger {
 
     public void recordPonUplinkEnqueue(Packet packet, int sfuId, long timeTicks) {
         write(packet, timeTicks, "SFU", "PON_UPLINK_ENQUEUE", sfuId);
+    }
+
+    public void recordPonUplinkReport(PonUplinkReport report) {
+        output.printf(Locale.ROOT, "node=SFU event=PON_UPLINK_REPORT frame_id=%d sfu_id=%d snapshot_time_ns=%d "
+                        + "pending_packets=%d pending_bytes=%d eligible_packets=%d eligible_bytes=%d%n",
+                report.frameId(), report.sfuId(), report.snapshotTimeNs(), report.pendingPackets(),
+                report.pendingBytes(), report.eligiblePackets(), report.eligibleBytes());
     }
 
     public void recordPonUplinkGrant(Packet packet, int sfuId, long frameId, long enqueueNs, long grantNs,
