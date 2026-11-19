@@ -84,8 +84,7 @@ class PonUplinkReportTest {
         List<String> disabled = run(directory, "false", properties);
         assertEquals(disabled, run(directory, null, properties));
         assertEquals(List.of(), reports(disabled));
-        assertEquals(disabled, enabled.stream().filter(line -> !line.contains("event=PON_UPLINK_REPORT "))
-                .collect(Collectors.toList()));
+        assertEquals(disabled, withoutReportTelemetry(enabled));
 
         // 包 33 在前两轮报告中仍等待授权，但只发生一次真实光侧入队。包 34 在帧 2 的授权之后才入光队列。
         assertEquals(List.of(report(0, 1, 0, 0, 0, 0, 0), report(0, 2, 0, 0, 0, 0, 0),
@@ -110,7 +109,7 @@ class PonUplinkReportTest {
                 report(4, 1, 500_000, 1, 1_200, 1, 1_200)), reports(trace));
         String summary = trace.get(trace.size() - 1);
         assertTrue(summary.contains("simulation_end_us=503.84"), summary);
-        assertEquals(run(directory, "false", properties).get(trace.size() - reports(trace).size() - 1), summary);
+        assertEquals(run(directory, "false", properties), withoutReportTelemetry(trace));
     }
 
     @Test
@@ -148,6 +147,14 @@ class PonUplinkReportTest {
 
     private static List<String> reports(List<String> trace) {
         return matchingLines(trace, "event=PON_UPLINK_REPORT ");
+    }
+
+    static List<String> withoutReportTelemetry(List<String> trace) {
+        return trace.stream().filter(line -> !line.contains("event=PON_UPLINK_REPORT ")
+                        && !line.contains("event=PON_UPLINK_REPORT_RX ")
+                        && !line.contains("event=PON_UPLINK_REPORT_STATE ")
+                        && !line.startsWith("summary=PON_UPLINK_REPORTS "))
+                .collect(Collectors.toList());
     }
 
     private static List<String> matchingLines(List<String> trace, String fragment) {

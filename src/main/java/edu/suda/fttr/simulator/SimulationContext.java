@@ -1,6 +1,7 @@
 package edu.suda.fttr.simulator;
 
 import edu.suda.fttr.entity.AccessCategory;
+import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
@@ -98,14 +99,26 @@ public final class SimulationContext {
 
     /** 使用当前仿真时钟的原始刻度安排事件。 */
     public Event scheduleAfterTicks(long delayTicks, EventType type, Packet packet, int sfuId) {
+        Event event = Event.atTicks(eventTimeAfter(delayTicks, type), nanosecondClock, type, packet, sfuId);
+        events.add(event);
+        return event;
+    }
+
+    public void schedulePonUplinkReportReception(long propagationNs, Packet carrier, PonUplinkReport report) {
+        if (!nanosecondClock) {
+            throw new IllegalStateException("REPORT reception requires a nanosecond clock");
+        }
+        long timeNs = eventTimeAfter(propagationNs, EventType.PON_UPLINK_REPORT_RX);
+        events.add(Event.uplinkReportReception(timeNs, carrier, report));
+    }
+
+    private long eventTimeAfter(long delayTicks, EventType type) {
         if (delayTicks < 0) {
             throw new IllegalArgumentException("Event delay must be non-negative");
         }
         // 以当前事件发生的时刻为基准安排下一跳。零时延允许，但时钟不能倒退。
         try {
-            Event event = Event.atTicks(Math.addExact(nowTicks, delayTicks), nanosecondClock, type, packet, sfuId);
-            events.add(event);
-            return event;
+            return Math.addExact(nowTicks, delayTicks);
         } catch (ArithmeticException ex) {
             throw new IllegalArgumentException("Event time exceeds the clock range: " + type, ex);
         }
@@ -158,6 +171,18 @@ public final class SimulationContext {
 
     public void recordPonUplinkReport(PonUplinkReport report) {
         trace.recordPonUplinkReport(report);
+    }
+
+    public void recordPonUplinkReportReception(PonUplinkReport report, int carrierPacketId, boolean applied) {
+        trace.recordPonUplinkReportReception(report, carrierPacketId, nowTicks, applied);
+    }
+
+    public void recordMfuReportState(long frameId, int sfuId, Mfu.ReceivedUplinkReport latest) {
+        trace.recordMfuReportState(frameId, sfuId, nowTicks, latest);
+    }
+
+    public void recordPonUplinkReportSummary(long generated, long received, long withoutGrant) {
+        trace.recordPonUplinkReportSummary(generated, received, withoutGrant);
     }
 
     public void recordPonUplinkGrant(Packet packet, int sfuId, long frameId, long enqueueNs, long startNs, long endNs) {

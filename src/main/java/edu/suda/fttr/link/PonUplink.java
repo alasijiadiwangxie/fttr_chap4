@@ -8,8 +8,10 @@ import java.math.BigDecimal;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 /** 各 SFU 的光发送端口共用一条上行链路。链路负责执行调度结果和交付报文。 */
 public final class PonUplink {
@@ -27,6 +29,8 @@ public final class PonUplink {
     private long busyTicks;
     private long frames;
     private double totalGrantWaitTicks;
+    private long generatedReports;
+    private long reportsWithoutGrant;
 
     public PonUplink(BigDecimal rateMbps, long propagationNs) {
         this(rateMbps, propagationNs, 0);
@@ -100,7 +104,7 @@ public final class PonUplink {
         if (!grants.isEmpty() || head == null) {
             return;
         }
-        reserveHead(context.nowTicks(), serializationNs(head));
+        reserveHead(context.nowTicks(), serializationNs(head), null);
         scheduleGrantedHead(context);
     }
 
@@ -121,9 +125,7 @@ public final class PonUplink {
         long frameStart = context.nowTicks();
         long frameId = frameStart / framePeriodNs;
         long frameEnd = Math.addExact(frameStart, framePeriodNs);
-        if (reportEnabled) {
-            recordReports(frameId, frameStart, context);
-        }
+        Map<Integer, PonUplinkReport> frameReports = reportEnabled ? recordReports(frameId, frameStart, context) : null;
         long cursor = frameStart;
         Request head;
         while ((head = scheduler.peekHead()) != null && head.enqueueTicks < frameStart) {
@@ -134,11 +136,16 @@ public final class PonUplink {
             if (durationNs > frameEnd - cursor) {
                 break; // 严格 FCFS。帧尾容量留空，队首报文保留到下一帧。
             }
-            Grant grant = reserveHead(cursor, durationNs);
+            // 移出这一台 SFU 的快照，确保仅其第一条上行授权携带 REPORT。
+            PonUplinkReport report = frameReports == null ? null : frameReports.remove(head.port.sfuId);
+            Grant grant = reserveHead(cursor, durationNs, report);
             totalGrantWaitTicks += frameStart - head.enqueueTicks;
             context.recordPonUplinkGrant(head.packet, head.port.sfuId, frameId, head.enqueueTicks, cursor,
                     grant.endTicks);
             cursor = grant.endTicks;
+        }
+        if (frameReports != null) {
+            reportsWithoutGrant += frameReports.size();
         }
 
         // 只有前一帧的结束事件处理完，才轮到本帧调度。此处的授权均属于本帧。
@@ -149,17 +156,24 @@ public final class PonUplink {
         }
     }
 
-    private void recordReports(long frameId, long frameStart, SimulationContext context) {
+    private Map<Integer, PonUplinkReport> recordReports(long frameId, long frameStart, SimulationContext context) {
         // 空帧由现有的按积压唤醒机制跳过。补记其中各 SFU 的零需求，不额外安排事件。
         for (long id = frames; id < frameId; id++) {
             for (Port port : reportPorts) {
                 context.recordPonUplinkReport(new PonUplinkReport(id, port.sfuId, id * framePeriodNs, 0, 0, 0, 0));
+                generatedReports++;
+                reportsWithoutGrant++;
             }
         }
         // 在任何授权消费队首之前读取全部 SFU 的快照。FCFS 仍只从原有候选队首取报文。
+        Map<Integer, PonUplinkReport> frameReports = new HashMap<>();
         for (Port port : reportPorts) {
-            context.recordPonUplinkReport(port.snapshot(frameId, frameStart));
+            PonUplinkReport report = port.snapshot(frameId, frameStart);
+            frameReports.put(port.sfuId, report);
+            context.recordPonUplinkReport(report);
+            generatedReports++;
         }
+        return frameReports;
     }
 
     private void recordFrame(long frameId, long frameStart, long frameEnd, int packets, long usedNs,
@@ -177,9 +191,9 @@ public final class PonUplink {
         return PonLinkTiming.serializationNs(request.packet.bytes(), rateMbps);
     }
 
-    private Grant reserveHead(long startTicks, long durationNs) {
+    private Grant reserveHead(long startTicks, long durationNs, PonUplinkReport report) {
         Request request = scheduler.pollHead();
-        Grant grant = new Grant(request, startTicks, Math.addExact(startTicks, durationNs));
+        Grant grant = new Grant(request, startTicks, Math.addExact(startTicks, durationNs), report);
         grants.addLast(grant);
         Port port = request.port;
         port.queue.removeFirst();
@@ -218,7 +232,11 @@ public final class PonUplink {
         sentPackets++;
         totalQueueWaitTicks += grant.startTicks - grant.request.enqueueTicks;
         busyTicks += grant.endTicks - grant.startTicks;
+        // 同刻按插入序先交付 DATA，再处理所携带的 REPORT。两者使用同一传播时延。
         context.scheduleAfterNanoseconds(propagationNs, EventType.PACKET_ARRIVAL_AT_MFU, packet, sfuId);
+        if (grant.report != null) {
+            context.schedulePonUplinkReportReception(propagationNs, packet, grant.report);
+        }
 
         if (framePeriodNs == 0) {
             scheduleShared(context);
@@ -236,6 +254,12 @@ public final class PonUplink {
         }
     }
 
+    public void recordReportSummary(long receivedReports, SimulationContext context) {
+        if (reportEnabled) {
+            context.recordPonUplinkReportSummary(generatedReports, receivedReports, reportsWithoutGrant);
+        }
+    }
+
     private Grant requireGrant(Packet packet, int sfuId) {
         Grant grant = grants.peekFirst();
         if (grant == null || grant.request.packet != packet || grant.request.port.sfuId != sfuId) {
@@ -248,11 +272,13 @@ public final class PonUplink {
         private final Request request;
         private final long startTicks;
         private final long endTicks;
+        private final PonUplinkReport report;
 
-        private Grant(Request request, long startTicks, long endTicks) {
+        private Grant(Request request, long startTicks, long endTicks, PonUplinkReport report) {
             this.request = request;
             this.startTicks = startTicks;
             this.endTicks = endTicks;
+            this.report = report;
         }
     }
 

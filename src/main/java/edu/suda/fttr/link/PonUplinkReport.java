@@ -10,8 +10,8 @@ public final class PonUplinkReport {
     private final int eligiblePackets;
     private final long eligibleBytes;
 
-    PonUplinkReport(long frameId, int sfuId, long snapshotTimeNs, int pendingPackets, long pendingBytes,
-                    int eligiblePackets, long eligibleBytes) {
+    public PonUplinkReport(long frameId, int sfuId, long snapshotTimeNs, int pendingPackets, long pendingBytes,
+                           int eligiblePackets, long eligibleBytes) {
         this.frameId = frameId;
         this.sfuId = sfuId;
         this.snapshotTimeNs = snapshotTimeNs;

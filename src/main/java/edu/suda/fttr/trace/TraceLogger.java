@@ -1,6 +1,7 @@
 package edu.suda.fttr.trace;
 
 import edu.suda.fttr.entity.AccessCategory;
+import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
@@ -71,6 +72,9 @@ public final class TraceLogger {
             case PACKET_ARRIVAL_AT_MFU:
                 // 接收端确认目的 ID 后，通过 recordDelivery 记录实际接收者。
                 break;
+            case PON_UPLINK_REPORT_RX:
+                // MFU 校验收到的快照并判定是否更新状态后，再记录接收结果。
+                break;
             case WIFI_ARRIVAL_AT_SFU:
                 // SFU 收齐上行 DATA。链路随后单独记录 DATA 到达和无线资源释放。
                 break;
@@ -107,6 +111,32 @@ public final class TraceLogger {
                         + "pending_packets=%d pending_bytes=%d eligible_packets=%d eligible_bytes=%d%n",
                 report.frameId(), report.sfuId(), report.snapshotTimeNs(), report.pendingPackets(),
                 report.pendingBytes(), report.eligiblePackets(), report.eligibleBytes());
+    }
+
+    public void recordPonUplinkReportReception(PonUplinkReport report, int packetId, long receiveNs, boolean applied) {
+        output.printf(Locale.ROOT, "t_us=%s node=MFU event=PON_UPLINK_REPORT_RX frame_id=%d sfu_id=%d packet_id=%d "
+                        + "snapshot_time_ns=%d receive_time_ns=%d pending_bytes=%d eligible_bytes=%d applied=%b%n",
+                formatMicroseconds(receiveNs), report.frameId(), report.sfuId(), packetId, report.snapshotTimeNs(),
+                receiveNs, report.pendingBytes(), report.eligibleBytes(), applied);
+    }
+
+    public void recordMfuReportState(long frameId, int sfuId, long boundaryNs, Mfu.ReceivedUplinkReport latest) {
+        String prefix = String.format(Locale.ROOT, "node=MFU event=PON_UPLINK_REPORT_STATE frame_id=%d "
+                + "sfu_id=%d boundary_time_ns=%d", frameId, sfuId, boundaryNs);
+        if (latest == null) {
+            output.println(prefix + " status=UNKNOWN");
+            return;
+        }
+        PonUplinkReport report = latest.report();
+        output.printf(Locale.ROOT, "%s status=KNOWN latest_report_frame_id=%d latest_snapshot_time_ns=%d "
+                        + "latest_receive_time_ns=%d known_pending_bytes=%d known_eligible_bytes=%d report_age_ns=%d%n",
+                prefix, report.frameId(), report.snapshotTimeNs(), latest.receiveTimeNs(),
+                report.pendingBytes(), report.eligibleBytes(), boundaryNs - report.snapshotTimeNs());
+    }
+
+    public void recordPonUplinkReportSummary(long generated, long received, long withoutGrant) {
+        output.printf(Locale.ROOT, "summary=PON_UPLINK_REPORTS generated=%d received=%d without_grant=%d%n",
+                generated, received, withoutGrant);
     }
 
     public void recordPonUplinkGrant(Packet packet, int sfuId, long frameId, long enqueueNs, long grantNs,

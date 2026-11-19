@@ -14,6 +14,10 @@ from run_pon_frame_test import (
 
 REPORT_ACTION = "PON_UPLINK_REPORT"
 REPORT_ENABLED = "fiber.uplink.report.enabled"
+REPORT_OUTPUT_TOKENS = {
+    f"event={REPORT_ACTION}", "event=PON_UPLINK_REPORT_RX", "event=PON_UPLINK_REPORT_STATE",
+    "summary=PON_UPLINK_REPORTS",
+}
 REPORT_COLUMNS = (
     "frame_id", "sfu_id", "snapshot_time_ns",
     "pending_packets", "pending_bytes", "eligible_packets", "eligible_bytes",
@@ -42,10 +46,12 @@ def run_pair(jar: Path, config: Path, settings: str) -> tuple[str, str]:
     off = simulate(jar, config)
     config.write_bytes((settings + f"{REPORT_ENABLED}=true\n").encode("utf-8"))
     on = simulate(jar, config)
-    pattern = f"event={REPORT_ACTION}"
-    require(pattern not in off, "Disabled REPORT produced snapshot rows")
-    filtered = "".join(line for line in on.splitlines(keepends=True) if pattern not in line.split())
-    require(filtered == off, "Enabling REPORT changed the non-REPORT simulation trace")
+    def without_report_rows(log: str) -> str:
+        return "".join(line for line in log.splitlines(keepends=True)
+                       if REPORT_OUTPUT_TOKENS.isdisjoint(line.split()))
+
+    require(without_report_rows(off) == off, "Disabled REPORT produced report rows")
+    require(without_report_rows(on) == off, "Enabling REPORT changed the non-REPORT simulation trace")
     require(on == simulate(jar, config), "Identical REPORT inputs produced different traces")
     return on, off
 

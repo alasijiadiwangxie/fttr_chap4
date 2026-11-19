@@ -101,6 +101,12 @@ public final class Simulator {
                     }
                     break;
                 case PON_UPLINK_FRAME:
+                    if (uplinkConfig.reportEnabled()) {
+                        long frameId = context.nowTicks() / uplinkConfig.framePeriodNs();
+                        for (Sfu sfu : sfus) {
+                            context.recordMfuReportState(frameId, sfu.id(), mfu.latestUplinkReport(sfu.id()));
+                        }
+                    }
                     ponUplink.scheduleFrame(context);
                     break;
                 case PACKET_ARRIVAL_AT_SFU:
@@ -124,6 +130,9 @@ public final class Simulator {
                     break;
                 case PACKET_ARRIVAL_AT_MFU:
                     mfu.receiveUplink(event.packet(), event.sfuId(), context);
+                    break;
+                case PON_UPLINK_REPORT_RX:
+                    mfu.receiveUplinkReport(event.uplinkReport(), event.packet(), context);
                     break;
                 case WIFI_SELECT_NEXT:
                     sfus.get(event.sfuId() - 1).selectNext(context);
@@ -158,6 +167,7 @@ public final class Simulator {
         }
         if (ponUplink != null) {
             ponUplink.recordSummary(context);
+            ponUplink.recordReportSummary(mfu.receivedUplinkReports(), context);
         }
         context.recordSummary(sfus, stations, config.uplinkEnabled());
     }
