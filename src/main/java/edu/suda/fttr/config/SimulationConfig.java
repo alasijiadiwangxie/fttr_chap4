@@ -169,14 +169,16 @@ public final class SimulationConfig {
         private final long framePeriodNs;
         private final boolean reportEnabled;
         private final long bwmapPropagationNs;
+        private final PonPolling polling;
 
         PonLink(BigDecimal rateMbps, long propagationNs, long framePeriodNs, boolean reportEnabled,
-                long bwmapPropagationNs) {
+                long bwmapPropagationNs, PonPolling polling) {
             this.rateMbps = rateMbps;
             this.propagationNs = propagationNs;
             this.framePeriodNs = framePeriodNs;
             this.reportEnabled = reportEnabled;
             this.bwmapPropagationNs = bwmapPropagationNs;
+            this.polling = polling;
         }
 
         public BigDecimal rateMbps() {
@@ -200,6 +202,35 @@ public final class SimulationConfig {
         /** 启用 BWmap 时使用统一下行传播时延。关闭时为 -1。 */
         public long bwmapPropagationNs() {
             return bwmapPropagationNs;
+        }
+
+        public PonPolling polling() {
+            return polling;
+        }
+    }
+
+    /** 有限的 REPORT-only 轮询。结束时刻约束授权创建，已创建控制时隙继续完整执行。 */
+    public static final class PonPolling {
+        private final int bytes;
+        private final int intervalFrames;
+        private final long endNs;
+
+        PonPolling(int bytes, int intervalFrames, long endNs) {
+            this.bytes = bytes;
+            this.intervalFrames = intervalFrames;
+            this.endNs = endNs;
+        }
+
+        public int bytes() {
+            return bytes;
+        }
+
+        public int intervalFrames() {
+            return intervalFrames;
+        }
+
+        public long endNs() {
+            return endNs;
         }
     }
 }

@@ -2,6 +2,7 @@ package edu.suda.fttr.simulator;
 
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.link.PonUplinkReport;
+import edu.suda.fttr.link.PonReportPoll;
 
 /** 事件不可变。生成事件标记报文的入口时刻，进入链路后的事件可携带 SFU ID。 */
 public final class Event {
@@ -11,6 +12,7 @@ public final class Event {
     private final Packet packet;
     private final int sfuId;
     private final PonUplinkReport uplinkReport;
+    private final PonReportPoll reportPoll;
 
     Event(long timeUs, EventType type, Packet packet) {
         this(timeUs, type, packet, 0);
@@ -22,12 +24,18 @@ public final class Event {
 
     private Event(long timeTicks, boolean nanosecondClock, EventType type, Packet packet, int sfuId,
                   PonUplinkReport uplinkReport) {
+        this(timeTicks, nanosecondClock, type, packet, sfuId, uplinkReport, null);
+    }
+
+    private Event(long timeTicks, boolean nanosecondClock, EventType type, Packet packet, int sfuId,
+                  PonUplinkReport uplinkReport, PonReportPoll reportPoll) {
         this.timeTicks = timeTicks;
         this.nanosecondClock = nanosecondClock;
         this.type = type;
         this.packet = packet;
         this.sfuId = sfuId;
         this.uplinkReport = uplinkReport;
+        this.reportPoll = reportPoll;
     }
 
     /** 统一的输入事件。执行时由仿真器根据报文方向和源节点选择入口。 */
@@ -41,6 +49,14 @@ public final class Event {
 
     static Event uplinkReportReception(long timeNs, Packet carrier, PonUplinkReport report) {
         return new Event(timeNs, true, EventType.PON_UPLINK_REPORT_RX, carrier, report.sfuId(), report);
+    }
+
+    static Event pollEvent(long timeNs, EventType type, PonReportPoll poll) {
+        return new Event(timeNs, true, type, null, poll.sfuId(), null, poll);
+    }
+
+    public PonReportPoll reportPoll() {
+        return reportPoll;
     }
 
     /** 配置中的输入事件使用整数微秒。内部的小数微秒事件不得用此方法取整。 */

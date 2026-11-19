@@ -43,6 +43,10 @@ public final class ConfigLoader {
     private static final String UPLINK_REPORT_ENABLED = FIBER_UPLINK + "report.enabled";
     private static final String UPLINK_BWMAP_ENABLED = FIBER_UPLINK + "bwmap.enabled";
     private static final String UPLINK_DEMAND_LEDGER_ENABLED = FIBER_UPLINK + "demand.ledger.enabled";
+    private static final String UPLINK_POLL_ENABLED = FIBER_UPLINK + "poll.enabled";
+    private static final String UPLINK_POLL_BYTES = FIBER_UPLINK + "poll.bytes";
+    private static final String UPLINK_POLL_INTERVAL_FRAMES = FIBER_UPLINK + "poll.interval.frames";
+    private static final String UPLINK_POLL_END_US = FIBER_UPLINK + "poll.end.us";
     private static final String MAC_EXCHANGE = "wifi.mac.exchange";
     private static final String MAC_ACCESS = "wifi.mac.access";
     private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
@@ -55,6 +59,7 @@ public final class ConfigLoader {
             FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", DOWNLINK_PROPAGATION_US,
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
             UPLINK_REPORT_ENABLED, UPLINK_BWMAP_ENABLED, UPLINK_DEMAND_LEDGER_ENABLED,
+            UPLINK_POLL_ENABLED, UPLINK_POLL_BYTES, UPLINK_POLL_INTERVAL_FRAMES, UPLINK_POLL_END_US,
             "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
             MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
             MAC_MAX_RETRIES, EDCA_SEED);
@@ -200,6 +205,12 @@ public final class ConfigLoader {
         boolean uplink = prefix.equals(FIBER_UPLINK);
         boolean framed = uplink && mode.equals("pon-framed");
         boolean bwmapDownlink = !uplink && bwmapPropagationNs >= 0;
+        if (uplink && !framed && properties.containsKey(UPLINK_POLL_ENABLED)) {
+            throw new IllegalArgumentException(UPLINK_POLL_ENABLED + " requires " + modeKey + "=pon-framed");
+        }
+        if (uplink && !framed && hasPollingParameters(properties)) {
+            throw new IllegalArgumentException("Polling parameters require " + modeKey + "=pon-framed");
+        }
         if (uplink && !framed && properties.containsKey(UPLINK_FRAME_PERIOD_US)) {
             throw new IllegalArgumentException(UPLINK_FRAME_PERIOD_US + " requires " + modeKey + "=pon-framed");
         }
@@ -243,8 +254,60 @@ public final class ConfigLoader {
         if (!reportEnabled.equals("true") && !reportEnabled.equals("false")) {
             throw new IllegalArgumentException(UPLINK_REPORT_ENABLED + " must be true or false");
         }
+        SimulationConfig.PonPolling polling = uplink
+                ? readPolling(properties, rateMbps, propagationNs, framePeriodNs, reportEnabled.equals("true"),
+                        linkBwmapPropagationNs) : null;
         return new SimulationConfig.PonLink(rateMbps, propagationNs, framePeriodNs, reportEnabled.equals("true"),
-                linkBwmapPropagationNs);
+                linkBwmapPropagationNs, polling);
+    }
+
+    private static boolean hasPollingParameters(Properties properties) {
+        return properties.containsKey(UPLINK_POLL_BYTES) || properties.containsKey(UPLINK_POLL_INTERVAL_FRAMES)
+                || properties.containsKey(UPLINK_POLL_END_US);
+    }
+
+    private static SimulationConfig.PonPolling readPolling(Properties properties, BigDecimal rateMbps,
+                                                          long propagationNs, long framePeriodNs,
+                                                          boolean reportEnabled, long bwmapPropagationNs) {
+        String enabled = properties.getProperty(UPLINK_POLL_ENABLED, "false").strip();
+        if (!enabled.equals("true") && !enabled.equals("false")) {
+            throw new IllegalArgumentException(UPLINK_POLL_ENABLED + " must be true or false");
+        }
+        if (enabled.equals("false")) {
+            if (hasPollingParameters(properties)) {
+                throw new IllegalArgumentException("Polling parameters require " + UPLINK_POLL_ENABLED + "=true");
+            }
+            return null;
+        }
+        if (framePeriodNs == 0 || !reportEnabled || bwmapPropagationNs < 0) {
+            throw new IllegalArgumentException("REPORT-only polling requires pon-framed, REPORT and BWmap");
+        }
+        int bytes = properties.containsKey(UPLINK_POLL_BYTES) ? readPositiveInt(properties, UPLINK_POLL_BYTES) : 64;
+        int intervalFrames = properties.containsKey(UPLINK_POLL_INTERVAL_FRAMES)
+                ? readPositiveInt(properties, UPLINK_POLL_INTERVAL_FRAMES) : 1;
+        if (!properties.containsKey(UPLINK_POLL_END_US)) {
+            throw new IllegalArgumentException("Missing property: " + UPLINK_POLL_END_US);
+        }
+        long endNs = readPonDurationNs(properties, UPLINK_POLL_END_US, "0", true);
+        if (endNs <= framePeriodNs) {
+            throw new IllegalArgumentException(UPLINK_POLL_END_US + " must be greater than the frame period");
+        }
+        try {
+            long durationNs = PonLinkTiming.serializationNs(bytes, rateMbps);
+            if (durationNs > framePeriodNs) {
+                throw new IllegalArgumentException("REPORT-only slot exceeds the uplink frame capacity");
+            }
+            // 首次在帧 1 调度，此后每隔 intervalFrames 帧，调度边界严格早于 endNs。
+            long finalEligibleFrame = (endNs - 1) / framePeriodNs;
+            long lastPollFrame = 1 + ((finalEligibleFrame - 1) / intervalFrames) * intervalFrames;
+            long lastPollNs = Math.multiplyExact(lastPollFrame, framePeriodNs);
+            long targetStartNs = Math.addExact(lastPollNs, framePeriodNs);
+            Math.addExact(targetStartNs, framePeriodNs);
+            Math.addExact(Math.addExact(targetStartNs, durationNs), propagationNs);
+        } catch (ArithmeticException e) {
+            throw new IllegalArgumentException("Polling window exceeds the nanosecond clock range", e);
+        }
+        return new SimulationConfig.PonPolling(bytes, intervalFrames, endNs);
     }
 
     private static long readPonDurationNs(Properties properties, String key, String defaultUs, boolean positive) {

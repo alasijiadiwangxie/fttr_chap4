@@ -7,6 +7,7 @@ import edu.suda.fttr.entity.PonDemandLedger;
 import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.link.PonUplinkReport;
+import edu.suda.fttr.link.PonReportPoll;
 import edu.suda.fttr.trace.TraceLogger;
 
 import java.util.EnumMap;
@@ -118,6 +119,33 @@ public final class SimulationContext {
         }
         long timeNs = eventTimeAfter(propagationNs, EventType.PON_UPLINK_REPORT_RX);
         events.add(Event.uplinkReportReception(timeNs, carrier, report));
+    }
+
+    public void schedulePollEvent(long delayNs, EventType type, PonReportPoll poll) {
+        if (!nanosecondClock) {
+            throw new IllegalStateException("REPORT_ONLY requires a nanosecond clock");
+        }
+        events.add(Event.pollEvent(eventTimeAfter(delayNs, type), type, poll));
+    }
+
+    public void recordPollEvent(PonReportPoll poll, String action) {
+        trace.recordPollEvent(poll, action, nowTicks);
+    }
+
+    public void recordPollSnapshot(PonReportPoll poll) {
+        trace.recordPollSnapshot(poll);
+    }
+
+    public void recordPollReception(PonReportPoll poll, boolean applied) {
+        trace.recordPollReception(poll, nowTicks, applied);
+    }
+
+    public void recordPollFrame(long frameId, long startNs, long endNs, long dataNs, long reportNs) {
+        trace.recordPollFrame(frameId, startNs, endNs, dataNs, reportNs);
+    }
+
+    public void recordPollingSummary(long polls, long dataNs, long reportNs) {
+        trace.recordPollingSummary(polls, dataNs, reportNs);
     }
 
     private long eventTimeAfter(long delayTicks, EventType type) {

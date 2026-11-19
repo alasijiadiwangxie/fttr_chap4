@@ -1,5 +1,6 @@
 package edu.suda.fttr.link;
 
+import edu.suda.fttr.config.SimulationConfig;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
@@ -20,6 +21,13 @@ public final class PonUplink {
     private final long framePeriodNs;
     private final boolean reportEnabled;
     private final long bwmapPropagationNs;
+    private final SimulationConfig.PonPolling polling;
+    private final List<Port> pollingPorts = new ArrayList<>();
+    private final Deque<PonReportPoll> polls = new ArrayDeque<>();
+    private long nextPollFrame = 1;
+    private long createdPolls;
+    private long completedPolls;
+    private long pollBusyNs;
     private final List<Port> reportPorts = new ArrayList<>();
     private final PonUplinkScheduler scheduler = new PonUplinkScheduler();
     private final Deque<Grant> grants = new ArrayDeque<>();
@@ -49,11 +57,17 @@ public final class PonUplink {
 
     public PonUplink(BigDecimal rateMbps, long propagationNs, long framePeriodNs, boolean reportEnabled,
                      long bwmapPropagationNs) {
+        this(rateMbps, propagationNs, framePeriodNs, reportEnabled, bwmapPropagationNs, null);
+    }
+
+    public PonUplink(BigDecimal rateMbps, long propagationNs, long framePeriodNs, boolean reportEnabled,
+                     long bwmapPropagationNs, SimulationConfig.PonPolling polling) {
         this.rateMbps = rateMbps;
         this.propagationNs = propagationNs;
         this.framePeriodNs = framePeriodNs;
         this.reportEnabled = reportEnabled;
         this.bwmapPropagationNs = bwmapPropagationNs;
+        this.polling = polling;
     }
 
     public Port attachSfu(int sfuId) {
@@ -62,6 +76,17 @@ public final class PonUplink {
             reportPorts.add(port);
         }
         return port;
+    }
+
+    /** 只根据固定关联和 SFU ID 建立轮询顺序，与队列是否有业务无关。 */
+    public void startPolling(List<Integer> associatedSfuIds, SimulationContext context) {
+        if (polling != null) {
+            reportPorts.stream().filter(port -> associatedSfuIds.contains(port.sfuId))
+                    .sorted((left, right) -> Integer.compare(left.sfuId, right.sfuId)).forEach(pollingPorts::add);
+            if (!pollingPorts.isEmpty()) {
+                requestFrame(context);
+            }
+        }
     }
 
     /** 每台 SFU 持有自己的端口和光侧 FIFO，队首由共享调度器统一安排。 */
@@ -105,6 +130,14 @@ public final class PonUplink {
             recordBwmap(grant, true, context);
         }
 
+        public void receivePollBwmap(PonReportPoll poll, SimulationContext context) {
+            if (poll.sfuId() != sfuId || !polls.contains(poll)) {
+                throw new IllegalStateException("REPORT_ONLY BWmap reached the wrong SFU or unknown reservation");
+            }
+            poll.receive(context.nowTicks());
+            context.recordPollEvent(poll, "PON_POLL_BWMAP_RX");
+        }
+
         private PonUplinkReport snapshot(long frameId, long frameStartNs) {
             int pendingPackets = queue.size();
             int eligiblePackets = pendingPackets;
@@ -144,7 +177,7 @@ public final class PonUplink {
 
     public void scheduleFrame(SimulationContext context) {
         boolean bwmapEnabled = bwmapPropagationNs >= 0;
-        boolean hasScheduledGrant = !grants.isEmpty();
+        boolean hasScheduledGrant = !grants.isEmpty() || !polls.isEmpty();
         if (!bwmapEnabled && hasScheduledGrant) {
             throw new IllegalStateException("Previous PON uplink frame still has active grants");
         }
@@ -153,12 +186,14 @@ public final class PonUplink {
         long frameId = frameStart / framePeriodNs;
         Map<Integer, PonUplinkReport> frameReports = reportEnabled ? recordReports(frameId, frameStart, context) : null;
         Request head = scheduler.peekHead();
-        if (bwmapEnabled && (head == null || head.enqueueTicks >= frameStart)) {
+        boolean pollDue = polling != null && !pollingPorts.isEmpty() && frameId == nextPollFrame
+                && frameStart < polling.endNs();
+        if (bwmapEnabled && !pollDue && (head == null || head.enqueueTicks >= frameStart)) {
             if (frameReports != null) {
                 reportsWithoutGrant += frameReports.size();
             }
             // 末尾仅取样的帧没有目标时隙，也不需要让时钟能表示一个更远的空帧。
-            if (head != null) {
+            if (head != null || hasFuturePoll(frameStart)) {
                 requestFrame(context);
             }
             return;
@@ -166,10 +201,25 @@ public final class PonUplink {
         long targetStart = bwmapEnabled ? Math.addExact(frameStart, framePeriodNs) : frameStart;
         long targetEnd = Math.addExact(targetStart, framePeriodNs);
         long targetFrameId = targetStart / framePeriodNs;
-        if (hasScheduledGrant && grants.getLast().endTicks > targetStart) {
+        if ((!grants.isEmpty() && grants.getLast().endTicks > targetStart)
+                || (!polls.isEmpty() && polls.getLast().endNs() > targetStart)) {
             throw new IllegalStateException("PON uplink reservation overlaps target frame " + targetFrameId);
         }
         long cursor = targetStart;
+        long controlNs = 0;
+        if (pollDue) {
+            controlNs = PonLinkTiming.serializationNs(polling.bytes(), rateMbps);
+            Port port = pollingPorts.get((int) (createdPolls % pollingPorts.size()));
+            PonReportPoll poll = new PonReportPoll(++createdPolls, port.sfuId, frameId, frameStart,
+                    cursor, Math.addExact(cursor, controlNs));
+            polls.addLast(poll);
+            context.recordPollEvent(poll, "PON_POLL_BWMAP_TX");
+            context.schedulePollEvent(bwmapPropagationNs, EventType.PON_POLL_BWMAP_RX, poll);
+            cursor = poll.endNs();
+            long lastEligibleFrame = (polling.endNs() - 1) / framePeriodNs;
+            nextPollFrame = lastEligibleFrame - frameId >= polling.intervalFrames()
+                    ? frameId + polling.intervalFrames() : 0;
+        }
         int allocated = 0;
         while ((head = scheduler.peekHead()) != null && head.enqueueTicks < frameStart) {
             long durationNs = serializationNs(head);
@@ -199,16 +249,23 @@ public final class PonUplink {
             reportsWithoutGrant += frameReports.size();
         }
 
-        if (!bwmapEnabled || allocated > 0) {
-            recordFrame(targetFrameId, targetStart, targetEnd, allocated, cursor - targetStart, context);
+        if (!bwmapEnabled || allocated > 0 || pollDue) {
+            recordFrame(targetFrameId, targetStart, targetEnd, allocated, cursor - targetStart, controlNs, context);
         }
         // 可能正在执行上一轮预约。后续时隙仍由前一包结束事件启动。
         if (!hasScheduledGrant) {
             scheduleGrantedHead(context);
         }
-        if (scheduler.peekHead() != null || (bwmapEnabled && reportEnabled && allocated > 0)) {
+        if (scheduler.peekHead() != null || hasFuturePoll(frameStart)
+                || (bwmapEnabled && reportEnabled && (allocated > 0 || pollDue))) {
             requestFrame(context);
         }
+    }
+
+    private boolean hasFuturePoll(long frameStart) {
+        return polling != null && !pollingPorts.isEmpty()
+                && nextPollFrame <= (polling.endNs() - 1) / framePeriodNs
+                && nextPollFrame > frameStart / framePeriodNs;
     }
 
     private Map<Integer, PonUplinkReport> recordReports(long frameId, long frameStart, SimulationContext context) {
@@ -233,13 +290,19 @@ public final class PonUplink {
     }
 
     private void recordFrame(long frameId, long frameStart, long frameEnd, int packets, long usedNs,
-                             SimulationContext context) {
+                             long controlNs, SimulationContext context) {
         // 按帧号补记未唤醒的空帧，无需逐个空帧推进仿真时钟。
         for (long id = frames; id < frameId; id++) {
             long start = id * framePeriodNs;
             context.recordPonUplinkFrame(id, start, start + framePeriodNs, 0, 0);
+            if (polling != null) {
+                context.recordPollFrame(id, start, start + framePeriodNs, 0, 0);
+            }
         }
         context.recordPonUplinkFrame(frameId, frameStart, frameEnd, packets, usedNs);
+        if (polling != null) {
+            context.recordPollFrame(frameId, frameStart, frameEnd, usedNs - controlNs, controlNs);
+        }
         frames = frameId + 1;
     }
 
@@ -269,9 +332,46 @@ public final class PonUplink {
 
     private void scheduleGrantedHead(SimulationContext context) {
         Grant grant = grants.peekFirst();
+        PonReportPoll poll = polls.peekFirst();
+        if (poll != null && (grant == null || poll.startNs() < grant.startTicks)) {
+            context.schedulePollEvent(poll.startNs() - context.nowTicks(), EventType.PON_POLL_START, poll);
+            return;
+        }
         if (grant != null) {
             context.scheduleAfterTicks(grant.startTicks - context.nowTicks(), EventType.FIBER_TX_START,
                     grant.request.packet, grant.request.port.sfuId);
+        }
+    }
+
+    public void startPoll(PonReportPoll poll, SimulationContext context) {
+        requirePollHead(poll);
+        if (!grants.isEmpty() && grants.peekFirst().startTicks < poll.endNs()) {
+            throw new IllegalStateException("REPORT_ONLY overlaps a DATA slot");
+        }
+        Port port = pollingPorts.stream().filter(candidate -> candidate.sfuId == poll.sfuId()).findFirst().orElseThrow();
+        poll.start(context.nowTicks(), port.snapshot(poll.targetFrameId(), context.nowTicks()));
+        generatedReports++;
+        context.recordPollEvent(poll, "PON_POLL_TX_START");
+        context.recordPollSnapshot(poll);
+        context.schedulePollEvent(poll.endNs() - context.nowTicks(), EventType.PON_POLL_END, poll);
+    }
+
+    public void finishPoll(PonReportPoll poll, SimulationContext context) {
+        requirePollHead(poll);
+        if (context.nowTicks() != poll.endNs() || poll.report() == null) {
+            throw new IllegalStateException("REPORT_ONLY finished outside its assigned slot");
+        }
+        polls.removeFirst();
+        completedPolls++;
+        pollBusyNs += poll.endNs() - poll.startNs();
+        context.recordPollEvent(poll, "PON_POLL_TX_END");
+        context.schedulePollEvent(propagationNs, EventType.PON_POLL_REPORT_RX, poll);
+        scheduleGrantedHead(context);
+    }
+
+    private void requirePollHead(PonReportPoll poll) {
+        if (polls.peekFirst() != poll) {
+            throw new IllegalStateException("REPORT_ONLY event does not match the current reservation");
         }
     }
 
@@ -318,7 +418,10 @@ public final class PonUplink {
         context.recordPonSummary(Packet.Direction.UL, sentPackets, totalQueueWaitTicks, busyTicks);
         if (framePeriodNs != 0) {
             double grantWaitUs = sentPackets == 0 ? 0.0 : totalGrantWaitTicks / sentPackets / 1_000.0;
-            context.recordPonUplinkFrames(frames, framePeriodNs, sentPackets, busyTicks, grantWaitUs);
+            context.recordPonUplinkFrames(frames, framePeriodNs, sentPackets, busyTicks + pollBusyNs, grantWaitUs);
+        }
+        if (polling != null) {
+            context.recordPollingSummary(completedPolls, busyTicks, pollBusyNs);
         }
         if (bwmapPropagationNs >= 0) {
             double reservedWaitUs = sentPackets == 0 ? 0.0 : totalReservedWaitTicks / sentPackets / 1_000.0;

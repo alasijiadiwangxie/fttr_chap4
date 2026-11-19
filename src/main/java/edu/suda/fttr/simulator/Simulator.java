@@ -37,7 +37,7 @@ public final class Simulator {
                 : new PonDownlink(downlinkConfig.rateMbps(), downlinkConfig.propagationNs());
         PonUplink ponUplink = uplinkConfig == null ? null
                 : new PonUplink(uplinkConfig.rateMbps(), uplinkConfig.propagationNs(), uplinkConfig.framePeriodNs(),
-                        uplinkConfig.reportEnabled(), uplinkConfig.bwmapPropagationNs());
+                        uplinkConfig.reportEnabled(), uplinkConfig.bwmapPropagationNs(), uplinkConfig.polling());
         boolean demandLedgerEnabled = config.demandLedgerEnabled();
         Mfu mfu = new Mfu(config.staSfuIds(), ponDownlink, demandLedgerEnabled);
         SimulationContext context = new SimulationContext(trace, runSummary, config.usesNanosecondTicks(),
@@ -70,6 +70,9 @@ public final class Simulator {
         // 输入事件只提供报文和生成时间，实际路径由仿真器和设备根据关联表决定。
         for (Event input : config.inputEvents()) {
             context.scheduleInputEvent(input);
+        }
+        if (ponUplink != null) {
+            ponUplink.startPolling(config.staSfuIds(), context);
         }
 
         Event event;
@@ -116,6 +119,18 @@ public final class Simulator {
                     break;
                 case PON_BWMAP_RX:
                     sfus.get(event.sfuId() - 1).receivePonBwmap(event.packet(), context);
+                    break;
+                case PON_POLL_BWMAP_RX:
+                    sfus.get(event.sfuId() - 1).receivePollBwmap(event.reportPoll(), context);
+                    break;
+                case PON_POLL_START:
+                    ponUplink.startPoll(event.reportPoll(), context);
+                    break;
+                case PON_POLL_END:
+                    ponUplink.finishPoll(event.reportPoll(), context);
+                    break;
+                case PON_POLL_REPORT_RX:
+                    mfu.receivePolledReport(event.reportPoll(), context);
                     break;
                 case PACKET_ARRIVAL_AT_SFU:
                     sfus.get(event.sfuId() - 1).enqueueForWifi(event.packet(), context);

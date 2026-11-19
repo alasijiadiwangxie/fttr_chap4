@@ -1,6 +1,7 @@
 package edu.suda.fttr.entity;
 
 import edu.suda.fttr.link.PonUplink;
+import edu.suda.fttr.link.PonReportPoll;
 import edu.suda.fttr.link.WifiChannel;
 import edu.suda.fttr.link.WifiLink;
 import edu.suda.fttr.mac.EdcaAccess;
@@ -99,6 +100,13 @@ public final class Sfu {
             throw new IllegalStateException("SFU " + id + " has no PON uplink port for BWmap");
         }
         ponUplinkPort.receiveBwmap(packet, context);
+    }
+
+    public void receivePollBwmap(PonReportPoll poll, SimulationContext context) {
+        if (ponUplinkPort == null) {
+            throw new IllegalStateException("SFU has no PON uplink port for REPORT_ONLY");
+        }
+        ponUplinkPort.receivePollBwmap(poll, context);
     }
 
     public EdcaState edcaState() {

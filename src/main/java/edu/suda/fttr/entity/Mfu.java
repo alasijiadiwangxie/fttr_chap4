@@ -2,6 +2,7 @@ package edu.suda.fttr.entity;
 
 import edu.suda.fttr.link.PonDownlink;
 import edu.suda.fttr.link.PonUplinkReport;
+import edu.suda.fttr.link.PonReportPoll;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
 
@@ -53,19 +54,39 @@ public final class Mfu {
                 || staSfuIds.get(carrier.staId() - 1) != report.sfuId()) {
             throw new IllegalStateException("PON report from SFU " + report.sfuId() + " reached MFU on the wrong route");
         }
-        long receiveTimeNs = context.nowTicks();
+        boolean applied = acceptUplinkReport(report, context.nowTicks());
+        context.recordPonUplinkReportReception(report, carrier.id(), applied);
+        recordAcceptedDemand(report, applied, context);
+    }
+
+    public void receivePolledReport(PonReportPoll poll, SimulationContext context) {
+        PonUplinkReport report = poll.report();
+        if (!staSfuIds.contains(poll.sfuId()) || report == null || report.sfuId() != poll.sfuId()) {
+            throw new IllegalStateException("REPORT_ONLY reached MFU on the wrong route");
+        }
+        boolean applied = acceptUplinkReport(report, context.nowTicks());
+        context.recordPollReception(poll, applied);
+        recordAcceptedDemand(report, applied, context);
+    }
+
+    private boolean acceptUplinkReport(PonUplinkReport report, long receiveTimeNs) {
         if (receiveTimeNs < report.snapshotTimeNs()) {
             throw new IllegalStateException("PON report reached MFU before its snapshot time");
         }
 
-        // 队列需求只在接收时更新。原始帧号保证晚到或重复的报告不能替换新快照。
+        // 按真实采样时刻更新。轮询快照可能晚于同一帧的边界快照，旧采样不能覆盖新采样。
         ReceivedUplinkReport latest = latestUplinkReport(report.sfuId());
-        boolean applied = latest == null || report.frameId() > latest.report().frameId();
+        boolean applied = latest == null || report.snapshotTimeNs() > latest.report().snapshotTimeNs()
+                || (report.snapshotTimeNs() == latest.report().snapshotTimeNs()
+                    && report.frameId() > latest.report().frameId());
         if (applied) {
             latestUplinkReports.put(report.sfuId(), new ReceivedUplinkReport(report, receiveTimeNs));
         }
         receivedUplinkReports++;
-        context.recordPonUplinkReportReception(report, carrier.id(), applied);
+        return applied;
+    }
+
+    private void recordAcceptedDemand(PonUplinkReport report, boolean applied, SimulationContext context) {
         if (applied && demandLedger != null) {
             recordUplinkDemand(report.sfuId(), "REPORT_ACCEPTED", context);
         }

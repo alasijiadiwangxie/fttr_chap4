@@ -7,6 +7,7 @@ import edu.suda.fttr.entity.PonDemandLedger;
 import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.link.PonUplinkReport;
+import edu.suda.fttr.link.PonReportPoll;
 import edu.suda.fttr.simulator.Event;
 
 import java.io.PrintStream;
@@ -57,6 +58,10 @@ public final class TraceLogger {
                 // 光侧调度器单独记录每个授权及对应的帧统计。
                 break;
             case PON_BWMAP_RX:
+            case PON_POLL_BWMAP_RX:
+            case PON_POLL_START:
+            case PON_POLL_END:
+            case PON_POLL_REPORT_RX:
                 // 目标 SFU 核对预约及接收时刻后，再记录 BWmap 接收。
                 break;
             case PACKET_ARRIVAL_AT_SFU:
@@ -100,6 +105,47 @@ public final class TraceLogger {
 
     private void write(Event event, String node, String action) {
         write(event.packet(), event.timeTicks(), node, action, event.sfuId());
+    }
+
+    public void recordPollEvent(PonReportPoll poll, String action, long nowNs) {
+        String receiver = action.equals("PON_POLL_BWMAP_TX") ? "MFU" : "SFU";
+        String rx = action.equals("PON_POLL_BWMAP_RX") ? " bwmap_rx_ns=" + nowNs : "";
+        output.printf(Locale.ROOT, "t_us=%s node=%s event=%s poll_id=%d grant_id=R%d grant_type=REPORT_ONLY "
+                        + "sfu_id=%d grant_frame_id=%d target_frame_id=%d bwmap_tx_ns=%d%s tx_start_ns=%d tx_end_ns=%d%n",
+                formatMicroseconds(nowNs), receiver, action, poll.id(), poll.id(), poll.sfuId(), poll.grantFrameId(),
+                poll.targetFrameId(), poll.grantTxNs(), rx, poll.startNs(), poll.endNs());
+    }
+
+    public void recordPollSnapshot(PonReportPoll poll) {
+        PonUplinkReport r = poll.report();
+        output.printf(Locale.ROOT, "node=SFU event=PON_POLL_REPORT poll_id=%d sfu_id=%d frame_id=%d snapshot_time_ns=%d "
+                        + "pending_packets=%d pending_bytes=%d eligible_packets=%d eligible_bytes=%d%n",
+                poll.id(), r.sfuId(), r.frameId(), r.snapshotTimeNs(), r.pendingPackets(), r.pendingBytes(),
+                r.eligiblePackets(), r.eligibleBytes());
+    }
+
+    public void recordPollReception(PonReportPoll poll, long nowNs, boolean applied) {
+        PonUplinkReport r = poll.report();
+        output.printf(Locale.ROOT, "t_us=%s node=MFU event=PON_POLL_REPORT_RX poll_id=%d grant_id=R%d "
+                        + "grant_type=REPORT_ONLY sfu_id=%d grant_frame_id=%d target_frame_id=%d bwmap_tx_ns=%d "
+                        + "tx_start_ns=%d tx_end_ns=%d snapshot_time_ns=%d pending_packets=%d pending_bytes=%d "
+                        + "eligible_bytes=%d receive_time_ns=%d applied=%b%n",
+                formatMicroseconds(nowNs), poll.id(), poll.id(), poll.sfuId(), poll.grantFrameId(), poll.targetFrameId(),
+                poll.grantTxNs(), poll.startNs(), poll.endNs(), r.snapshotTimeNs(), r.pendingPackets(), r.pendingBytes(),
+                r.eligibleBytes(), nowNs, applied);
+    }
+
+    public void recordPollFrame(long id, long startNs, long endNs, long dataNs, long reportNs) {
+        long busyNs = dataNs + reportNs;
+        output.printf(Locale.ROOT, "summary=PON_POLL_FRAME frame_id=%d frame_start_ns=%d frame_end_ns=%d "
+                        + "data_busy_ns=%d report_busy_ns=%d busy_ns=%d idle_ns=%d utilization=%.9f%n",
+                id, startNs, endNs, dataNs, reportNs, busyNs, endNs - startNs - busyNs,
+                utilization(busyNs, endNs - startNs));
+    }
+
+    public void recordPollingSummary(long polls, long dataNs, long reportNs) {
+        output.printf(Locale.ROOT, "summary=PON_POLLING polls=%d data_busy_ns=%d report_busy_ns=%d total_busy_ns=%d%n",
+                polls, dataNs, reportNs, dataNs + reportNs);
     }
 
     public void recordPonDownlinkEnqueue(Packet packet, int sfuId, long timeTicks) {
