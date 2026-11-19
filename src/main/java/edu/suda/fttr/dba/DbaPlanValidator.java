@@ -55,6 +55,9 @@ public final class DbaPlanValidator {
                         || grant.plannedBytes() > allocation.knownDemandBytes())) {
                     throw new IllegalArgumentException("Plan exceeds known effective demand or demand is UNKNOWN");
                 }
+                if (grant.plannedBytes() > 0 && allocation.budgetOutstanding()) {
+                    throw new IllegalArgumentException("Allocation already has an unsettled DATA budget");
+                }
                 long expectedNs = grant.plannedBytes() == 0 ? 0
                         : PonLinkTiming.serializationNs(grant.plannedBytes(), context.rateMbps());
                 if (grant.plannedDurationNs() != expectedNs) {

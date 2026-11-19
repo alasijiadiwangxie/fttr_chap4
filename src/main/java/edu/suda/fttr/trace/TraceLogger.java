@@ -11,6 +11,7 @@ import edu.suda.fttr.link.PonUplinkReport;
 import edu.suda.fttr.link.PonReportPoll;
 import edu.suda.fttr.link.PonDbaGrant;
 import edu.suda.fttr.dba.DbaPlan;
+import edu.suda.fttr.dba.DbaContext;
 import edu.suda.fttr.simulator.Event;
 
 import java.io.PrintStream;
@@ -253,6 +254,17 @@ public final class TraceLogger {
                 plan.decisionTimeNs(), plan.targetFrameId(), choice == null ? 0 : choice.allocationId(),
                 choice == null ? 0 : choice.sfuId(), choice == null ? 0 : choice.plannedBytes(),
                 choice == null ? 0 : choice.plannedDurationNs(), controlNs, plan.decisionReason());
+    }
+
+    /** 每个对象独立显示已知需求和授权阻塞；等待结算不改变KNOWN/UNKNOWN状态。 */
+    public void recordDbaObjectState(DbaContext input, DbaContext.Allocation allocation) {
+        output.printf(Locale.ROOT, "node=MFU event=PON_DBA_OBJECT_STATE time_ns=%d target_frame_id=%d "
+                        + "allocation_id=%d sfu_id=%d state=%s known_demand_bytes=%d report_frame_id=%d "
+                        + "report_age_ns=%d budget_outstanding=%s%n",
+                input.decisionTimeNs(), input.targetFrameId(), allocation.allocationId(), allocation.sfuId(),
+                allocation.known() ? "KNOWN" : "UNKNOWN", allocation.known() ? allocation.knownDemandBytes() : -1,
+                allocation.reportFrameId() == null ? -1 : allocation.reportFrameId(),
+                allocation.reportAgeNs() == null ? -1 : allocation.reportAgeNs(), allocation.budgetOutstanding());
     }
 
     /** 真实预算日志显式保留 D 前缀，不与原逐包 grant_id 或轮询 R 前缀混用。 */

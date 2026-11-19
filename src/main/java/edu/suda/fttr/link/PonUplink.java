@@ -52,6 +52,7 @@ public final class PonUplink {
     private long budgetActualBytes;
     private long budgetReservedNs;
     private long budgetActualNs;
+    private long lastBudgetEndNs;
 
     public PonUplink(BigDecimal rateMbps, long propagationNs) {
         this(rateMbps, propagationNs, 0);
@@ -81,12 +82,16 @@ public final class PonUplink {
     }
 
     public Port attachSfu(int sfuId) {
-        if (dbaMfu != null && sfuId != 1) {
-            throw new IllegalArgumentException("Real rr DBA currently supports one SFU with ID 1");
+        if (dbaMfu != null && (sfuId < 1 || sfuId > 2
+                || reportPorts.stream().anyMatch(port -> port.sfuId == sfuId))) {
+            throw new IllegalArgumentException("Real rr DBA requires distinct SFU IDs in the range 1 to 2");
         }
         Port port = new Port(sfuId);
         if (reportEnabled) {
             reportPorts.add(port);
+        }
+        if (dbaMfu != null) {
+            refreshDbaFiller();
         }
         return port;
     }
@@ -98,7 +103,18 @@ public final class PonUplink {
             throw new IllegalArgumentException("Real rr DBA requires framed/report/BWmap/finite polling");
         }
         dbaMfu = mfu;
-        dbaFiller = new PonGrantPacketFiller(rateMbps, Map.of(2L, 1));
+        refreshDbaFiller();
+    }
+
+    /** 拓扑在启动时注册；装载器持有映射副本，不再把所有预算假定属于SFU1。 */
+    private void refreshDbaFiller() {
+        Map<Long, Integer> owners = new HashMap<>();
+        for (Port port : reportPorts) {
+            if (port.sfuId < 1 || port.sfuId > 2 || owners.put(2L * port.sfuId, port.sfuId) != null) {
+                throw new IllegalArgumentException("Invalid real rr SFU topology");
+            }
+        }
+        dbaFiller = new PonGrantPacketFiller(rateMbps, owners);
     }
 
     /** 只根据固定关联和 SFU ID 建立轮询顺序，与队列是否有业务无关。 */
@@ -368,13 +384,20 @@ public final class PonUplink {
             nextPollFrame = last - frameId >= polling.intervalFrames() ? frameId + polling.intervalFrames() : 0;
         }
         DbaPlan plan = dbaMfu.planDbaExecution(targetFrame, controlNs, rateMbps, framePeriodNs, context);
+        if (plan.grants().size() > 1) {
+            throw new IllegalStateException("Real rr DBA supports at most one DATA budget per target frame");
+        }
         for (DbaPlan.Grant proposed : plan.grants()) {
             long start = Math.addExact(targetStart, controlNs);
             long end = Math.addExact(start, proposed.plannedDurationNs());
+            if (start < lastBudgetEndNs || end > Math.addExact(targetStart, framePeriodNs)) {
+                throw new IllegalStateException("Real DATA budget overlaps another slot or exceeds its frame");
+            }
             PonDbaGrant grant = new PonDbaGrant(++budgetSequence, proposed.allocationId(), proposed.sfuId(),
                     now, targetFrame, start, end, proposed.plannedBytes());
             dbaMfu.recordDbaBudgetCreated(grant, context);
             budgetGrants.put(grant.id(), grant);
+            lastBudgetEndNs = end;
             budgetBytes = Math.addExact(budgetBytes, grant.budgetBytes());
             budgetReservedNs = Math.addExact(budgetReservedNs, end - start);
             context.recordDbaExecution("PON_DBA_BWMAP_TX", grant, "");
@@ -579,8 +602,12 @@ public final class PonUplink {
         if (grant.budget != null) {
             context.recordDbaExecution("PON_DBA_DATA_START", grant.budget, "packet_id=" + packet.id());
         }
-        context.scheduleAfterTicks(grant.endTicks - grant.startTicks,
-                EventType.FIBER_TX_END, packet, sfuId);
+        if (grant.budget != null) {
+            // 半开时隙可精确相邻。只让真实预算DATA先完成，避免下一帧START看见旧发送资源未释放。
+            context.scheduleDbaDataEnd(grant.endTicks - grant.startTicks, packet, grant.budget);
+        } else {
+            context.scheduleAfterTicks(grant.endTicks - grant.startTicks, EventType.FIBER_TX_END, packet, sfuId);
+        }
     }
 
     public void finish(Packet packet, int sfuId, SimulationContext context) {

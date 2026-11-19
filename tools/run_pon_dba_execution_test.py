@@ -162,7 +162,10 @@ def main() -> None:
         verify_protocol_regression(args.jar.resolve(), directory)
         for scenario, config in cases.items():
             actual = execute(args.jar.resolve(), directory / f"{scenario}.properties", config)
-            trace, accounting = check_and_account(scenario, actual)
+            # 第13步的逐对象观测不改变第12步执行。保留原导出的行/索引，使旧复现命令仍稳定。
+            legacy = "".join(line for line in actual.splitlines(keepends=True)
+                             if "event=PON_DBA_OBJECT_STATE" not in line.split())
+            trace, accounting = check_and_account(scenario, legacy)
             rows.extend(trace)
             accounts.extend(accounting)
     args.output.mkdir(parents=True, exist_ok=True)

@@ -239,7 +239,7 @@ class PonDbaExecutionTest {
     @Test
     void realModeRejectsMissingPrerequisitesAndUnsupportedMultipleSfus(@TempDir Path directory) {
         for (String disabled : List.of("fiber.uplink.report.enabled=false", "fiber.uplink.bwmap.enabled=false",
-                "fiber.uplink.demand.ledger.enabled=false", "fiber.uplink.poll.enabled=false", "sfu.count=2")) {
+                "fiber.uplink.demand.ledger.enabled=false", "fiber.uplink.poll.enabled=false", "sfu.count=3")) {
             assertThrows(IllegalArgumentException.class,
                     () -> ConfigLoader.load(config(directory, "rr", 1200, List.of(disabled))), disabled);
         }

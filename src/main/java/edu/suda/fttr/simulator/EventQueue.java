@@ -7,11 +7,15 @@ import java.util.PriorityQueue;
 final class EventQueue {
     private final PriorityQueue<Entry> pending = new PriorityQueue<>(
             Comparator.comparingLong((Entry entry) -> entry.event.timeTicks())
-                    .thenComparingInt(entry -> accessPriority(entry.event.type()))
+                    .thenComparingInt(entry -> accessPriority(entry.event))
                     .thenComparingLong(entry -> entry.sequence));
     private long nextSequence;
 
-    private static int accessPriority(EventType type) {
+    private static int accessPriority(Event event) {
+        EventType type = event.type();
+        if (type == EventType.FIBER_TX_END && event.dbaGrant() != null) {
+            return -1; // 真实DATA在半开窗口末先释放资源，下一帧控制/装载可在同刻启动。
+        }
         // 先处理报文与忙闲边界，再推进所有计时器，最后合并同刻归零的候选。
         if (type == EventType.WIFI_ACCESS_RESOLVE) {
             return 2;

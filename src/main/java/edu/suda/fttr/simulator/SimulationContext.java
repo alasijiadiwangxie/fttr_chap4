@@ -11,6 +11,7 @@ import edu.suda.fttr.link.PonUplinkReport;
 import edu.suda.fttr.link.PonReportPoll;
 import edu.suda.fttr.link.PonDbaGrant;
 import edu.suda.fttr.dba.DbaPlan;
+import edu.suda.fttr.dba.DbaContext;
 import edu.suda.fttr.trace.TraceLogger;
 
 import java.util.EnumMap;
@@ -259,6 +260,17 @@ public final class SimulationContext {
 
     public void recordDbaDecision(DbaPlan plan, long controlNs) {
         trace.recordDbaDecision(plan, controlNs);
+    }
+
+    public void recordDbaObjectState(DbaContext input, DbaContext.Allocation allocation) {
+        trace.recordDbaObjectState(input, allocation);
+    }
+
+    public void scheduleDbaDataEnd(long delayNs, Packet packet, PonDbaGrant grant) {
+        if (!nanosecondClock) {
+            throw new IllegalStateException("Real DBA DATA completion requires a nanosecond clock");
+        }
+        events.add(Event.dbaDataEnd(eventTimeAfter(delayNs, EventType.FIBER_TX_END), packet, grant));
     }
 
     public void recordDbaExecution(String action, PonDbaGrant grant, String details) {

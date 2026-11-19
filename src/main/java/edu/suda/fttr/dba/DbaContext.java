@@ -90,9 +90,16 @@ public final class DbaContext {
         private final Long knownDemandBytes;
         private final Long reportFrameId;
         private final Long reportAgeNs;
+        private final boolean budgetOutstanding;
 
         public Allocation(long allocationId, int sfuId, Long knownDemandBytes,
                           Long reportFrameId, Long reportAgeNs) {
+            this(allocationId, sfuId, knownDemandBytes, reportFrameId, reportAgeNs, false);
+        }
+
+        /** 未结算预算是独立的授权状态，不改变 REPORT 的 UNKNOWN/KNOWN 或净需求数值。 */
+        public Allocation(long allocationId, int sfuId, Long knownDemandBytes,
+                          Long reportFrameId, Long reportAgeNs, boolean budgetOutstanding) {
             if (allocationId < 1 || sfuId < 1 || (knownDemandBytes != null && knownDemandBytes < 0)
                     || (reportFrameId != null && reportFrameId < 0) || (reportAgeNs != null && reportAgeNs < 0)) {
                 throw new IllegalArgumentException("DBA allocation identity or known demand is outside its valid range");
@@ -106,6 +113,7 @@ public final class DbaContext {
             this.knownDemandBytes = knownDemandBytes;
             this.reportFrameId = reportFrameId;
             this.reportAgeNs = reportAgeNs;
+            this.budgetOutstanding = budgetOutstanding;
         }
 
         public long allocationId() {
@@ -131,6 +139,10 @@ public final class DbaContext {
 
         public Long reportAgeNs() {
             return reportAgeNs;
+        }
+
+        public boolean budgetOutstanding() {
+            return budgetOutstanding;
         }
     }
 }

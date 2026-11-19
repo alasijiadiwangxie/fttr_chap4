@@ -132,8 +132,8 @@ public final class ConfigLoader {
         boolean demandLedgerEnabled = readDemandLedgerEnabled(properties, ponUplink);
         boolean dbaShadowEnabled = readDbaShadowEnabled(properties, ponUplink, demandLedgerEnabled);
         boolean dbaExecutionEnabled = properties.getProperty(UPLINK_DBA_MODE, "fcfs").strip().equals("rr");
-        if (dbaExecutionEnabled && sfuCount != 1) {
-            throw new IllegalArgumentException("Real rr DBA currently supports exactly one SFU");
+        if (dbaExecutionEnabled && sfuCount > 2) {
+            throw new IllegalArgumentException("Real rr DBA currently supports one or two SFUs");
         }
         boolean hasFixedDelay = properties.containsKey(FIBER_DELAY_US);
         long fiberUs = hasFixedDelay || (ponDownlink == null && ponUplink == null)

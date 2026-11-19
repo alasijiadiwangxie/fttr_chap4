@@ -141,20 +141,22 @@ public final class Mfu {
     public DbaPlan planDbaExecution(long targetFrameId, long controlNs, BigDecimal rateMbps,
                                     long periodNs, SimulationContext simulation) {
         List<DbaContext.Allocation> allocations = new ArrayList<>();
-        boolean outstanding = false;
         for (int sfuId : new TreeSet<>(staSfuIds)) {
             PonDemandLedger.Estimate estimate = estimateUplinkDemand(sfuId, simulation.nowTicks());
             allocations.add(new DbaContext.Allocation(2L * sfuId, sfuId,
                     estimate.known() ? estimate.effectiveKnownBytes() : null,
                     estimate.known() ? estimate.report().report().frameId() : null,
-                    estimate.known() ? estimate.reportAgeNs() : null));
-            outstanding |= demandLedger.hasOutstandingBudget(sfuId, simulation.nowTicks());
+                    estimate.known() ? estimate.reportAgeNs() : null,
+                    demandLedger.hasOutstandingBudget(sfuId, simulation.nowTicks())));
         }
         DbaContext input = new DbaContext(simulation.nowTicks(), targetFrameId, rateMbps, periodNs,
                 controlNs, allocations);
-        // 第12步仅单SFU。未结算预算尚占用已知需求，不创建下一预算，也不清空原报告。
-        DbaPlan plan = outstanding ? new DbaPlan(simulation.nowTicks(), targetFrameId, List.of(),
-                "AWAITING_BUDGET_SETTLEMENT") : executionPolicy.plan(input);
+        // 保留完整、稳定的对象列表，由同一 RR 游标逐对象跳过未结算者，不能过滤后改变索引。
+        // 每个对象的原始已知状态继续保留，不用零需求或 UNKNOWN 伪装授权阻塞。
+        for (DbaContext.Allocation allocation : allocations) {
+            simulation.recordDbaObjectState(input, allocation);
+        }
+        DbaPlan plan = executionPolicy.plan(input);
         new DbaPlanValidator().validateAndPreview(input, plan);
         simulation.recordDbaDecision(plan, controlNs);
         return plan;

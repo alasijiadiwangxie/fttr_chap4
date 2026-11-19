@@ -28,15 +28,19 @@ public final class RoundRobinDbaPolicy implements DbaPolicy {
             return empty(context, "NO_DATA_CAPACITY");
         }
         int unknown = 0;
+        int outstanding = 0;
         for (DbaContext.Allocation allocation : allocations) {
             if (!allocation.known()) {
                 unknown++;
+            }
+            if (allocation.budgetOutstanding()) {
+                outstanding++;
             }
         }
         for (int offset = 0; offset < allocations.size(); offset++) {
             int index = (int) (((long) nextIndex + offset) % allocations.size());
             DbaContext.Allocation allocation = allocations.get(index);
-            if (allocation.known() && allocation.knownDemandBytes() > 0) {
+            if (!allocation.budgetOutstanding() && allocation.known() && allocation.knownDemandBytes() > 0) {
                 long demandBytes = allocation.knownDemandBytes();
                 long plannedBytes = BigInteger.valueOf(demandBytes).min(capacityBytes).longValueExact();
                 long plannedNs = PonLinkTiming.serializationNs(plannedBytes, context.rateMbps());
@@ -50,7 +54,8 @@ public final class RoundRobinDbaPolicy implements DbaPolicy {
                 return new DbaPlan(context.decisionTimeNs(), context.targetFrameId(), List.of(grant), reason);
             }
         }
-        return empty(context, unknown == allocations.size() ? "ALL_UNKNOWN" : "NO_KNOWN_POSITIVE_DEMAND");
+        return empty(context, outstanding > 0 ? "AWAITING_BUDGET_SETTLEMENT"
+                : unknown == allocations.size() ? "ALL_UNKNOWN" : "NO_KNOWN_POSITIVE_DEMAND");
     }
 
     private static DbaPlan empty(DbaContext context, String reason) {

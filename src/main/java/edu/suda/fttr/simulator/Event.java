@@ -67,6 +67,11 @@ public final class Event {
         return new Event(timeNs, true, type, null, grant.sfuId(), null, null, grant);
     }
 
+    /** 类型和逐包身份保持原样；预算负载用于确定真实DATA完成的同刻释放顺序。 */
+    static Event dbaDataEnd(long timeNs, Packet packet, PonDbaGrant grant) {
+        return new Event(timeNs, true, EventType.FIBER_TX_END, packet, grant.sfuId(), null, null, grant);
+    }
+
     public PonDbaGrant dbaGrant() {
         return dbaGrant;
     }
