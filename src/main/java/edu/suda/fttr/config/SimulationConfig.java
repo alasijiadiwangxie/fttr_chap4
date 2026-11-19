@@ -18,7 +18,8 @@ public final class SimulationConfig {
     private final int sfuCount;
     private final List<Integer> staSfuIds;
     private final long fiberDelayUs;
-    private final PonDownlink ponDownlink;
+    private final PonLink ponDownlink;
+    private final PonLink ponUplink;
     private final long wifiDelayUs;
     private final WirelessPhy wirelessPhy;
     private final WifiFrameExchange wifiFrameExchange;
@@ -30,7 +31,7 @@ public final class SimulationConfig {
     private final boolean uplinkEnabled;
 
     SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs,
-                     PonDownlink ponDownlink, long wifiDelayUs, WirelessPhy wirelessPhy,
+                     PonLink ponDownlink, PonLink ponUplink, long wifiDelayUs, WirelessPhy wirelessPhy,
                      WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters, WifiAccessMode wifiAccessMode,
                      WifiRetryPolicy wifiRetryPolicy,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled) {
@@ -39,6 +40,7 @@ public final class SimulationConfig {
         this.staSfuIds = List.copyOf(staSfuIds);
         this.fiberDelayUs = fiberDelayUs;
         this.ponDownlink = ponDownlink;
+        this.ponUplink = ponUplink;
         this.wifiDelayUs = wifiDelayUs;
         this.wirelessPhy = wirelessPhy;
         this.wifiFrameExchange = wifiFrameExchange;
@@ -86,19 +88,24 @@ public final class SimulationConfig {
         return staSfuIds;
     }
 
-    /** 固定光链路时延。共享下行启用时只用于原有上行光链路。 */
+    /** 原有固定时延光链路使用的时延。 */
     public long fiberDelayUs() {
         return fiberDelayUs;
     }
 
     /** 启用共享下行时提供速率和传播时延，固定下行模式返回 null。 */
-    public PonDownlink ponDownlink() {
+    public PonLink ponDownlink() {
         return ponDownlink;
+    }
+
+    /** 启用共享上行时提供速率和传播时延，固定上行模式返回 null。 */
+    public PonLink ponUplink() {
+        return ponUplink;
     }
 
     /** 共享光发送与 HE SU 都可能引入小数微秒，使用整数纳秒时钟。 */
     public boolean usesNanosecondTicks() {
-        return wirelessPhy != null || ponDownlink != null;
+        return wirelessPhy != null || ponDownlink != null || ponUplink != null;
     }
 
     public long wifiDelayUs() {
@@ -148,12 +155,12 @@ public final class SimulationConfig {
         return uplinkEnabled;
     }
 
-    /** MFU 共用下行光发送器的配置。传播时延独立于原有的固定光链路时延。 */
-    public static final class PonDownlink {
+    /** 单方向的共享光发送器配置，传播时延与原有固定光链路时延分别设置。 */
+    public static final class PonLink {
         private final BigDecimal rateMbps;
         private final long propagationNs;
 
-        PonDownlink(BigDecimal rateMbps, long propagationNs) {
+        PonLink(BigDecimal rateMbps, long propagationNs) {
             this.rateMbps = rateMbps;
             this.propagationNs = propagationNs;
         }

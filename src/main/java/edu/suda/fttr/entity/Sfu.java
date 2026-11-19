@@ -1,5 +1,6 @@
 package edu.suda.fttr.entity;
 
+import edu.suda.fttr.link.PonUplink;
 import edu.suda.fttr.link.WifiChannel;
 import edu.suda.fttr.link.WifiLink;
 import edu.suda.fttr.mac.EdcaAccess;
@@ -31,6 +32,7 @@ public final class Sfu {
     private final EdcaAccess edcaAccess;
     private final boolean multiAc;
     private final WifiRetryPolicy retryPolicy;
+    private final PonUplink.Port ponUplinkPort;
     // 以实际发送设备的 AC 状态为键。每个键独立维护 FIFO 与队首的接入计时。
     private final Map<EdcaState.AcState, Deque<QueuedPacket>> deviceQueues = new HashMap<>();
     // 同一次碰撞中仍在发射 DATA 的报文。最后一条结束时才释放公共信道。
@@ -70,6 +72,11 @@ public final class Sfu {
 
     public Sfu(int id, WifiLink wifi, Map<Integer, Sta> stations, EdcaParameters edcaParameters,
                WifiAccessMode accessMode, WifiRetryPolicy retryPolicy) {
+        this(id, wifi, stations, edcaParameters, accessMode, retryPolicy, null);
+    }
+
+    public Sfu(int id, WifiLink wifi, Map<Integer, Sta> stations, EdcaParameters edcaParameters,
+               WifiAccessMode accessMode, WifiRetryPolicy retryPolicy, PonUplink.Port ponUplinkPort) {
         this.id = id;
         this.wifi = wifi;
         this.stations = Map.copyOf(stations);
@@ -80,6 +87,7 @@ public final class Sfu {
         this.edcaAccess = accessMode == WifiAccessMode.FIXED_PRIORITY ? null
                 : new EdcaAccess(id, channel, edcaParameters, multiAc);
         this.retryPolicy = retryPolicy;
+        this.ponUplinkPort = ponUplinkPort;
     }
 
     public int id() {
@@ -186,8 +194,12 @@ public final class Sfu {
             publishMacDuration(packet, false, announcedNavEndTicks - dataEndTicks, context);
         }
         if (packet.isUplink()) {
-            // SFU 已收齐上行 DATA，独立的光纤链路可立即转发。无线资源继续留给本次 ACK。
-            context.scheduleAfter(0, EventType.FIBER_TX_START, packet, id);
+            // 成功接收 DATA 后交给独立光路。无线侧照常完成 SIFS 和 ACK。
+            if (ponUplinkPort == null) {
+                context.scheduleAfter(0, EventType.FIBER_TX_START, packet, id);
+            } else {
+                ponUplinkPort.enqueue(packet, context);
+            }
         } else {
             stations.get(packet.destinationStaId()).receive(packet, context);
             sentPackets++;

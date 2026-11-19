@@ -2,7 +2,7 @@ package edu.suda.fttr.config;
 
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Packet;
-import edu.suda.fttr.link.PonDownlink;
+import edu.suda.fttr.link.PonLinkTiming;
 import edu.suda.fttr.link.WifiFrameExchange;
 import edu.suda.fttr.mac.EdcaParameters;
 import edu.suda.fttr.mac.EdcaParameters.AcParameters;
@@ -36,9 +36,8 @@ import java.util.regex.Pattern;
 public final class ConfigLoader {
     private static final String DEFAULT_SCENARIO = "/phase1-minimal-downlink.properties";
     private static final String FIBER_DELAY_US = "fiber.delay.us";
-    private static final String FIBER_DOWNLINK_MODE = "fiber.downlink.mode";
-    private static final String FIBER_DOWNLINK_RATE_MBPS = "fiber.downlink.rate.mbps";
-    private static final String FIBER_DOWNLINK_PROPAGATION_US = "fiber.downlink.propagation.us";
+    private static final String FIBER_DOWNLINK = "fiber.downlink.";
+    private static final String FIBER_UPLINK = "fiber.uplink.";
     private static final String MAC_EXCHANGE = "wifi.mac.exchange";
     private static final String MAC_ACCESS = "wifi.mac.access";
     private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
@@ -48,7 +47,8 @@ public final class ConfigLoader {
     private static final String MAC_MAX_RETRIES = "wifi.mac.retry.max";
     private static final String EDCA_SEED = "wifi.mac.edca.seed";
     private static final Set<String> KEYS = Set.of(
-            FIBER_DELAY_US, FIBER_DOWNLINK_MODE, FIBER_DOWNLINK_RATE_MBPS, FIBER_DOWNLINK_PROPAGATION_US,
+            FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", FIBER_DOWNLINK + "propagation.us",
+            FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us",
             "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
             MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
             MAC_MAX_RETRIES, EDCA_SEED);
@@ -113,8 +113,10 @@ public final class ConfigLoader {
         int sfuCount = properties.containsKey("sfu.count") ? readPositiveInt(properties, "sfu.count") : 1;
         validateKeys(properties, arrivalsUs.size(), staCount, sfuCount, poisson, directionMode);
         List<Integer> staSfuIds = readStaAssociations(properties, staCount, sfuCount);
-        SimulationConfig.PonDownlink ponDownlink = readPonDownlink(properties);
-        long fiberUs = ponDownlink == null || properties.containsKey(FIBER_DELAY_US)
+        SimulationConfig.PonLink ponDownlink = readPonLink(properties, FIBER_DOWNLINK, "10000");
+        SimulationConfig.PonLink ponUplink = readPonLink(properties, FIBER_UPLINK, "2500");
+        boolean hasFixedDelay = properties.containsKey(FIBER_DELAY_US);
+        long fiberUs = hasFixedDelay || (ponDownlink == null && ponUplink == null)
                 ? readNonNegativeLong(properties, FIBER_DELAY_US) : 0;
         WirelessPhy wirelessPhy = readWirelessPhy(properties);
         EdcaParameters edcaParameters = readEdcaParameters(properties);
@@ -128,53 +130,65 @@ public final class ConfigLoader {
         PoissonTraffic uplink = poisson && directionMode.allows(Packet.Direction.UL)
                 ? readUplinkSources(properties, staCount, durationUs, downlink.windowsUs.size()) : new PoissonTraffic();
         List<Event> manualEvents = poisson ? List.of() : readManualEvents(properties, arrivalsUs, staCount, directionMode);
-        // 下行共享模式中的旧时延仅服务既有上行。纯下行场景可直接省略旧字段。
-        if (ponDownlink != null && !properties.containsKey(FIBER_DELAY_US)
-                && (!uplink.streams.isEmpty() || manualEvents.stream().anyMatch(event -> event.packet().isUplink()))) {
-            throw new IllegalArgumentException("Missing property: " + FIBER_DELAY_US + " is required by fixed uplink fiber");
+        // 保留固定方向的时延参数。未生成报文的正速率泊松源也属于已配置业务。
+        if (!hasFixedDelay) {
+            if (ponDownlink == null && hasTraffic(downlink, manualEvents, Packet.Direction.DL)) {
+                throw new IllegalArgumentException("Missing property: " + FIBER_DELAY_US + " is required by fixed downlink fiber");
+            }
+            if (ponUplink == null && hasTraffic(uplink, manualEvents, Packet.Direction.UL)) {
+                throw new IllegalArgumentException("Missing property: " + FIBER_DELAY_US + " is required by fixed uplink fiber");
+            }
         }
         List<TrafficGenerator.Source> sources = new ArrayList<>(downlink.streams);
         sources.addAll(uplink.streams);
         List<Event> inputEvents = poisson ? TrafficGenerator.generate(sources) : manualEvents;
 
-        validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, wifiUs, wirelessPhy, frameExchange);
-        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, wifiUs, wirelessPhy, frameExchange,
-                edcaParameters, accessMode, retryPolicy, downlink.windowsUs, uplink.windowsUs,
+        validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
+                frameExchange);
+        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
+                frameExchange, edcaParameters, accessMode, retryPolicy, downlink.windowsUs, uplink.windowsUs,
                 directionMode.allows(Packet.Direction.UL));
     }
 
-    private static SimulationConfig.PonDownlink readPonDownlink(Properties properties) {
-        String mode = properties.getProperty(FIBER_DOWNLINK_MODE, "fixed").strip();
+    private static boolean hasTraffic(PoissonTraffic poisson, List<Event> manualEvents, Packet.Direction direction) {
+        return !poisson.streams.isEmpty() || manualEvents.stream().anyMatch(event -> event.packet().direction() == direction);
+    }
+
+    private static SimulationConfig.PonLink readPonLink(Properties properties, String prefix, String defaultRateMbps) {
+        String modeKey = prefix + "mode";
+        String rateKey = prefix + "rate.mbps";
+        String propagationKey = prefix + "propagation.us";
+        String mode = properties.getProperty(modeKey, "fixed").strip();
         if (mode.equals("fixed")) {
-            if (properties.containsKey(FIBER_DOWNLINK_RATE_MBPS) || properties.containsKey(FIBER_DOWNLINK_PROPAGATION_US)) {
-                throw new IllegalArgumentException("PON rate and propagation require " + FIBER_DOWNLINK_MODE + "=pon-shared");
+            if (properties.containsKey(rateKey) || properties.containsKey(propagationKey)) {
+                throw new IllegalArgumentException("PON rate and propagation require " + modeKey + "=pon-shared");
             }
             return null;
         }
         if (!mode.equals("pon-shared")) {
-            throw new IllegalArgumentException(FIBER_DOWNLINK_MODE + " must be fixed or pon-shared");
+            throw new IllegalArgumentException(modeKey + " must be fixed or pon-shared");
         }
         BigDecimal rateMbps;
         try {
-            rateMbps = new BigDecimal(properties.getProperty(FIBER_DOWNLINK_RATE_MBPS, "10000").strip());
+            rateMbps = new BigDecimal(properties.getProperty(rateKey, defaultRateMbps).strip());
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException(FIBER_DOWNLINK_RATE_MBPS + " must be a positive decimal number", e);
+            throw new IllegalArgumentException(rateKey + " must be a positive decimal number", e);
         }
         if (rateMbps.signum() <= 0) {
-            throw new IllegalArgumentException(FIBER_DOWNLINK_RATE_MBPS + " must be a positive decimal number");
+            throw new IllegalArgumentException(rateKey + " must be a positive decimal number");
         }
         long propagationNs;
         try {
-            propagationNs = new BigDecimal(properties.getProperty(FIBER_DOWNLINK_PROPAGATION_US, "0").strip())
+            propagationNs = new BigDecimal(properties.getProperty(propagationKey, "0").strip())
                     .scaleByPowerOfTen(3).longValueExact();
         } catch (NumberFormatException | ArithmeticException e) {
-            throw new IllegalArgumentException(FIBER_DOWNLINK_PROPAGATION_US
+            throw new IllegalArgumentException(propagationKey
                     + " must be a non-negative duration in microseconds representable in whole nanoseconds", e);
         }
         if (propagationNs < 0) {
-            throw new IllegalArgumentException(FIBER_DOWNLINK_PROPAGATION_US + " must be non-negative");
+            throw new IllegalArgumentException(propagationKey + " must be non-negative");
         }
-        return new SimulationConfig.PonDownlink(rateMbps, propagationNs);
+        return new SimulationConfig.PonLink(rateMbps, propagationNs);
     }
 
     private static WifiRetryPolicy readWifiRetryPolicy(Properties properties, WifiAccessMode accessMode,
@@ -297,18 +311,20 @@ public final class ConfigLoader {
     }
 
     private static void validateCompletionClock(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds,
-                                                long fiberUs, SimulationConfig.PonDownlink ponDownlink, long wifiUs,
-                                                WirelessPhy wirelessPhy,
+                                                long fiberUs, SimulationConfig.PonLink ponDownlink,
+                                                SimulationConfig.PonLink ponUplink, long wifiUs, WirelessPhy wirelessPhy,
                                                 WifiFrameExchange frameExchange) {
         // 同一 SFU 按到达时刻累计无线工作量即可计算忙闲边界，优先级只改变其中的发送顺序。
         boolean hasUplink = inputEvents.stream().anyMatch(event -> event.packet().isUplink());
-        boolean mixed = hasUplink
-                && inputEvents.stream().anyMatch(event -> event.packet().direction() == Packet.Direction.DL);
+        boolean hasDownlink = inputEvents.stream().anyMatch(event -> !event.packet().isUplink());
+        boolean mixed = hasUplink && hasDownlink;
         long[] completion = new long[sfuCount];
-        long ticksPerUs = wirelessPhy == null && ponDownlink == null ? 1 : 1000;
+        boolean bothFixed = ponDownlink == null && ponUplink == null;
+        long ticksPerUs = wirelessPhy == null && bothFixed ? 1 : 1_000;
         long responseTicks = frameExchange == null ? 0 : frameExchange.responseDurationNs();
         try {
-            long fiberTicks = ponDownlink == null || hasUplink ? Math.multiplyExact(fiberUs, ticksPerUs) : 0;
+            boolean usesFixedFiber = bothFixed || (ponDownlink == null && hasDownlink) || (ponUplink == null && hasUplink);
+            long fiberTicks = usesFixedFiber ? Math.multiplyExact(fiberUs, ticksPerUs) : 0;
             long fixedWifiTicks = Math.multiplyExact(wifiUs, ticksPerUs);
             ToLongFunction<Event> arrivalTicks = ponDownlink == null
                     ? event -> wifiArrivalTicks(event, ticksPerUs, fiberTicks)
@@ -327,10 +343,17 @@ public final class ConfigLoader {
                 long exchangeTicks = Math.addExact(dataTicks, responseTicks);
                 completion[sfuIndex] = Math.addExact(Math.max(arrival, completion[sfuIndex]), exchangeTicks);
                 if (packet.isUplink()) {
-                    // 光路从 DATA 结束起算。纯上行可由资源释放时刻减去 SIFS 和 ACK 得到上界。
-                    // 双向时上行顺序由实际选队决定，此处只检查最早出发的光路时刻，运行时再校验实际时刻。
-                    long dataEnd = mixed ? Math.addExact(arrival, dataTicks) : completion[sfuIndex] - responseTicks;
-                    Math.addExact(dataEnd, fiberTicks);
+                    if (ponUplink == null) {
+                        // 固定上行保留原校验。双向时由实际选队决定光路出发顺序。
+                        long dataEnd = mixed ? Math.addExact(arrival, dataTicks) : completion[sfuIndex] - responseTicks;
+                        Math.addExact(dataEnd, fiberTicks);
+                    } else {
+                        // EDCA 成功后的实际到达顺序须在运行时确定。预检仅验证逐包最早光侧到达时刻。
+                        long earliestDataEnd = Math.addExact(arrival, dataTicks);
+                        long serializationNs = PonLinkTiming.serializationNs(packet.bytes(), ponUplink.rateMbps());
+                        long earliestTxEnd = Math.addExact(earliestDataEnd, serializationNs);
+                        Math.addExact(earliestTxEnd, ponUplink.propagationNs());
+                    }
                 }
             }
         } catch (ArithmeticException e) {
@@ -344,7 +367,7 @@ public final class ConfigLoader {
     }
 
     private static Map<Event, Long> wifiArrivalTicksWithPon(List<Event> inputEvents,
-                                                           SimulationConfig.PonDownlink ponDownlink) {
+                                                           SimulationConfig.PonLink ponDownlink) {
         // 输入已按时刻排序，同刻保留原序。预检沿共享 FIFO 顺序推进发送完成边界。
         Map<Event, Long> arrivals = new HashMap<>();
         long availableNs = 0;
@@ -353,7 +376,7 @@ public final class ConfigLoader {
             if (event.packet().isUplink()) {
                 arrivals.put(event, generatedNs);
             } else {
-                long serializationNs = PonDownlink.serializationNs(event.packet().bytes(), ponDownlink.rateMbps());
+                long serializationNs = PonLinkTiming.serializationNs(event.packet().bytes(), ponDownlink.rateMbps());
                 availableNs = Math.addExact(Math.max(generatedNs, availableNs), serializationNs);
                 arrivals.put(event, Math.addExact(availableNs, ponDownlink.propagationNs()));
             }

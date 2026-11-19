@@ -48,7 +48,7 @@ public final class TraceLogger {
                 write(event, packet.isUplink() ? "SFU" : "MFU", "FIBER_TX_START");
                 break;
             case FIBER_TX_END:
-                write(event, "MFU", "FIBER_TX_END");
+                write(event, packet.isUplink() ? "SFU" : "MFU", "FIBER_TX_END");
                 break;
             case PACKET_ARRIVAL_AT_SFU:
                 write(event, "SFU", "ARRIVAL");
@@ -92,6 +92,10 @@ public final class TraceLogger {
 
     public void recordPonDownlinkEnqueue(Packet packet, int sfuId, long timeTicks) {
         write(packet, timeTicks, "MFU", "PON_DOWNLINK_ENQUEUE", sfuId);
+    }
+
+    public void recordPonUplinkEnqueue(Packet packet, int sfuId, long timeTicks) {
+        write(packet, timeTicks, "SFU", "PON_UPLINK_ENQUEUE", sfuId);
     }
 
     private void write(Packet packet, long timeTicks, String node, String action, int sfuId) {
@@ -235,11 +239,12 @@ public final class TraceLogger {
         output.printf(Locale.ROOT, "summary=WIFI_PHY model=HE_SU phy_rate_mbps=%.6f%n", rateMbps);
     }
 
-    public void recordPonDownlinkSummary(long sentPackets, double averageWaitUs, double averageSerializationUs,
-                                         long busyTicks, long windowTicks, double utilization) {
-        output.printf(Locale.ROOT, "summary=PON_DOWNLINK sent_packets=%d avg_queue_wait_us=%.6f "
+    public void recordPonSummary(Packet.Direction direction, long sentPackets, double averageWaitUs,
+                                 double averageSerializationUs, long busyTicks, long windowTicks, double utilization) {
+        String link = direction == Packet.Direction.UL ? "UPLINK" : "DOWNLINK";
+        output.printf(Locale.ROOT, "summary=PON_%s sent_packets=%d avg_queue_wait_us=%.6f "
                         + "avg_serialization_us=%.6f busy_us=%s window_us=%s utilization=%.6f%n",
-                sentPackets, averageWaitUs, averageSerializationUs, formatMicroseconds(busyTicks),
+                link, sentPackets, averageWaitUs, averageSerializationUs, formatMicroseconds(busyTicks),
                 formatMicroseconds(windowTicks), utilization);
     }
 

@@ -4,8 +4,8 @@
 
 ## 模型范围与假设
 
-- 时间配置与日志以微秒为单位。HE SU 或 PON 下行共享模式使用整数纳秒事件时钟。光侧和无线侧都使用固定时延的场景采用整数微秒。报文按手动配置或泊松生成的时刻注入源节点，事件处理完毕后结束。
-- 每台 STA 在一次仿真中固定关联一台 SFU。光侧默认采用双向固定时延。启用 PON 下行共享模式后，发往各 SFU 的报文共用 MFU 的一个 FIFO 队列和发送器。
+- 时间配置与日志以微秒为单位。HE SU 或 PON 共享模式使用整数纳秒事件时钟。光侧和无线侧都使用固定时延的场景采用整数微秒。报文按手动配置或泊松生成的时刻注入源节点，事件处理完毕后结束。
+- 每台 STA 在一次仿真中固定关联一台 SFU。光侧默认采用双向固定时延。PON 下行共享模式使用 MFU 的一个 FIFO 和发送器。PON 上行共享模式使用每台 SFU 的上行 FIFO 和集中调度器。两个方向独立占用各自的光侧资源。
 - 每台 SFU 与关联 STA 共用一份无线资源。默认按 VO、VI、BE、BK 固定优先级选队。启用 `edca-multi-ac` 后，SFU 和 STA 各自按四类 FIFO 队列竞争信道，同一信道的多个设备同刻发送会发生碰撞。不同 SFU 可以并行收发。
 - 等待队列不设容量上限。HE SU 模式根据包长、开销和 PHY 参数计算数据 PPDU 时长，可启用 DATA–SIFS–ACK 交换。固定时延模式可用于回归对照。
 - SFU 和 STA 的吞吐量统一按从 0 到最后事件的时间窗口计算。日志同时记录逐包时序，以及按业务类别、设备和全局汇总的统计。
@@ -97,7 +97,7 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/pon-shared-downlink.prope
 | `fiber.downlink.rate.mbps` | 共享发送器速率，使用正数 Mb/s | 10000 |
 | `fiber.downlink.propagation.us` | 串行化完成后的传播时延，使用非负数 μs，精度至 0.001 μs | 0 |
 
-两项共享模式专用参数仅用于 `pon-shared`。共享下行的传播时延由 `fiber.downlink.propagation.us` 独立指定。原有 `fiber.delay.us` 用于固定时延光路，在共享下行场景中仅供已有上行路径使用。
+两项共享模式专用参数仅用于 `pon-shared`。共享下行的传播时延由 `fiber.downlink.propagation.us` 独立指定。原有 `fiber.delay.us` 用于仍以固定时延模式运行的有业务方向。
 
 MFU 按入队顺序选取下行报文，手动配置中同刻到达的报文按列表顺序入队。发送器占用时间为 `packetBytes × 8 ÷ rateMbps` μs，直接按报文字节数计算。时长恰好落在纳秒刻度时保留原值，其余向上取到下一个纳秒。例如 10 Gbps 下，1 B 的理论发送时间为 0.8 ns，仿真中占用 1 ns。发送完毕即释放发送器，随后报文经过传播时延到达目标 SFU。目标 SFU 收齐报文后按所选无线接入模式调度。
 
@@ -147,9 +147,38 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/poisson-multi-sta-uplink.
 
 `traffic.direction` 支持 `DL`（默认）、`UL` 和 `BOTH`。泊松模式下，上行使用 `traffic.sta.N.*` 按源 STA 配置。使用总速率加权重时，字段与下行相同，即 `rate.pps`、`packet.bytes`、`seed`、`class.weights` 和可选的 `duration.us`。`BOTH` 可同时配置 `traffic.sfu.N.*` 和 `traffic.sta.N.*`。手动模式下，`packet.N.sta.id` 在上行表示源 STA，在下行表示目的 STA，双向模式还须为每包设置 `packet.N.direction=UL` 或 `DL`。`packet.arrival.us` 始终表示报文进入源节点的时刻。
 
-上行报文在源 STA 等待关联 SFU 的无线资源，SFU 收齐报文后立即走固定时延光链路，抵达 MFU 时计为交付。默认接入模式的四类等待队列是集中式调度抽象。上下行共用同一台 SFU 的无线资源，其他 SFU 独立运行。
+上行报文在源 STA 等待关联 SFU 的无线资源。SFU 收齐 DATA 后按上行光链路模式继续转发，抵达 MFU 时计为交付。默认接入模式的四类等待队列是集中式调度抽象。上下行共用同一台 SFU 的无线资源，其他 SFU 独立运行。
 
 `TRAFFIC_UL_STA` 与 `TRAFFIC_UL_CLASS` 按源 STA 输出总量及各业务的生成包数、实际到达率和输入负载。`UL_STA` 与 `UL_GLOBAL` 统计 MFU 收到的上行报文，时延从 STA 生成算到 MFU 收齐。`CLASS`、`GLOBAL`、`SFU` 和 `STA` 汇总仍对应下行。最后一行的 `delivered_packets` 为两个方向的交付总数。
+
+### PON 上行共享发送
+
+```powershell
+java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/pon-shared-uplink.properties
+```
+
+| 配置项 | 含义 | 默认值 |
+| --- | --- | --- |
+| `fiber.uplink.mode` | 上行光侧模式。设为 `pon-shared` 启用共享上行 | `fixed` |
+| `fiber.uplink.rate.mbps` | 所有 SFU 共用的上行速率，使用正数 Mb/s | 2500 |
+| `fiber.uplink.propagation.us` | 串行化完成后的传播时延，使用非负数 μs，精度至 0.001 μs | 0 |
+
+上行与下行的 `pon-shared` 可分别开启或同时开启。启用共享模式的方向使用自己的速率、传播时延和发送资源，仍采用固定时延且有业务的方向使用 `fiber.delay.us`。
+
+每台 SFU 在成功收齐无线 DATA 时将报文放入自己的光侧上行 FIFO。发送资源空闲时，集中调度器从各 FIFO 的队首选出光侧入队最早的报文，同刻请求沿用仿真事件的插入顺序。授权即时生效，整个上行只安排一台 SFU 发送。串行化时长为 `packetBytes × 8 ÷ rateMbps` μs，按下行同样的规则向上取到整数纳秒，1200 B 在 2.5 Gbps 下用时 3.84 μs。报文发完后，下一台 SFU 可以在上一包传播期间开始发送。该模型以即时 FCFS 授权抽象上行调度。
+
+示例在 0 μs 向分别关联 SFU 2 和 SFU 1 的两台 STA 注入各一个 1200 B 的 VO 报文。两个无线信道独立，设为零退避后，两包均在 98 μs 到达光侧 FIFO。上行传播时延设置为 10 μs。
+
+| 上行报文 | 源 SFU | 开始发送（μs） | 发送完成（μs） | 到达 MFU（μs） |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 2 | 98 | 101.84 | 111.84 |
+| 2 | 1 | 101.84 | 105.68 | 115.68 |
+
+示例还在 99 μs 向 MFU 注入一个 1200 B 下行报文。下行发送占用 99–99.96 μs，与第一包的上行发送区间重叠。无线 ACK 按现有机制完成。
+
+SFU 日志依次以 `PON_UPLINK_ENQUEUE`、`FIBER_TX_START` 和 `FIBER_TX_END` 标记入队、发送开始和发送完成。MFU 记录 `DELIVERED`。通过 `packet_id`、`source_sta_id`、`sfu_id` 和 `destination_mfu_id` 核对路径。
+
+`summary=PON_UPLINK` 的字段与 `PON_DOWNLINK` 一致。光侧平均队列等待 `avg_queue_wait_us` 从 SFU 收齐 DATA 并进入光侧 FIFO 算到上行光发送开始，与无线队列等待 `wifi_queue_wait_us` 分段统计。上行发送包数在串行化完成时累计，忙时只计串行化，利用率为忙时除以从 0 至最后一个仿真事件的窗口。示例上行的平均队列等待为 1.92 μs，平均串行化时间为 3.84 μs，累计忙时为 7.68 μs。
 
 ### 为每类业务设置独立的泊松流
 

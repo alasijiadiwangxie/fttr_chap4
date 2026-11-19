@@ -87,7 +87,7 @@ public final class SimulationContext {
         return scheduleAfterTicks(microsecondsToTicks(delayUs), type, packet, sfuId);
     }
 
-    /** HE PPDU 和 PON 共享下行的时间直接使用纳秒刻度，保留小数微秒部分。 */
+    /** HE PPDU 和 PON 共享链路的时间直接使用纳秒刻度，保留小数微秒部分。 */
     public void scheduleAfterNanoseconds(long delayNs, EventType type, Packet packet, int sfuId) {
         if (!nanosecondClock) {
             throw new IllegalStateException("Nanosecond delays require a nanosecond clock");
@@ -151,12 +151,17 @@ public final class SimulationContext {
         trace.recordPonDownlinkEnqueue(packet, sfuId, nowTicks);
     }
 
-    public void recordPonDownlinkSummary(long sentPackets, double totalQueueWaitTicks, long busyTicks) {
+    public void recordPonUplinkEnqueue(Packet packet, int sfuId) {
+        trace.recordPonUplinkEnqueue(packet, sfuId, nowTicks);
+    }
+
+    public void recordPonSummary(Packet.Direction direction, long sentPackets, double totalQueueWaitTicks,
+                                 long busyTicks) {
         // 分母沿用其他全局统计，以仿真起点到最后一个事件为窗口。
         double averageWaitUs = sentPackets == 0 ? 0.0 : totalQueueWaitTicks / sentPackets / 1_000.0;
         double averageSerializationUs = sentPackets == 0 ? 0.0 : ticksToMicroseconds(busyTicks) / sentPackets;
         double utilization = nowTicks == 0 ? 0.0 : (double) busyTicks / nowTicks;
-        trace.recordPonDownlinkSummary(sentPackets, averageWaitUs, averageSerializationUs, busyTicks, nowTicks,
+        trace.recordPonSummary(direction, sentPackets, averageWaitUs, averageSerializationUs, busyTicks, nowTicks,
                 utilization);
     }
 
