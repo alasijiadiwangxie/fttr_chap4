@@ -55,6 +55,9 @@ public final class TraceLogger {
             case PON_UPLINK_FRAME:
                 // 光侧调度器单独记录每个授权及对应的帧统计。
                 break;
+            case PON_BWMAP_RX:
+                // 目标 SFU 核对预约及接收时刻后，再记录 BWmap 接收。
+                break;
             case PACKET_ARRIVAL_AT_SFU:
                 write(event, "SFU", "ARRIVAL");
                 break;
@@ -144,6 +147,22 @@ public final class TraceLogger {
         output.printf(Locale.ROOT, "t_us=%s node=MFU event=PON_UPLINK_GRANT frame_id=%d packet_id=%d sfu_id=%d "
                         + "enqueue_time_ns=%d grant_time_ns=%d tx_start_ns=%d tx_end_ns=%d%n",
                 formatMicroseconds(grantNs), frameId, packet.id(), sfuId, enqueueNs, grantNs, startNs, endNs);
+    }
+
+    public void recordPonBwmap(Packet packet, int sfuId, long grantFrameId, long targetFrameId, long grantTxNs,
+                               long startNs, long endNs, long nowNs, boolean received) {
+        String reception = received ? " grant_rx_ns=" + nowNs : "";
+        output.printf(Locale.ROOT, "t_us=%s node=%s event=%s grant_frame_id=%d target_frame_id=%d packet_id=%d "
+                        + "sfu_id=%d grant_tx_ns=%d%s tx_start_ns=%d tx_end_ns=%d granted_bytes=%d%n",
+                formatMicroseconds(nowNs), received ? "SFU" : "MFU", received ? "PON_BWMAP_RX" : "PON_BWMAP_TX",
+                grantFrameId, targetFrameId, packet.id(), sfuId, grantTxNs, reception, startNs, endNs, packet.bytes());
+    }
+
+    public void recordPonBwmapSummary(long packets, double ungrantedWaitUs, double reservedWaitUs,
+                                      double serializationUs) {
+        output.printf(Locale.ROOT, "summary=PON_BWMAP packets=%d avg_ungranted_wait_us=%.6f "
+                        + "avg_reserved_wait_us=%.6f avg_serialization_us=%.6f%n",
+                packets, ungrantedWaitUs, reservedWaitUs, serializationUs);
     }
 
     public void recordPonUplinkFrame(long frameId, long frameStartNs, long frameEndNs, int packets, long busyNs) {

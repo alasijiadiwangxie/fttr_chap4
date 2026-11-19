@@ -19,6 +19,7 @@ public final class PonUplink {
     private final long propagationNs;
     private final long framePeriodNs;
     private final boolean reportEnabled;
+    private final long bwmapPropagationNs;
     private final List<Port> reportPorts = new ArrayList<>();
     private final PonUplinkScheduler scheduler = new PonUplinkScheduler();
     private final Deque<Grant> grants = new ArrayDeque<>();
@@ -28,7 +29,9 @@ public final class PonUplink {
     private double totalQueueWaitTicks;
     private long busyTicks;
     private long frames;
+    private long reportedFrames;
     private double totalGrantWaitTicks;
+    private double totalReservedWaitTicks;
     private long generatedReports;
     private long reportsWithoutGrant;
 
@@ -41,10 +44,16 @@ public final class PonUplink {
     }
 
     public PonUplink(BigDecimal rateMbps, long propagationNs, long framePeriodNs, boolean reportEnabled) {
+        this(rateMbps, propagationNs, framePeriodNs, reportEnabled, -1);
+    }
+
+    public PonUplink(BigDecimal rateMbps, long propagationNs, long framePeriodNs, boolean reportEnabled,
+                     long bwmapPropagationNs) {
         this.rateMbps = rateMbps;
         this.propagationNs = propagationNs;
         this.framePeriodNs = framePeriodNs;
         this.reportEnabled = reportEnabled;
+        this.bwmapPropagationNs = bwmapPropagationNs;
     }
 
     public Port attachSfu(int sfuId) {
@@ -59,6 +68,7 @@ public final class PonUplink {
     public final class Port {
         private final int sfuId;
         private final Deque<Request> queue = new ArrayDeque<>();
+        private final Map<Packet, Grant> awaitingBwmap = new HashMap<>();
         private long pendingBytes;
 
         private Port(int sfuId) {
@@ -78,6 +88,21 @@ public final class PonUplink {
                     requestFrame(context);
                 }
             }
+        }
+
+        public void receiveBwmap(Packet packet, SimulationContext context) {
+            Grant grant = awaitingBwmap.get(packet);
+            if (grant == null) {
+                throw new IllegalStateException("Unexpected or duplicate BWmap for packet " + packet.id()
+                        + " at SFU " + sfuId);
+            }
+            if (context.nowTicks() >= grant.startTicks) {
+                throw new IllegalStateException("BWmap for packet " + packet.id()
+                        + " must reach SFU " + sfuId + " before its slot starts at " + grant.startTicks + " ns");
+            }
+            awaitingBwmap.remove(packet);
+            grant.bwmapReceived = true;
+            recordBwmap(grant, true, context);
         }
 
         private PonUplinkReport snapshot(long frameId, long frameStartNs) {
@@ -104,7 +129,7 @@ public final class PonUplink {
         if (!grants.isEmpty() || head == null) {
             return;
         }
-        reserveHead(context.nowTicks(), serializationNs(head), null);
+        reserveHead(context.nowTicks(), serializationNs(head), null, context.nowTicks());
         scheduleGrantedHead(context);
     }
 
@@ -118,47 +143,77 @@ public final class PonUplink {
     }
 
     public void scheduleFrame(SimulationContext context) {
-        if (!grants.isEmpty()) {
+        boolean bwmapEnabled = bwmapPropagationNs >= 0;
+        boolean hasScheduledGrant = !grants.isEmpty();
+        if (!bwmapEnabled && hasScheduledGrant) {
             throw new IllegalStateException("Previous PON uplink frame still has active grants");
         }
         framePending = false;
         long frameStart = context.nowTicks();
         long frameId = frameStart / framePeriodNs;
-        long frameEnd = Math.addExact(frameStart, framePeriodNs);
         Map<Integer, PonUplinkReport> frameReports = reportEnabled ? recordReports(frameId, frameStart, context) : null;
-        long cursor = frameStart;
-        Request head;
+        Request head = scheduler.peekHead();
+        if (bwmapEnabled && (head == null || head.enqueueTicks >= frameStart)) {
+            if (frameReports != null) {
+                reportsWithoutGrant += frameReports.size();
+            }
+            // 末尾仅取样的帧没有目标时隙，也不需要让时钟能表示一个更远的空帧。
+            if (head != null) {
+                requestFrame(context);
+            }
+            return;
+        }
+        long targetStart = bwmapEnabled ? Math.addExact(frameStart, framePeriodNs) : frameStart;
+        long targetEnd = Math.addExact(targetStart, framePeriodNs);
+        long targetFrameId = targetStart / framePeriodNs;
+        if (hasScheduledGrant && grants.getLast().endTicks > targetStart) {
+            throw new IllegalStateException("PON uplink reservation overlaps target frame " + targetFrameId);
+        }
+        long cursor = targetStart;
+        int allocated = 0;
         while ((head = scheduler.peekHead()) != null && head.enqueueTicks < frameStart) {
             long durationNs = serializationNs(head);
             if (durationNs > framePeriodNs) {
                 throw new IllegalArgumentException("PON uplink packet " + head.packet.id() + " exceeds a full frame");
             }
-            if (durationNs > frameEnd - cursor) {
+            if (durationNs > targetEnd - cursor) {
                 break; // 严格 FCFS。帧尾容量留空，队首报文保留到下一帧。
             }
             // 移出这一台 SFU 的快照，确保仅其第一条上行授权携带 REPORT。
             PonUplinkReport report = frameReports == null ? null : frameReports.remove(head.port.sfuId);
-            Grant grant = reserveHead(cursor, durationNs, report);
+            Grant grant = reserveHead(cursor, durationNs, report, frameStart);
             totalGrantWaitTicks += frameStart - head.enqueueTicks;
             context.recordPonUplinkGrant(head.packet, head.port.sfuId, frameId, head.enqueueTicks, cursor,
                     grant.endTicks);
+            if (bwmapEnabled) {
+                // 预约已离开待授权 FIFO。控制记录走下行传播，所占的 DATA 时隙仍在目标上行帧。
+                head.port.awaitingBwmap.put(head.packet, grant);
+                recordBwmap(grant, false, context);
+                context.scheduleAfterNanoseconds(bwmapPropagationNs, EventType.PON_BWMAP_RX, head.packet,
+                        head.port.sfuId);
+            }
+            allocated++;
             cursor = grant.endTicks;
         }
         if (frameReports != null) {
             reportsWithoutGrant += frameReports.size();
         }
 
-        // 只有前一帧的结束事件处理完，才轮到本帧调度。此处的授权均属于本帧。
-        recordFrame(frameId, frameStart, frameEnd, grants.size(), cursor - frameStart, context);
-        scheduleGrantedHead(context);
-        if (scheduler.peekHead() != null) {
+        if (!bwmapEnabled || allocated > 0) {
+            recordFrame(targetFrameId, targetStart, targetEnd, allocated, cursor - targetStart, context);
+        }
+        // 可能正在执行上一轮预约。后续时隙仍由前一包结束事件启动。
+        if (!hasScheduledGrant) {
+            scheduleGrantedHead(context);
+        }
+        if (scheduler.peekHead() != null || (bwmapEnabled && reportEnabled && allocated > 0)) {
             requestFrame(context);
         }
     }
 
     private Map<Integer, PonUplinkReport> recordReports(long frameId, long frameStart, SimulationContext context) {
         // 空帧由现有的按积压唤醒机制跳过。补记其中各 SFU 的零需求，不额外安排事件。
-        for (long id = frames; id < frameId; id++) {
+        for (long id = reportedFrames; id < frameId; id++) {
             for (Port port : reportPorts) {
                 context.recordPonUplinkReport(new PonUplinkReport(id, port.sfuId, id * framePeriodNs, 0, 0, 0, 0));
                 generatedReports++;
@@ -173,6 +228,7 @@ public final class PonUplink {
             context.recordPonUplinkReport(report);
             generatedReports++;
         }
+        reportedFrames = frameId + 1;
         return frameReports;
     }
 
@@ -191,9 +247,9 @@ public final class PonUplink {
         return PonLinkTiming.serializationNs(request.packet.bytes(), rateMbps);
     }
 
-    private Grant reserveHead(long startTicks, long durationNs, PonUplinkReport report) {
+    private Grant reserveHead(long startTicks, long durationNs, PonUplinkReport report, long grantTicks) {
         Request request = scheduler.pollHead();
-        Grant grant = new Grant(request, startTicks, Math.addExact(startTicks, durationNs), report);
+        Grant grant = new Grant(request, startTicks, Math.addExact(startTicks, durationNs), report, grantTicks);
         grants.addLast(grant);
         Port port = request.port;
         port.queue.removeFirst();
@@ -204,6 +260,11 @@ public final class PonUplink {
             scheduler.submitHead(head);
         }
         return grant;
+    }
+
+    private void recordBwmap(Grant grant, boolean received, SimulationContext context) {
+        context.recordPonBwmap(grant.request.packet, grant.request.port.sfuId, grant.grantTicks / framePeriodNs,
+                grant.startTicks / framePeriodNs, grant.grantTicks, grant.startTicks, grant.endTicks, received);
     }
 
     private void scheduleGrantedHead(SimulationContext context) {
@@ -219,6 +280,10 @@ public final class PonUplink {
         if (context.nowTicks() != grant.startTicks) {
             throw new IllegalStateException("PON uplink transmission started outside the granted slot");
         }
+        if (bwmapPropagationNs >= 0 && !grant.bwmapReceived) {
+            throw new IllegalStateException("SFU " + sfuId + " cannot transmit packet " + packet.id()
+                    + " before receiving its BWmap");
+        }
         context.scheduleAfterTicks(grant.endTicks - grant.startTicks,
                 EventType.FIBER_TX_END, packet, sfuId);
     }
@@ -231,6 +296,9 @@ public final class PonUplink {
         grants.removeFirst();
         sentPackets++;
         totalQueueWaitTicks += grant.startTicks - grant.request.enqueueTicks;
+        if (bwmapPropagationNs >= 0) {
+            totalReservedWaitTicks += grant.startTicks - grant.grantTicks;
+        }
         busyTicks += grant.endTicks - grant.startTicks;
         // 同刻按插入序先交付 DATA，再处理所携带的 REPORT。两者使用同一传播时延。
         context.scheduleAfterNanoseconds(propagationNs, EventType.PACKET_ARRIVAL_AT_MFU, packet, sfuId);
@@ -251,6 +319,12 @@ public final class PonUplink {
         if (framePeriodNs != 0) {
             double grantWaitUs = sentPackets == 0 ? 0.0 : totalGrantWaitTicks / sentPackets / 1_000.0;
             context.recordPonUplinkFrames(frames, framePeriodNs, sentPackets, busyTicks, grantWaitUs);
+        }
+        if (bwmapPropagationNs >= 0) {
+            double reservedWaitUs = sentPackets == 0 ? 0.0 : totalReservedWaitTicks / sentPackets / 1_000.0;
+            double ungrantedWaitUs = sentPackets == 0 ? 0.0 : totalGrantWaitTicks / sentPackets / 1_000.0;
+            double serializationUs = sentPackets == 0 ? 0.0 : context.ticksToMicroseconds(busyTicks) / sentPackets;
+            context.recordPonBwmapSummary(sentPackets, ungrantedWaitUs, reservedWaitUs, serializationUs);
         }
     }
 
@@ -273,12 +347,15 @@ public final class PonUplink {
         private final long startTicks;
         private final long endTicks;
         private final PonUplinkReport report;
+        private final long grantTicks;
+        private boolean bwmapReceived;
 
-        private Grant(Request request, long startTicks, long endTicks, PonUplinkReport report) {
+        private Grant(Request request, long startTicks, long endTicks, PonUplinkReport report, long grantTicks) {
             this.request = request;
             this.startTicks = startTicks;
             this.endTicks = endTicks;
             this.report = report;
+            this.grantTicks = grantTicks;
         }
     }
 

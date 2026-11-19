@@ -6,6 +6,7 @@ public enum EventType {
     FIBER_TX_START,
     FIBER_TX_END,
     PON_UPLINK_FRAME,
+    PON_BWMAP_RX,
     PACKET_ARRIVAL_AT_SFU,
     WIFI_ARRIVAL_AT_SFU,
     WIFI_TX_START,

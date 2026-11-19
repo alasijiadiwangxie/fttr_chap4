@@ -38,8 +38,10 @@ public final class ConfigLoader {
     private static final String FIBER_DELAY_US = "fiber.delay.us";
     private static final String FIBER_DOWNLINK = "fiber.downlink.";
     private static final String FIBER_UPLINK = "fiber.uplink.";
+    private static final String DOWNLINK_PROPAGATION_US = FIBER_DOWNLINK + "propagation.us";
     private static final String UPLINK_FRAME_PERIOD_US = FIBER_UPLINK + "frame.period.us";
     private static final String UPLINK_REPORT_ENABLED = FIBER_UPLINK + "report.enabled";
+    private static final String UPLINK_BWMAP_ENABLED = FIBER_UPLINK + "bwmap.enabled";
     private static final String MAC_EXCHANGE = "wifi.mac.exchange";
     private static final String MAC_ACCESS = "wifi.mac.access";
     private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
@@ -49,9 +51,9 @@ public final class ConfigLoader {
     private static final String MAC_MAX_RETRIES = "wifi.mac.retry.max";
     private static final String EDCA_SEED = "wifi.mac.edca.seed";
     private static final Set<String> KEYS = Set.of(
-            FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", FIBER_DOWNLINK + "propagation.us",
+            FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", DOWNLINK_PROPAGATION_US,
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
-            UPLINK_REPORT_ENABLED,
+            UPLINK_REPORT_ENABLED, UPLINK_BWMAP_ENABLED,
             "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
             MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
             MAC_MAX_RETRIES, EDCA_SEED);
@@ -116,8 +118,9 @@ public final class ConfigLoader {
         int sfuCount = properties.containsKey("sfu.count") ? readPositiveInt(properties, "sfu.count") : 1;
         validateKeys(properties, arrivalsUs.size(), staCount, sfuCount, poisson, directionMode);
         List<Integer> staSfuIds = readStaAssociations(properties, staCount, sfuCount);
-        SimulationConfig.PonLink ponDownlink = readPonLink(properties, FIBER_DOWNLINK, "10000");
-        SimulationConfig.PonLink ponUplink = readPonLink(properties, FIBER_UPLINK, "2500");
+        long bwmapPropagationNs = readBwmapPropagationNs(properties);
+        SimulationConfig.PonLink ponDownlink = readPonLink(properties, FIBER_DOWNLINK, "10000", bwmapPropagationNs);
+        SimulationConfig.PonLink ponUplink = readPonLink(properties, FIBER_UPLINK, "2500", bwmapPropagationNs);
         boolean hasFixedDelay = properties.containsKey(FIBER_DELAY_US);
         long fiberUs = hasFixedDelay || (ponDownlink == null && ponUplink == null)
                 ? readNonNegativeLong(properties, FIBER_DELAY_US) : 0;
@@ -157,13 +160,30 @@ public final class ConfigLoader {
         return !poisson.streams.isEmpty() || manualEvents.stream().anyMatch(event -> event.packet().direction() == direction);
     }
 
-    private static SimulationConfig.PonLink readPonLink(Properties properties, String prefix, String defaultRateMbps) {
+    private static long readBwmapPropagationNs(Properties properties) {
+        if (!properties.containsKey(UPLINK_BWMAP_ENABLED)) {
+            return -1;
+        }
+        String uplinkModeKey = FIBER_UPLINK + "mode";
+        if (!properties.getProperty(uplinkModeKey, "fixed").strip().equals("pon-framed")) {
+            throw new IllegalArgumentException(UPLINK_BWMAP_ENABLED + " requires " + uplinkModeKey + "=pon-framed");
+        }
+        String enabled = properties.getProperty(UPLINK_BWMAP_ENABLED).strip();
+        if (!enabled.equals("true") && !enabled.equals("false")) {
+            throw new IllegalArgumentException(UPLINK_BWMAP_ENABLED + " must be true or false");
+        }
+        return enabled.equals("true") ? readPonDurationNs(properties, DOWNLINK_PROPAGATION_US, "0", false) : -1;
+    }
+
+    private static SimulationConfig.PonLink readPonLink(Properties properties, String prefix, String defaultRateMbps,
+                                                       long bwmapPropagationNs) {
         String modeKey = prefix + "mode";
         String rateKey = prefix + "rate.mbps";
         String propagationKey = prefix + "propagation.us";
         String mode = properties.getProperty(modeKey, "fixed").strip();
         boolean uplink = prefix.equals(FIBER_UPLINK);
         boolean framed = uplink && mode.equals("pon-framed");
+        boolean bwmapDownlink = !uplink && bwmapPropagationNs >= 0;
         if (uplink && !framed && properties.containsKey(UPLINK_FRAME_PERIOD_US)) {
             throw new IllegalArgumentException(UPLINK_FRAME_PERIOD_US + " requires " + modeKey + "=pon-framed");
         }
@@ -171,6 +191,13 @@ public final class ConfigLoader {
             throw new IllegalArgumentException(UPLINK_REPORT_ENABLED + " requires " + modeKey + "=pon-framed");
         }
         if (mode.equals("fixed")) {
+            // BWmap 使用下行传播时延，固定下行 DATA 仍使用 fiber.delay.us。
+            if (bwmapDownlink) {
+                if (properties.containsKey(rateKey)) {
+                    throw new IllegalArgumentException(rateKey + " requires " + modeKey + "=pon-shared");
+                }
+                return null;
+            }
             if (properties.containsKey(rateKey) || properties.containsKey(propagationKey)) {
                 throw new IllegalArgumentException("PON rate and propagation require " + modeKey + "=pon-shared"
                         + (uplink ? " or pon-framed" : ""));
@@ -189,13 +216,19 @@ public final class ConfigLoader {
         if (rateMbps.signum() <= 0) {
             throw new IllegalArgumentException(rateKey + " must be a positive decimal number");
         }
-        long propagationNs = readPonDurationNs(properties, propagationKey, "0", false);
+        long propagationNs = bwmapDownlink ? bwmapPropagationNs : readPonDurationNs(properties, propagationKey, "0", false);
         long framePeriodNs = framed ? readPonDurationNs(properties, UPLINK_FRAME_PERIOD_US, "125", true) : 0;
+        long linkBwmapPropagationNs = framed ? bwmapPropagationNs : -1;
+        if (linkBwmapPropagationNs >= framePeriodNs) {
+            throw new IllegalArgumentException(DOWNLINK_PROPAGATION_US + " must be less than "
+                    + UPLINK_FRAME_PERIOD_US + " when BWmap is enabled");
+        }
         String reportEnabled = framed ? properties.getProperty(UPLINK_REPORT_ENABLED, "false").strip() : "false";
         if (!reportEnabled.equals("true") && !reportEnabled.equals("false")) {
             throw new IllegalArgumentException(UPLINK_REPORT_ENABLED + " must be true or false");
         }
-        return new SimulationConfig.PonLink(rateMbps, propagationNs, framePeriodNs, reportEnabled.equals("true"));
+        return new SimulationConfig.PonLink(rateMbps, propagationNs, framePeriodNs, reportEnabled.equals("true"),
+                linkBwmapPropagationNs);
     }
 
     private static long readPonDurationNs(Properties properties, String key, String defaultUs, boolean positive) {
@@ -380,6 +413,10 @@ public final class ConfigLoader {
                         if (framePeriodNs > 0) {
                             // 即使恰好在帧边界入队，最早也要到严格晚于入队时刻的下一帧。
                             earliestTxStart = Math.addExact(earliestDataEnd, framePeriodNs - earliestDataEnd % framePeriodNs);
+                            if (ponUplink.bwmapPropagationNs() >= 0) {
+                                // BWmap 在调度边界下发，上行 DATA 最早从再下一帧开始发送。
+                                earliestTxStart = Math.addExact(earliestTxStart, framePeriodNs);
+                            }
                             Math.addExact(earliestTxStart, framePeriodNs);
                         }
                         long earliestTxEnd = Math.addExact(earliestTxStart, uplinkSerializationNs);

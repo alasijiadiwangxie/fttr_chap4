@@ -94,6 +94,13 @@ public final class Sfu {
         return id;
     }
 
+    public void receivePonBwmap(Packet packet, SimulationContext context) {
+        if (ponUplinkPort == null) {
+            throw new IllegalStateException("SFU " + id + " has no PON uplink port for BWmap");
+        }
+        ponUplinkPort.receiveBwmap(packet, context);
+    }
+
     public EdcaState edcaState() {
         return edcaState;
     }

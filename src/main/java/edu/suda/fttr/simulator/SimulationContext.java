@@ -189,6 +189,16 @@ public final class SimulationContext {
         trace.recordPonUplinkGrant(packet, sfuId, frameId, enqueueNs, nowTicks, startNs, endNs);
     }
 
+    public void recordPonBwmap(Packet packet, int sfuId, long grantFrameId, long targetFrameId,
+                               long grantTxNs, long startNs, long endNs, boolean received) {
+        trace.recordPonBwmap(packet, sfuId, grantFrameId, targetFrameId, grantTxNs, startNs, endNs, nowTicks, received);
+    }
+
+    public void recordPonBwmapSummary(long packets, double ungrantedWaitUs, double reservedWaitUs,
+                                      double serializationUs) {
+        trace.recordPonBwmapSummary(packets, ungrantedWaitUs, reservedWaitUs, serializationUs);
+    }
+
     public void recordPonUplinkFrame(long frameId, long frameStartNs, long frameEndNs, int packets, long busyNs) {
         trace.recordPonUplinkFrame(frameId, frameStartNs, frameEndNs, packets, busyNs);
     }

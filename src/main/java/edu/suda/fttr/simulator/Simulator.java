@@ -37,7 +37,7 @@ public final class Simulator {
                 : new PonDownlink(downlinkConfig.rateMbps(), downlinkConfig.propagationNs());
         PonUplink ponUplink = uplinkConfig == null ? null
                 : new PonUplink(uplinkConfig.rateMbps(), uplinkConfig.propagationNs(), uplinkConfig.framePeriodNs(),
-                        uplinkConfig.reportEnabled());
+                        uplinkConfig.reportEnabled(), uplinkConfig.bwmapPropagationNs());
         SimulationContext context = new SimulationContext(trace, runSummary, config.usesNanosecondTicks(),
                 retryPolicy != null);
         List<Map<Integer, Sta>> stationsBySfu = new ArrayList<>(config.sfuCount());
@@ -108,6 +108,9 @@ public final class Simulator {
                         }
                     }
                     ponUplink.scheduleFrame(context);
+                    break;
+                case PON_BWMAP_RX:
+                    sfus.get(event.sfuId() - 1).receivePonBwmap(event.packet(), context);
                     break;
                 case PACKET_ARRIVAL_AT_SFU:
                     sfus.get(event.sfuId() - 1).enqueueForWifi(event.packet(), context);

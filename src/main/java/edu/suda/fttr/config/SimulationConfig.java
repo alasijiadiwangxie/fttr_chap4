@@ -161,12 +161,15 @@ public final class SimulationConfig {
         private final long propagationNs;
         private final long framePeriodNs;
         private final boolean reportEnabled;
+        private final long bwmapPropagationNs;
 
-        PonLink(BigDecimal rateMbps, long propagationNs, long framePeriodNs, boolean reportEnabled) {
+        PonLink(BigDecimal rateMbps, long propagationNs, long framePeriodNs, boolean reportEnabled,
+                long bwmapPropagationNs) {
             this.rateMbps = rateMbps;
             this.propagationNs = propagationNs;
             this.framePeriodNs = framePeriodNs;
             this.reportEnabled = reportEnabled;
+            this.bwmapPropagationNs = bwmapPropagationNs;
         }
 
         public BigDecimal rateMbps() {
@@ -185,6 +188,11 @@ public final class SimulationConfig {
         /** 只在分帧上行中启用逻辑队列快照。 */
         public boolean reportEnabled() {
             return reportEnabled;
+        }
+
+        /** 启用 BWmap 时使用统一下行传播时延。关闭时为 -1。 */
+        public long bwmapPropagationNs() {
+            return bwmapPropagationNs;
         }
     }
 }
