@@ -115,6 +115,38 @@ public final class PonUplink {
             }
         }
 
+        /**
+         * 复制本 SFU 此刻尚未授权的光侧 FIFO，供本地预算预演使用。
+         * reserveHead 已将真实预约报文移出 queue，不能把 awaitingBwmap/grants 再并入此视图。
+         * 同刻先后由现有事件顺序和本方法的同步调用位置决定，不增加新的装载事件。
+         */
+        public PonGrantPacketFiller.QueueView ungrantedPacketView(SimulationContext context) {
+            if (context.microsecondsToTicks(1) != 1_000) {
+                throw new IllegalStateException("PON grant preview requires a nanosecond clock");
+            }
+            List<PonGrantPacketFiller.PacketView> packets = new ArrayList<>(queue.size());
+            for (Request request : queue) {
+                // Packet 本身不外传，视图仅保留不可变数值，也不暴露队列或出队入口。
+                packets.add(new PonGrantPacketFiller.PacketView(request.packet.id(), request.packet.bytes(),
+                        request.enqueueTicks));
+            }
+            return new PonGrantPacketFiller.QueueView(sfuId, context.nowTicks(), packets);
+        }
+
+        /**
+         * 每次都从当前 FIFO 创建新快照。结果只是本地预演，不创建 DATA 预约或更新 MFU 账本。
+         * 旧 QueueView 可用于重放历史预演；核对当前可用报文时必须通过此入口重新取样。
+         */
+        public PonGrantPacketFiller.Result previewGrant(PonGrantPacketFiller filler, long allocationId,
+                                                       long grantBytes, long grantDurationNs, long slotStartNs,
+                                                       SimulationContext context) {
+            if (rateMbps.compareTo(filler.rateMbps()) != 0) {
+                throw new IllegalArgumentException("Grant filler rate does not match the local PON uplink");
+            }
+            return filler.fill(allocationId, sfuId, grantBytes, grantDurationNs, slotStartNs,
+                    ungrantedPacketView(context));
+        }
+
         public void receiveBwmap(Packet packet, SimulationContext context) {
             Grant grant = awaitingBwmap.get(packet);
             if (grant == null) {
