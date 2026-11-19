@@ -42,6 +42,7 @@ public final class ConfigLoader {
     private static final String UPLINK_FRAME_PERIOD_US = FIBER_UPLINK + "frame.period.us";
     private static final String UPLINK_REPORT_ENABLED = FIBER_UPLINK + "report.enabled";
     private static final String UPLINK_BWMAP_ENABLED = FIBER_UPLINK + "bwmap.enabled";
+    private static final String UPLINK_DEMAND_LEDGER_ENABLED = FIBER_UPLINK + "demand.ledger.enabled";
     private static final String MAC_EXCHANGE = "wifi.mac.exchange";
     private static final String MAC_ACCESS = "wifi.mac.access";
     private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
@@ -53,7 +54,7 @@ public final class ConfigLoader {
     private static final Set<String> KEYS = Set.of(
             FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", DOWNLINK_PROPAGATION_US,
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
-            UPLINK_REPORT_ENABLED, UPLINK_BWMAP_ENABLED,
+            UPLINK_REPORT_ENABLED, UPLINK_BWMAP_ENABLED, UPLINK_DEMAND_LEDGER_ENABLED,
             "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
             MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
             MAC_MAX_RETRIES, EDCA_SEED);
@@ -121,6 +122,7 @@ public final class ConfigLoader {
         long bwmapPropagationNs = readBwmapPropagationNs(properties);
         SimulationConfig.PonLink ponDownlink = readPonLink(properties, FIBER_DOWNLINK, "10000", bwmapPropagationNs);
         SimulationConfig.PonLink ponUplink = readPonLink(properties, FIBER_UPLINK, "2500", bwmapPropagationNs);
+        boolean demandLedgerEnabled = readDemandLedgerEnabled(properties, ponUplink);
         boolean hasFixedDelay = properties.containsKey(FIBER_DELAY_US);
         long fiberUs = hasFixedDelay || (ponDownlink == null && ponUplink == null)
                 ? readNonNegativeLong(properties, FIBER_DELAY_US) : 0;
@@ -153,7 +155,21 @@ public final class ConfigLoader {
                 frameExchange);
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
                 frameExchange, edcaParameters, accessMode, retryPolicy, downlink.windowsUs, uplink.windowsUs,
-                directionMode.allows(Packet.Direction.UL));
+                directionMode.allows(Packet.Direction.UL), demandLedgerEnabled);
+    }
+
+    private static boolean readDemandLedgerEnabled(Properties properties, SimulationConfig.PonLink ponUplink) {
+        if (!properties.containsKey(UPLINK_DEMAND_LEDGER_ENABLED)) {
+            return false;
+        }
+        if (ponUplink == null || ponUplink.framePeriodNs() == 0) {
+            throw new IllegalArgumentException(UPLINK_DEMAND_LEDGER_ENABLED + " requires fiber.uplink.mode=pon-framed");
+        }
+        String enabled = properties.getProperty(UPLINK_DEMAND_LEDGER_ENABLED).strip();
+        if (!enabled.equals("true") && !enabled.equals("false")) {
+            throw new IllegalArgumentException(UPLINK_DEMAND_LEDGER_ENABLED + " must be true or false");
+        }
+        return enabled.equals("true");
     }
 
     private static boolean hasTraffic(PoissonTraffic poisson, List<Event> manualEvents, Packet.Direction direction) {

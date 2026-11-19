@@ -3,6 +3,7 @@ package edu.suda.fttr.trace;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.entity.PonDemandLedger;
 import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.link.PonUplinkReport;
@@ -147,6 +148,27 @@ public final class TraceLogger {
         output.printf(Locale.ROOT, "t_us=%s node=MFU event=PON_UPLINK_GRANT frame_id=%d packet_id=%d sfu_id=%d "
                         + "enqueue_time_ns=%d grant_time_ns=%d tx_start_ns=%d tx_end_ns=%d%n",
                 formatMicroseconds(grantNs), frameId, packet.id(), sfuId, enqueueNs, grantNs, startNs, endNs);
+    }
+
+    public void recordDemandLedgerGrant(int sfuId, int grantId, long createNs, int grantBytes) {
+        output.printf(Locale.ROOT, "node=MFU event=PON_DEMAND_LEDGER_GRANT sfu_id=%d grant_id=%d "
+                        + "grant_create_ns=%d grant_bytes=%d%n", sfuId, grantId, createNs, grantBytes);
+    }
+
+    public void recordDemandLedgerState(int sfuId, long timeNs, String trigger, PonDemandLedger.Estimate estimate) {
+        String prefix = String.format(Locale.ROOT, "node=MFU event=PON_DEMAND_LEDGER time_ns=%d sfu_id=%d trigger=%s",
+                timeNs, sfuId, trigger);
+        if (!estimate.known()) {
+            output.println(prefix + " state=UNKNOWN");
+            return;
+        }
+        Mfu.ReceivedUplinkReport received = estimate.report();
+        PonUplinkReport report = received.report();
+        output.printf(Locale.ROOT, "%s state=KNOWN latest_report_frame_id=%d report_snapshot_ns=%d report_receive_ns=%d "
+                        + "reported_pending_bytes=%d granted_bytes_since_snapshot=%d effective_known_bytes=%d "
+                        + "report_age_ns=%d%n",
+                prefix, report.frameId(), report.snapshotTimeNs(), received.receiveTimeNs(), report.pendingBytes(),
+                estimate.grantedBytesSinceSnapshot(), estimate.effectiveKnownBytes(), estimate.reportAgeNs());
     }
 
     public void recordPonBwmap(Packet packet, int sfuId, long grantFrameId, long targetFrameId, long grantTxNs,

@@ -3,6 +3,7 @@ package edu.suda.fttr.simulator;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.entity.PonDemandLedger;
 import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.link.PonUplinkReport;
@@ -20,6 +21,7 @@ public final class SimulationContext {
     private final boolean multiPacket;
     private final boolean nanosecondClock;
     private final boolean wifiRetryEnabled;
+    private final Mfu demandObserver;
     private final EnumMap<AccessCategory, DelayStats> byClass = new EnumMap<>(AccessCategory.class);
     private final DelayStats overallDelay = new DelayStats();
     private final Map<Integer, UplinkStats> uplinkByStation = new HashMap<>();
@@ -45,10 +47,16 @@ public final class SimulationContext {
     }
 
     SimulationContext(TraceLogger trace, boolean multiPacket, boolean nanosecondClock, boolean wifiRetryEnabled) {
+        this(trace, multiPacket, nanosecondClock, wifiRetryEnabled, null);
+    }
+
+    SimulationContext(TraceLogger trace, boolean multiPacket, boolean nanosecondClock, boolean wifiRetryEnabled,
+                      Mfu demandObserver) {
         this.trace = trace.withNanosecondClock(nanosecondClock);
         this.multiPacket = multiPacket;
         this.nanosecondClock = nanosecondClock;
         this.wifiRetryEnabled = wifiRetryEnabled;
+        this.demandObserver = demandObserver;
         for (AccessCategory type : AccessCategory.values()) {
             byClass.put(type, new DelayStats());
         }
@@ -187,6 +195,18 @@ public final class SimulationContext {
 
     public void recordPonUplinkGrant(Packet packet, int sfuId, long frameId, long enqueueNs, long startNs, long endNs) {
         trace.recordPonUplinkGrant(packet, sfuId, frameId, enqueueNs, nowTicks, startNs, endNs);
+        if (demandObserver != null) {
+            // 只观察预约创建。BWmap 接收、DATA 起发和交付均无需再次修改账本。
+            demandObserver.recordUplinkGrantCreated(sfuId, packet, this);
+        }
+    }
+
+    public void recordDemandLedgerGrant(int sfuId, int grantId, int grantBytes) {
+        trace.recordDemandLedgerGrant(sfuId, grantId, nowTicks, grantBytes);
+    }
+
+    public void recordDemandLedgerState(int sfuId, String trigger, PonDemandLedger.Estimate estimate) {
+        trace.recordDemandLedgerState(sfuId, nowTicks, trigger, estimate);
     }
 
     public void recordPonBwmap(Packet packet, int sfuId, long grantFrameId, long targetFrameId,

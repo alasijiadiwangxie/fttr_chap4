@@ -38,8 +38,10 @@ public final class Simulator {
         PonUplink ponUplink = uplinkConfig == null ? null
                 : new PonUplink(uplinkConfig.rateMbps(), uplinkConfig.propagationNs(), uplinkConfig.framePeriodNs(),
                         uplinkConfig.reportEnabled(), uplinkConfig.bwmapPropagationNs());
+        boolean demandLedgerEnabled = config.demandLedgerEnabled();
+        Mfu mfu = new Mfu(config.staSfuIds(), ponDownlink, demandLedgerEnabled);
         SimulationContext context = new SimulationContext(trace, runSummary, config.usesNanosecondTicks(),
-                retryPolicy != null);
+                retryPolicy != null, demandLedgerEnabled ? mfu : null);
         List<Map<Integer, Sta>> stationsBySfu = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             stationsBySfu.add(new HashMap<>());
@@ -65,8 +67,6 @@ public final class Simulator {
             sfus.add(new Sfu(sfuId, wifi, stationsBySfu.get(i), config.edcaParameters(), config.wifiAccessMode(),
                     retryPolicy, uplinkPort));
         }
-        Mfu mfu = new Mfu(config.staSfuIds(), ponDownlink);
-
         // 输入事件只提供报文和生成时间，实际路径由仿真器和设备根据关联表决定。
         for (Event input : config.inputEvents()) {
             context.scheduleInputEvent(input);
@@ -105,6 +105,11 @@ public final class Simulator {
                         long frameId = context.nowTicks() / uplinkConfig.framePeriodNs();
                         for (Sfu sfu : sfus) {
                             context.recordMfuReportState(frameId, sfu.id(), mfu.latestUplinkReport(sfu.id()));
+                        }
+                    }
+                    if (demandLedgerEnabled) {
+                        for (Sfu sfu : sfus) {
+                            mfu.recordUplinkDemand(sfu.id(), "FRAME_BOUNDARY", context);
                         }
                     }
                     ponUplink.scheduleFrame(context);

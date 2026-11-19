@@ -14,6 +14,7 @@ public final class Mfu {
     private final List<Integer> staSfuIds;
     private final PonDownlink ponDownlink;
     private final Map<Integer, ReceivedUplinkReport> latestUplinkReports = new HashMap<>();
+    private final PonDemandLedger demandLedger;
     private long receivedUplinkReports;
 
     public Mfu(List<Integer> staSfuIds) {
@@ -21,8 +22,13 @@ public final class Mfu {
     }
 
     public Mfu(List<Integer> staSfuIds, PonDownlink ponDownlink) {
+        this(staSfuIds, ponDownlink, false);
+    }
+
+    public Mfu(List<Integer> staSfuIds, PonDownlink ponDownlink, boolean demandLedgerEnabled) {
         this.staSfuIds = List.copyOf(staSfuIds);
         this.ponDownlink = ponDownlink;
+        this.demandLedger = demandLedgerEnabled ? new PonDemandLedger() : null;
     }
 
     public void receive(Packet packet, SimulationContext context) {
@@ -60,6 +66,29 @@ public final class Mfu {
         }
         receivedUplinkReports++;
         context.recordPonUplinkReportReception(report, carrier.id(), applied);
+        if (applied && demandLedger != null) {
+            recordUplinkDemand(report.sfuId(), "REPORT_ACCEPTED", context);
+        }
+    }
+
+    /** 一个完整报文只有一条预约。用其唯一 ID 识别授权，遵循预约创建时刻扣减。 */
+    public void recordUplinkGrantCreated(int sfuId, Packet packet, SimulationContext context) {
+        if (demandLedger != null
+                && demandLedger.recordGrant(sfuId, packet.id(), context.nowTicks(), packet.bytes())) {
+            context.recordDemandLedgerGrant(sfuId, packet.id(), packet.bytes());
+            recordUplinkDemand(sfuId, "GRANT_CREATED", context);
+        }
+    }
+
+    public PonDemandLedger.Estimate estimateUplinkDemand(int sfuId, long timeNs) {
+        if (demandLedger == null) {
+            throw new IllegalStateException("PON demand ledger is disabled");
+        }
+        return demandLedger.estimate(sfuId, timeNs, latestUplinkReport(sfuId));
+    }
+
+    public void recordUplinkDemand(int sfuId, String trigger, SimulationContext context) {
+        context.recordDemandLedgerState(sfuId, trigger, estimateUplinkDemand(sfuId, context.nowTicks()));
     }
 
     /** 返回该 SFU 最新的已接收快照。首份快照到达前返回 null，表示未知。 */
