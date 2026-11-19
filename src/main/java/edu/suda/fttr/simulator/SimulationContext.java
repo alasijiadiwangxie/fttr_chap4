@@ -155,6 +155,18 @@ public final class SimulationContext {
         trace.recordPonUplinkEnqueue(packet, sfuId, nowTicks);
     }
 
+    public void recordPonUplinkGrant(Packet packet, int sfuId, long frameId, long enqueueNs, long startNs, long endNs) {
+        trace.recordPonUplinkGrant(packet, sfuId, frameId, enqueueNs, nowTicks, startNs, endNs);
+    }
+
+    public void recordPonUplinkFrame(long frameId, long frameStartNs, long frameEndNs, int packets, long busyNs) {
+        trace.recordPonUplinkFrame(frameId, frameStartNs, frameEndNs, packets, busyNs);
+    }
+
+    public void recordPonUplinkFrames(long frames, long periodNs, long packets, long busyNs, double grantWaitUs) {
+        trace.recordPonUplinkFrames(frames, periodNs, packets, busyNs, grantWaitUs);
+    }
+
     public void recordPonSummary(Packet.Direction direction, long sentPackets, double totalQueueWaitTicks,
                                  long busyTicks) {
         // 分母沿用其他全局统计，以仿真起点到最后一个事件为窗口。

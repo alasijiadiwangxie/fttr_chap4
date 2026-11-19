@@ -38,6 +38,7 @@ public final class ConfigLoader {
     private static final String FIBER_DELAY_US = "fiber.delay.us";
     private static final String FIBER_DOWNLINK = "fiber.downlink.";
     private static final String FIBER_UPLINK = "fiber.uplink.";
+    private static final String UPLINK_FRAME_PERIOD_US = FIBER_UPLINK + "frame.period.us";
     private static final String MAC_EXCHANGE = "wifi.mac.exchange";
     private static final String MAC_ACCESS = "wifi.mac.access";
     private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
@@ -48,7 +49,7 @@ public final class ConfigLoader {
     private static final String EDCA_SEED = "wifi.mac.edca.seed";
     private static final Set<String> KEYS = Set.of(
             FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", FIBER_DOWNLINK + "propagation.us",
-            FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us",
+            FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
             "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
             MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
             MAC_MAX_RETRIES, EDCA_SEED);
@@ -159,14 +160,20 @@ public final class ConfigLoader {
         String rateKey = prefix + "rate.mbps";
         String propagationKey = prefix + "propagation.us";
         String mode = properties.getProperty(modeKey, "fixed").strip();
+        boolean uplink = prefix.equals(FIBER_UPLINK);
+        boolean framed = uplink && mode.equals("pon-framed");
+        if (uplink && !framed && properties.containsKey(UPLINK_FRAME_PERIOD_US)) {
+            throw new IllegalArgumentException(UPLINK_FRAME_PERIOD_US + " requires " + modeKey + "=pon-framed");
+        }
         if (mode.equals("fixed")) {
             if (properties.containsKey(rateKey) || properties.containsKey(propagationKey)) {
-                throw new IllegalArgumentException("PON rate and propagation require " + modeKey + "=pon-shared");
+                throw new IllegalArgumentException("PON rate and propagation require " + modeKey + "=pon-shared"
+                        + (uplink ? " or pon-framed" : ""));
             }
             return null;
         }
-        if (!mode.equals("pon-shared")) {
-            throw new IllegalArgumentException(modeKey + " must be fixed or pon-shared");
+        if (!mode.equals("pon-shared") && !framed) {
+            throw new IllegalArgumentException(modeKey + " must be fixed or pon-shared" + (uplink ? " or pon-framed" : ""));
         }
         BigDecimal rateMbps;
         try {
@@ -177,18 +184,25 @@ public final class ConfigLoader {
         if (rateMbps.signum() <= 0) {
             throw new IllegalArgumentException(rateKey + " must be a positive decimal number");
         }
-        long propagationNs;
+        long propagationNs = readPonDurationNs(properties, propagationKey, "0", false);
+        long framePeriodNs = framed ? readPonDurationNs(properties, UPLINK_FRAME_PERIOD_US, "125", true) : 0;
+        return new SimulationConfig.PonLink(rateMbps, propagationNs, framePeriodNs);
+    }
+
+    private static long readPonDurationNs(Properties properties, String key, String defaultUs, boolean positive) {
+        String constraint = positive ? "positive" : "non-negative";
+        long durationNs;
         try {
-            propagationNs = new BigDecimal(properties.getProperty(propagationKey, "0").strip())
+            durationNs = new BigDecimal(properties.getProperty(key, defaultUs).strip())
                     .scaleByPowerOfTen(3).longValueExact();
         } catch (NumberFormatException | ArithmeticException e) {
-            throw new IllegalArgumentException(propagationKey
-                    + " must be a non-negative duration in microseconds representable in whole nanoseconds", e);
+            throw new IllegalArgumentException(key + " must be a " + constraint
+                    + " duration in microseconds representable in whole nanoseconds", e);
         }
-        if (propagationNs < 0) {
-            throw new IllegalArgumentException(propagationKey + " must be non-negative");
+        if (durationNs < (positive ? 1 : 0)) {
+            throw new IllegalArgumentException(key + " must be " + constraint);
         }
-        return new SimulationConfig.PonLink(rateMbps, propagationNs);
+        return durationNs;
     }
 
     private static WifiRetryPolicy readWifiRetryPolicy(Properties properties, WifiAccessMode accessMode,
@@ -337,6 +351,8 @@ public final class ConfigLoader {
             }
             for (Event event : wifiArrivals) {
                 Packet packet = event.packet();
+                long uplinkSerializationNs = packet.isUplink() && ponUplink != null
+                        ? validateUplinkSerialization(packet, ponUplink) : 0;
                 long arrival = arrivalTicks.applyAsLong(event);
                 int sfuIndex = staSfuIds.get(packet.staId() - 1) - 1;
                 long dataTicks = wirelessPhy == null ? fixedWifiTicks : wirelessPhy.ppduDurationNs(packet.bytes());
@@ -348,10 +364,16 @@ public final class ConfigLoader {
                         long dataEnd = mixed ? Math.addExact(arrival, dataTicks) : completion[sfuIndex] - responseTicks;
                         Math.addExact(dataEnd, fiberTicks);
                     } else {
-                        // EDCA 成功后的实际到达顺序须在运行时确定。预检仅验证逐包最早光侧到达时刻。
+                        // 实际 EDCA 与光侧排队顺序由仿真决定。先核对逐包最早可进入的帧和到达时刻。
                         long earliestDataEnd = Math.addExact(arrival, dataTicks);
-                        long serializationNs = PonLinkTiming.serializationNs(packet.bytes(), ponUplink.rateMbps());
-                        long earliestTxEnd = Math.addExact(earliestDataEnd, serializationNs);
+                        long earliestTxStart = earliestDataEnd;
+                        long framePeriodNs = ponUplink.framePeriodNs();
+                        if (framePeriodNs > 0) {
+                            // 即使恰好在帧边界入队，最早也要到严格晚于入队时刻的下一帧。
+                            earliestTxStart = Math.addExact(earliestDataEnd, framePeriodNs - earliestDataEnd % framePeriodNs);
+                            Math.addExact(earliestTxStart, framePeriodNs);
+                        }
+                        long earliestTxEnd = Math.addExact(earliestTxStart, uplinkSerializationNs);
                         Math.addExact(earliestTxEnd, ponUplink.propagationNs());
                     }
                 }
@@ -359,6 +381,16 @@ public final class ConfigLoader {
         } catch (ArithmeticException e) {
             throw new IllegalArgumentException("Packet arrival time plus link delays and queueing exceeds the clock range", e);
         }
+    }
+
+    private static long validateUplinkSerialization(Packet packet, SimulationConfig.PonLink ponUplink) {
+        long framePeriodNs = ponUplink.framePeriodNs();
+        long serializationNs = PonLinkTiming.serializationNs(packet.bytes(), ponUplink.rateMbps());
+        if (framePeriodNs > 0 && serializationNs > framePeriodNs) {
+            throw new IllegalArgumentException("PON uplink packet " + packet.id() + " requires " + serializationNs
+                    + " ns, exceeding frame capacity " + framePeriodNs + " ns");
+        }
+        return serializationNs;
     }
 
     private static long wifiArrivalTicks(Event event, long ticksPerUs, long fiberTicks) {

@@ -50,6 +50,9 @@ public final class TraceLogger {
             case FIBER_TX_END:
                 write(event, packet.isUplink() ? "SFU" : "MFU", "FIBER_TX_END");
                 break;
+            case PON_UPLINK_FRAME:
+                // 光侧调度器单独记录每个授权及对应的帧统计。
+                break;
             case PACKET_ARRIVAL_AT_SFU:
                 write(event, "SFU", "ARRIVAL");
                 break;
@@ -96,6 +99,31 @@ public final class TraceLogger {
 
     public void recordPonUplinkEnqueue(Packet packet, int sfuId, long timeTicks) {
         write(packet, timeTicks, "SFU", "PON_UPLINK_ENQUEUE", sfuId);
+    }
+
+    public void recordPonUplinkGrant(Packet packet, int sfuId, long frameId, long enqueueNs, long grantNs,
+                                     long startNs, long endNs) {
+        output.printf(Locale.ROOT, "t_us=%s node=MFU event=PON_UPLINK_GRANT frame_id=%d packet_id=%d sfu_id=%d "
+                        + "enqueue_time_ns=%d grant_time_ns=%d tx_start_ns=%d tx_end_ns=%d%n",
+                formatMicroseconds(grantNs), frameId, packet.id(), sfuId, enqueueNs, grantNs, startNs, endNs);
+    }
+
+    public void recordPonUplinkFrame(long frameId, long frameStartNs, long frameEndNs, int packets, long busyNs) {
+        long periodNs = frameEndNs - frameStartNs;
+        output.printf(Locale.ROOT, "summary=PON_UPLINK_FRAME frame_id=%d frame_start_ns=%d frame_end_ns=%d "
+                        + "allocated_packets=%d busy_ns=%d idle_ns=%d utilization=%.9f%n",
+                frameId, frameStartNs, frameEndNs, packets, busyNs, periodNs - busyNs, utilization(busyNs, periodNs));
+    }
+
+    public void recordPonUplinkFrames(long frames, long periodNs, long packets, long busyNs, double grantWaitUs) {
+        long windowNs = frames * periodNs;
+        output.printf(Locale.ROOT, "summary=PON_UPLINK_FRAMES frames=%d frame_period_ns=%d window_ns=%d "
+                        + "allocated_packets=%d busy_ns=%d idle_ns=%d avg_grant_wait_us=%.6f utilization=%.9f%n",
+                frames, periodNs, windowNs, packets, busyNs, windowNs - busyNs, grantWaitUs, utilization(busyNs, windowNs));
+    }
+
+    private static double utilization(long busyNs, long windowNs) {
+        return windowNs == 0 ? 0.0 : (double) busyNs / windowNs;
     }
 
     private void write(Packet packet, long timeTicks, String node, String action, int sfuId) {

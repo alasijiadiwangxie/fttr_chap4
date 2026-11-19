@@ -159,10 +159,12 @@ public final class SimulationConfig {
     public static final class PonLink {
         private final BigDecimal rateMbps;
         private final long propagationNs;
+        private final long framePeriodNs;
 
-        PonLink(BigDecimal rateMbps, long propagationNs) {
+        PonLink(BigDecimal rateMbps, long propagationNs, long framePeriodNs) {
             this.rateMbps = rateMbps;
             this.propagationNs = propagationNs;
+            this.framePeriodNs = framePeriodNs;
         }
 
         public BigDecimal rateMbps() {
@@ -171,6 +173,11 @@ public final class SimulationConfig {
 
         public long propagationNs() {
             return propagationNs;
+        }
+
+        /** 分帧上行使用正纳秒周期，即时共享链路取 0。 */
+        public long framePeriodNs() {
+            return framePeriodNs;
         }
     }
 }

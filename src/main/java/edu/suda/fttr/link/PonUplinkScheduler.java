@@ -13,6 +13,10 @@ final class PonUplinkScheduler {
         heads.add(request);
     }
 
+    PonUplink.Request peekHead() {
+        return heads.peek();
+    }
+
     PonUplink.Request pollHead() {
         return heads.poll();
     }
