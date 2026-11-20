@@ -12,6 +12,8 @@ import edu.suda.fttr.link.PonReportPoll;
 import edu.suda.fttr.link.PonDbaGrant;
 import edu.suda.fttr.dba.DbaPlan;
 import edu.suda.fttr.dba.DbaContext;
+import edu.suda.fttr.dba.GiantDbaPolicy;
+import edu.suda.fttr.dba.TcontProfile;
 import edu.suda.fttr.simulator.Event;
 
 import java.io.PrintStream;
@@ -116,6 +118,13 @@ public final class TraceLogger {
     }
 
     public void recordPollEvent(PonReportPoll poll, String action, long nowNs) {
+        if (poll.allocationSpecific()) {
+            output.printf(Locale.ROOT, "node=PON event=%s time_ns=%d poll_id=%d allocation_id=%d sfu_id=%d "
+                            + "grant_frame_id=%d target_frame_id=%d bwmap_tx_ns=%d tx_start_ns=%d tx_end_ns=%d%n",
+                    action, nowNs, poll.id(), poll.allocationId(), poll.sfuId(), poll.grantFrameId(),
+                    poll.targetFrameId(), poll.grantTxNs(), poll.startNs(), poll.endNs());
+            return;
+        }
         String receiver = action.equals("PON_POLL_BWMAP_TX") ? "MFU" : "SFU";
         String rx = action.equals("PON_POLL_BWMAP_RX") ? " bwmap_rx_ns=" + nowNs : "";
         output.printf(Locale.ROOT, "t_us=%s node=%s event=%s poll_id=%d grant_id=R%d grant_type=REPORT_ONLY "
@@ -126,6 +135,10 @@ public final class TraceLogger {
 
     public void recordPollSnapshot(PonReportPoll poll) {
         PonUplinkReport r = poll.report();
+        if (poll.allocationSpecific()) {
+            recordPonUplinkReport(r);
+            return;
+        }
         output.printf(Locale.ROOT, "node=SFU event=PON_POLL_REPORT poll_id=%d sfu_id=%d frame_id=%d snapshot_time_ns=%d "
                         + "pending_packets=%d pending_bytes=%d eligible_packets=%d eligible_bytes=%d%n",
                 poll.id(), r.sfuId(), r.frameId(), r.snapshotTimeNs(), r.pendingPackets(), r.pendingBytes(),
@@ -134,6 +147,10 @@ public final class TraceLogger {
 
     public void recordPollReception(PonReportPoll poll, long nowNs, boolean applied) {
         PonUplinkReport r = poll.report();
+        if (poll.allocationSpecific()) {
+            // MFU 接收路径另记一次 TCONT_REPORT_RX，避免同一报告出现两条接收记录。
+            return;
+        }
         output.printf(Locale.ROOT, "t_us=%s node=MFU event=PON_POLL_REPORT_RX poll_id=%d grant_id=R%d "
                         + "grant_type=REPORT_ONLY sfu_id=%d grant_frame_id=%d target_frame_id=%d bwmap_tx_ns=%d "
                         + "tx_start_ns=%d tx_end_ns=%d snapshot_time_ns=%d pending_packets=%d pending_bytes=%d "
@@ -164,7 +181,20 @@ public final class TraceLogger {
         write(packet, timeTicks, "SFU", "PON_UPLINK_ENQUEUE", sfuId);
     }
 
+    public void recordTcontEnqueue(Packet packet, long allocationId, int sfuId, long timeNs) {
+        output.printf(Locale.ROOT, "node=SFU event=TCONT_ENQUEUE time_ns=%d allocation_id=%d sfu_id=%d "
+                        + "packet_id=%d packet_bytes=%d ac=%s%n",
+                timeNs, allocationId, sfuId, packet.id(), packet.bytes(), packet.type());
+    }
+
     public void recordPonUplinkReport(PonUplinkReport report) {
+        if (report.allocationSpecific()) {
+            output.printf(Locale.ROOT, "node=SFU event=TCONT_REPORT frame_id=%d allocation_id=%d sfu_id=%d "
+                            + "snapshot_time_ns=%d pending_packets=%d pending_bytes=%d eligible_packets=%d eligible_bytes=%d%n",
+                    report.frameId(), report.allocationId(), report.sfuId(), report.snapshotTimeNs(), report.pendingPackets(),
+                    report.pendingBytes(), report.eligiblePackets(), report.eligibleBytes());
+            return;
+        }
         output.printf(Locale.ROOT, "node=SFU event=PON_UPLINK_REPORT frame_id=%d sfu_id=%d snapshot_time_ns=%d "
                         + "pending_packets=%d pending_bytes=%d eligible_packets=%d eligible_bytes=%d%n",
                 report.frameId(), report.sfuId(), report.snapshotTimeNs(), report.pendingPackets(),
@@ -223,6 +253,30 @@ public final class TraceLogger {
                         + "report_age_ns=%d%n",
                 prefix, report.frameId(), report.snapshotTimeNs(), received.receiveTimeNs(), report.pendingBytes(),
                 estimate.grantedBytesSinceSnapshot(), estimate.effectiveKnownBytes(), estimate.reportAgeNs());
+    }
+
+    public void recordTcontDemandState(long allocationId, int sfuId, long timeNs, String trigger,
+                                      PonDemandLedger.Estimate estimate) {
+        String prefix = String.format(Locale.ROOT,
+                "node=MFU event=TCONT_DEMAND time_ns=%d allocation_id=%d sfu_id=%d trigger=%s",
+                timeNs, allocationId, sfuId, trigger);
+        if (!estimate.known()) {
+            output.println(prefix + " state=UNKNOWN");
+            return;
+        }
+        Mfu.ReceivedUplinkReport received = estimate.report();
+        PonUplinkReport report = received.report();
+        output.printf(Locale.ROOT, "%s state=KNOWN latest_report_frame_id=%d report_snapshot_ns=%d report_receive_ns=%d "
+                        + "reported_pending_bytes=%d granted_bytes_since_snapshot=%d effective_known_bytes=%d report_age_ns=%d%n",
+                prefix, report.frameId(), report.snapshotTimeNs(), received.receiveTimeNs(), report.pendingBytes(),
+                estimate.grantedBytesSinceSnapshot(), estimate.effectiveKnownBytes(), estimate.reportAgeNs());
+    }
+
+    public void recordTcontReportReceived(PonUplinkReport report, long nowNs, boolean applied, String kind) {
+        output.printf(Locale.ROOT, "node=MFU event=TCONT_REPORT_RX time_ns=%d frame_id=%d allocation_id=%d sfu_id=%d "
+                        + "snapshot_time_ns=%d pending_bytes=%d eligible_bytes=%d applied=%b report_kind=%s%n",
+                nowNs, report.frameId(), report.allocationId(), report.sfuId(), report.snapshotTimeNs(),
+                report.pendingBytes(), report.eligibleBytes(), applied, kind);
     }
 
     public void recordDbaShadow(PonDbaShadowPlanner.Decision decision) {
@@ -287,6 +341,27 @@ public final class TraceLogger {
                 allocation.known() ? "KNOWN" : "UNKNOWN", allocation.known() ? allocation.knownDemandBytes() : -1,
                 allocation.reportFrameId() == null ? -1 : allocation.reportFrameId(),
                 allocation.reportAgeNs() == null ? -1 : allocation.reportAgeNs(), allocation.budgetOutstanding());
+    }
+
+    /** 即使没有预算，也保留本帧每个 Alloc-ID 的到期判断和两个阶段各自的原因。 */
+    public void recordGiantDecision(DbaContext input, GiantDbaPolicy.Decision decision) {
+        DbaContext.Allocation allocation = decision.allocation();
+        TcontProfile profile = allocation.profile();
+        output.printf(Locale.ROOT, "node=MFU event=PON_GIANT_DECISION time_ns=%d target_frame_id=%d "
+                        + "allocation_id=%d sfu_id=%d type=%d si_max_frames=%d si_min_frames=%d "
+                        + "si_max_before=%d si_max_after=%d si_min_before=%d si_min_after=%d "
+                        + "ab_min_bytes=%d ab_sur_bytes=%d assured_bytes=%d surplus_bytes=%d "
+                        + "budget_bytes=%d duration_ns=%d assured_reason=%s surplus_reason=%s "
+                        + "state=%s known_demand_bytes=%d budget_outstanding=%s report_frame_id=%d "
+                        + "report_age_ns=%d control_reserved_ns=%d%n",
+                input.decisionTimeNs(), input.targetFrameId(), allocation.allocationId(), allocation.sfuId(),
+                profile.type(), profile.siMaxFrames(), profile.siMinFrames(), decision.siMaxBefore(),
+                decision.siMaxAfter(), decision.siMinBefore(), decision.siMinAfter(), profile.abMinBytes(),
+                profile.abSurBytes(), decision.assuredBytes(), decision.surplusBytes(), decision.budgetBytes(),
+                decision.durationNs(), decision.assuredReason(), decision.surplusReason(),
+                allocation.known() ? "KNOWN" : "UNKNOWN", allocation.known() ? allocation.knownDemandBytes() : -1,
+                allocation.budgetOutstanding(), allocation.reportFrameId() == null ? -1 : allocation.reportFrameId(),
+                allocation.reportAgeNs() == null ? -1 : allocation.reportAgeNs(), input.controlReservedNs());
     }
 
     /** 真实预算日志显式保留 D 前缀，不与原逐包 grant_id 或轮询 R 前缀混用。 */

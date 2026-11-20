@@ -12,6 +12,7 @@ import edu.suda.fttr.link.PonReportPoll;
 import edu.suda.fttr.link.PonDbaGrant;
 import edu.suda.fttr.dba.DbaPlan;
 import edu.suda.fttr.dba.DbaContext;
+import edu.suda.fttr.dba.GiantDbaPolicy;
 import edu.suda.fttr.trace.TraceLogger;
 
 import java.util.EnumMap;
@@ -209,6 +210,19 @@ public final class SimulationContext {
         trace.recordPonUplinkEnqueue(packet, sfuId, nowTicks);
     }
 
+    public void recordTcontEnqueue(Packet packet, long allocationId, int sfuId) {
+        trace.recordTcontEnqueue(packet, allocationId, sfuId, nowTicks);
+    }
+
+    public void recordTcontDemandState(long allocationId, int sfuId, String trigger,
+                                       PonDemandLedger.Estimate estimate) {
+        trace.recordTcontDemandState(allocationId, sfuId, nowTicks, trigger, estimate);
+    }
+
+    public void recordTcontReportReceived(PonUplinkReport report, boolean applied, String kind) {
+        trace.recordTcontReportReceived(report, nowTicks, applied, kind);
+    }
+
     public void recordPonUplinkReport(PonUplinkReport report) {
         trace.recordPonUplinkReport(report);
     }
@@ -268,6 +282,10 @@ public final class SimulationContext {
 
     public void recordDbaObjectState(DbaContext input, DbaContext.Allocation allocation) {
         trace.recordDbaObjectState(input, allocation);
+    }
+
+    public void recordGiantDecision(DbaContext input, GiantDbaPolicy.Decision decision) {
+        trace.recordGiantDecision(input, decision);
     }
 
     public void scheduleDbaDataEnd(long delayNs, Packet packet, PonDbaGrant grant) {

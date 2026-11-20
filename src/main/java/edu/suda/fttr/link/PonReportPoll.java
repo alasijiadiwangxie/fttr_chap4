@@ -4,6 +4,8 @@ package edu.suda.fttr.link;
 public final class PonReportPoll {
     private final long id;
     private final int sfuId;
+    private final long allocationId;
+    private final boolean allocationSpecific;
     private final long grantFrameId;
     private final long grantTxNs;
     private final long startNs;
@@ -12,7 +14,22 @@ public final class PonReportPoll {
     private PonUplinkReport report;
 
     PonReportPoll(long id, int sfuId, long grantFrameId, long grantTxNs, long startNs, long endNs) {
+        this(id, 2L * sfuId, sfuId, grantFrameId, grantTxNs, startNs, endNs, false);
+    }
+
+    PonReportPoll(long id, long allocationId, int sfuId, long grantFrameId, long grantTxNs,
+                  long startNs, long endNs) {
+        this(id, allocationId, sfuId, grantFrameId, grantTxNs, startNs, endNs, true);
+    }
+
+    private PonReportPoll(long id, long allocationId, int sfuId, long grantFrameId, long grantTxNs,
+                          long startNs, long endNs, boolean allocationSpecific) {
+        if (allocationId < 1 || sfuId < 1) {
+            throw new IllegalArgumentException("Invalid REPORT-only allocation owner");
+        }
         this.id = id;
+        this.allocationId = allocationId;
+        this.allocationSpecific = allocationSpecific;
         this.sfuId = sfuId;
         this.grantFrameId = grantFrameId;
         this.grantTxNs = grantTxNs;
@@ -28,7 +45,8 @@ public final class PonReportPoll {
     }
 
     void start(long nowNs, PonUplinkReport snapshot) {
-        if (!received || nowNs != startNs || report != null) {
+        if (!received || nowNs != startNs || report != null || snapshot.allocationId() != allocationId
+                || snapshot.sfuId() != sfuId || snapshot.snapshotTimeNs() != nowNs) {
             throw new IllegalStateException("REPORT_ONLY R" + id + " requires received BWmap and its assigned slot");
         }
         report = snapshot;
@@ -41,6 +59,9 @@ public final class PonReportPoll {
     public int sfuId() {
         return sfuId;
     }
+
+    public long allocationId() { return allocationId; }
+    public boolean allocationSpecific() { return allocationSpecific; }
 
     public long grantFrameId() {
         return grantFrameId;

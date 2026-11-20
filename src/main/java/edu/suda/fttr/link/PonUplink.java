@@ -4,6 +4,8 @@ import edu.suda.fttr.config.SimulationConfig;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.dba.DbaPlan;
+import edu.suda.fttr.dba.TcontProfile;
+import edu.suda.fttr.dba.TcontTopology;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
 
@@ -14,6 +16,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /** 各 SFU 的光发送端口共用一条上行链路。链路负责执行调度结果和交付报文。 */
@@ -54,6 +57,20 @@ public final class PonUplink {
     private long budgetActualNs;
     private long lastBudgetEndNs;
     private boolean multiGrantEnabled;
+    private TcontTopology tcontTopology;
+    private final List<Long> pollingAllocationIds = new ArrayList<>();
+
+    /** 仅在启动阶段设置逻辑队列拓扑；不改变原有单队列 FCFS 路径。 */
+    public void configureTcont(TcontTopology topology) {
+        if (!reportPorts.isEmpty() || dbaMfu != null || tcontTopology != null) {
+            throw new IllegalStateException("T-CONT topology must be configured before ports and DBA start");
+        }
+        if (topology.enabled()) {
+            tcontTopology = topology;
+        }
+    }
+
+    private boolean tcontEnabled() { return tcontTopology != null; }
 
     public PonUplink(BigDecimal rateMbps, long propagationNs) {
         this(rateMbps, propagationNs, 0);
@@ -83,7 +100,7 @@ public final class PonUplink {
     }
 
     public Port attachSfu(int sfuId) {
-        if (dbaMfu != null && (sfuId < 1 || sfuId > 2
+        if (dbaMfu != null && (sfuId < 1 || (!tcontEnabled() && sfuId > 2)
                 || reportPorts.stream().anyMatch(port -> port.sfuId == sfuId))) {
             throw new IllegalArgumentException("Real rr DBA requires distinct SFU IDs in the range 1 to 2");
         }
@@ -117,6 +134,10 @@ public final class PonUplink {
 
     /** 拓扑在启动时注册；装载器持有映射副本，不再把所有预算假定属于SFU1。 */
     private void refreshDbaFiller() {
+        if (tcontEnabled()) {
+            dbaFiller = new PonGrantPacketFiller(rateMbps, tcontTopology.allocationOwners());
+            return;
+        }
         Map<Long, Integer> owners = new HashMap<>();
         for (Port port : reportPorts) {
             if (port.sfuId < 1 || port.sfuId > 2 || owners.put(2L * port.sfuId, port.sfuId) != null) {
@@ -129,8 +150,15 @@ public final class PonUplink {
     /** 只根据固定关联和 SFU ID 建立轮询顺序，与队列是否有业务无关。 */
     public void startPolling(List<Integer> associatedSfuIds, SimulationContext context) {
         if (polling != null) {
-            reportPorts.stream().filter(port -> associatedSfuIds.contains(port.sfuId))
+            reportPorts.stream().filter(port -> tcontEnabled() || associatedSfuIds.contains(port.sfuId))
                     .sorted((left, right) -> Integer.compare(left.sfuId, right.sfuId)).forEach(pollingPorts::add);
+            if (tcontEnabled()) {
+                for (Port port : pollingPorts) {
+                    for (TcontProfile profile : tcontTopology.profilesForSfu(port.sfuId)) {
+                        pollingAllocationIds.add(profile.allocationId());
+                    }
+                }
+            }
             if (!pollingPorts.isEmpty()) {
                 requestFrame(context);
             }
@@ -143,13 +171,28 @@ public final class PonUplink {
         private final Deque<Request> queue = new ArrayDeque<>();
         private final Map<Packet, Grant> awaitingBwmap = new HashMap<>();
         private long pendingBytes;
+        private final Map<Long, LocalQueue> allocationQueues = new LinkedHashMap<>();
 
         private Port(int sfuId) {
             this.sfuId = sfuId;
+            if (tcontEnabled()) {
+                for (TcontProfile profile : tcontTopology.profilesForSfu(sfuId)) {
+                    allocationQueues.put(profile.allocationId(), new LocalQueue());
+                }
+            }
         }
 
         public void enqueue(Packet packet, SimulationContext context) {
             Request request = new Request(this, packet, context.nowTicks(), nextSequence++);
+            if (tcontEnabled()) {
+                long allocationId = tcontTopology.allocationFor(sfuId, packet.type());
+                LocalQueue local = allocationQueue(allocationId);
+                local.queue.addLast(request);
+                local.pendingBytes = Math.addExact(local.pendingBytes, packet.bytes());
+                context.recordTcontEnqueue(packet, allocationId, sfuId);
+                requestFrame(context);
+                return;
+            }
             queue.addLast(request);
             pendingBytes += packet.bytes();
             context.recordPonUplinkEnqueue(packet, sfuId);
@@ -171,16 +214,35 @@ public final class PonUplink {
          * 同刻先后由现有事件顺序和本方法的同步调用位置决定，不增加新的装载事件。
          */
         public PonGrantPacketFiller.QueueView ungrantedPacketView(SimulationContext context) {
+            if (tcontEnabled()) {
+                throw new IllegalStateException("A T-CONT queue view requires an explicit allocationId");
+            }
+            return queueView(0, queue, context);
+        }
+
+        public PonGrantPacketFiller.QueueView ungrantedPacketView(long allocationId, SimulationContext context) {
+            if (!tcontEnabled()) {
+                if (allocationId != 2L * sfuId) {
+                    throw new IllegalArgumentException("Allocation does not belong to this SFU");
+                }
+                return ungrantedPacketView(context);
+            }
+            return queueView(allocationId, allocationQueue(allocationId).queue, context);
+        }
+
+        private PonGrantPacketFiller.QueueView queueView(long allocationId, Deque<Request> requests,
+                                                       SimulationContext context) {
             if (context.microsecondsToTicks(1) != 1_000) {
                 throw new IllegalStateException("PON grant preview requires a nanosecond clock");
             }
-            List<PonGrantPacketFiller.PacketView> packets = new ArrayList<>(queue.size());
-            for (Request request : queue) {
+            List<PonGrantPacketFiller.PacketView> packets = new ArrayList<>(requests.size());
+            for (Request request : requests) {
                 // Packet 本身不外传，视图仅保留不可变数值，也不暴露队列或出队入口。
                 packets.add(new PonGrantPacketFiller.PacketView(request.packet.id(), request.packet.bytes(),
                         request.enqueueTicks));
             }
-            return new PonGrantPacketFiller.QueueView(sfuId, context.nowTicks(), packets);
+            return allocationId == 0 ? new PonGrantPacketFiller.QueueView(sfuId, context.nowTicks(), packets)
+                    : new PonGrantPacketFiller.QueueView(allocationId, sfuId, context.nowTicks(), packets);
         }
 
         /**
@@ -194,7 +256,7 @@ public final class PonUplink {
                 throw new IllegalArgumentException("Grant filler rate does not match the local PON uplink");
             }
             return filler.fill(allocationId, sfuId, grantBytes, grantDurationNs, slotStartNs,
-                    ungrantedPacketView(context));
+                    ungrantedPacketView(allocationId, context));
         }
 
         public void receiveBwmap(Packet packet, SimulationContext context) {
@@ -230,11 +292,36 @@ public final class PonUplink {
         }
 
         private PonUplinkReport snapshot(long frameId, long frameStartNs) {
-            int pendingPackets = queue.size();
+            return snapshotQueue(0, queue, pendingBytes, frameId, frameStartNs);
+        }
+
+        /** 只统计当前逻辑 FIFO；已装载的报文已经离队，不会被重复报告。 */
+        public PonUplinkReport snapshot(long allocationId, long frameId, long frameStartNs) {
+            if (!tcontEnabled()) {
+                if (allocationId != 2L * sfuId) {
+                    throw new IllegalArgumentException("Allocation does not belong to this SFU");
+                }
+                return snapshot(frameId, frameStartNs);
+            }
+            LocalQueue local = allocationQueue(allocationId);
+            return snapshotQueue(allocationId, local.queue, local.pendingBytes, frameId, frameStartNs);
+        }
+
+        private LocalQueue allocationQueue(long allocationId) {
+            LocalQueue local = allocationQueues.get(allocationId);
+            if (local == null) {
+                throw new IllegalArgumentException("Allocation " + allocationId + " does not belong to SFU " + sfuId);
+            }
+            return local;
+        }
+
+        private PonUplinkReport snapshotQueue(long allocationId, Deque<Request> requests, long bytes,
+                                             long frameId, long frameStartNs) {
+            int pendingPackets = requests.size();
             int eligiblePackets = pendingPackets;
-            long eligibleBytes = pendingBytes;
+            long eligibleBytes = bytes;
             // FIFO 按入队时间增长。只需从队尾剔除已入队、但恰逢本帧边界的报文。
-            Iterator<Request> newestFirst = queue.descendingIterator();
+            Iterator<Request> newestFirst = requests.descendingIterator();
             while (newestFirst.hasNext()) {
                 Request request = newestFirst.next();
                 if (request.enqueueTicks < frameStartNs) {
@@ -243,9 +330,17 @@ public final class PonUplink {
                 eligiblePackets--;
                 eligibleBytes -= request.packet.bytes();
             }
-            return new PonUplinkReport(frameId, sfuId, frameStartNs, pendingPackets, pendingBytes,
-                    eligiblePackets, eligibleBytes);
+            return allocationId == 0
+                    ? new PonUplinkReport(frameId, sfuId, frameStartNs, pendingPackets, bytes, eligiblePackets, eligibleBytes)
+                    : new PonUplinkReport(frameId, allocationId, sfuId, frameStartNs, pendingPackets, bytes,
+                            eligiblePackets, eligibleBytes);
         }
+    }
+
+    /** 物理端口下的独立待授权 FIFO；授权账本仍仅在 MFU 维护。 */
+    private static final class LocalQueue {
+        private final Deque<Request> queue = new ArrayDeque<>();
+        private long pendingBytes;
     }
 
     private void scheduleShared(SimulationContext context) {
@@ -375,16 +470,30 @@ public final class PonUplink {
             return;
         }
         long frameId = now / framePeriodNs;
-        recordReports(frameId, now, context);
-        reportsWithoutGrant += reportPorts.size(); // 边界快照仅本地保存，预算执行另发时隙末快照。
+        if (tcontEnabled()) {
+            recordAllocationReports(frameId, now, context);
+            reportsWithoutGrant += tcontTopology.profiles().size();
+        } else {
+            recordReports(frameId, now, context);
+            reportsWithoutGrant += reportPorts.size();
+        } // 边界快照仅本地保存，预算执行另发时隙末快照。
         long targetStart = Math.addExact(now, framePeriodNs);
         long targetFrame = frameId + 1;
         long controlNs = 0;
         if (!pollingPorts.isEmpty() && frameId == nextPollFrame) {
             controlNs = PonLinkTiming.serializationNs(polling.bytes(), rateMbps);
-            Port port = pollingPorts.get((int) (createdPolls % pollingPorts.size()));
-            PonReportPoll poll = new PonReportPoll(++createdPolls, port.sfuId, frameId, now,
-                    targetStart, Math.addExact(targetStart, controlNs));
+            PonReportPoll poll;
+            if (tcontEnabled()) {
+                // 轮询顺序只由配置拓扑决定，MFU 不借此观察远端 FIFO。
+                long allocationId = pollingAllocationIds.get((int) (createdPolls % pollingAllocationIds.size()));
+                int sfuId = tcontTopology.profile(allocationId).sfuId();
+                poll = new PonReportPoll(++createdPolls, allocationId, sfuId, frameId, now,
+                        targetStart, Math.addExact(targetStart, controlNs));
+            } else {
+                Port port = pollingPorts.get((int) (createdPolls % pollingPorts.size()));
+                poll = new PonReportPoll(++createdPolls, port.sfuId, frameId, now,
+                        targetStart, Math.addExact(targetStart, controlNs));
+            }
             polls.addLast(poll);
             context.recordPollEvent(poll, "PON_POLL_BWMAP_TX");
             context.schedulePollEvent(bwmapPropagationNs, EventType.PON_POLL_BWMAP_RX, poll);
@@ -436,11 +545,16 @@ public final class PonUplink {
         grant.load(context.nowTicks(), filled);
         long cursor = grant.startNs();
         for (int packetId : filled.selectedPacketIds()) {
-            Request request = port.queue.removeFirst();
+            Request request = tcontEnabled() ? port.allocationQueue(grant.allocationId()).queue.removeFirst()
+                    : port.queue.removeFirst();
             if (request.packet.id() != packetId) {
                 throw new IllegalStateException("SFU FIFO changed during atomic budget loading");
             }
-            port.pendingBytes -= request.packet.bytes();
+            if (tcontEnabled()) {
+                port.allocationQueue(grant.allocationId()).pendingBytes -= request.packet.bytes();
+            } else {
+                port.pendingBytes -= request.packet.bytes();
+            }
             long end = Math.addExact(cursor, serializationNs(request));
             Grant child = new Grant(request, cursor, end, null, grant.createNs(), grant);
             child.bwmapReceived = true;
@@ -459,7 +573,7 @@ public final class PonUplink {
 
     public void finishDbaGrant(PonDbaGrant grant, SimulationContext context) {
         Port port = budgetPort(grant);
-        PonUplinkReport report = port.snapshot(grant.targetFrameId(), context.nowTicks());
+        PonUplinkReport report = port.snapshot(grant.allocationId(), grant.targetFrameId(), context.nowTicks());
         grant.finish(context.nowTicks(), report);
         generatedReports++;
         context.recordPonUplinkReport(report);
@@ -476,6 +590,9 @@ public final class PonUplink {
 
     private Port budgetPort(PonDbaGrant grant) {
         requireBudget(grant);
+        if (tcontEnabled() && tcontTopology.profile(grant.allocationId()).sfuId() != grant.sfuId()) {
+            throw new IllegalStateException("DATA budget allocation owner mismatch");
+        }
         return reportPorts.stream().filter(port -> port.sfuId == grant.sfuId()).findFirst().orElseThrow();
     }
 
@@ -512,6 +629,17 @@ public final class PonUplink {
         }
         reportedFrames = frameId + 1;
         return frameReports;
+    }
+
+    /** 每个逻辑对象独立取样；边界快照不反馈给 MFU，只有后续合法 REPORT 接收才更新账本。 */
+    private void recordAllocationReports(long frameId, long nowNs, SimulationContext context) {
+        for (Port port : reportPorts) {
+            for (long allocationId : port.allocationQueues.keySet()) {
+                context.recordPonUplinkReport(port.snapshot(allocationId, frameId, nowNs));
+                generatedReports++;
+            }
+        }
+        reportedFrames = frameId + 1;
     }
 
     private void recordFrame(long frameId, long frameStart, long frameEnd, int packets, long usedNs,
@@ -574,7 +702,7 @@ public final class PonUplink {
             throw new IllegalStateException("REPORT_ONLY overlaps a DATA slot");
         }
         Port port = pollingPorts.stream().filter(candidate -> candidate.sfuId == poll.sfuId()).findFirst().orElseThrow();
-        poll.start(context.nowTicks(), port.snapshot(poll.targetFrameId(), context.nowTicks()));
+        poll.start(context.nowTicks(), port.snapshot(poll.allocationId(), poll.targetFrameId(), context.nowTicks()));
         generatedReports++;
         context.recordPollEvent(poll, "PON_POLL_TX_START");
         context.recordPollSnapshot(poll);
@@ -673,7 +801,9 @@ public final class PonUplink {
             context.recordPonBwmapSummary(sentPackets, ungrantedWaitUs, reservedWaitUs, serializationUs);
         }
         if (dbaMfu != null) {
-            long pendingPackets = reportPorts.stream().mapToLong(port -> port.queue.size()).sum();
+            long pendingPackets = reportPorts.stream().mapToLong(port -> tcontEnabled()
+                    ? port.allocationQueues.values().stream().mapToLong(local -> local.queue.size()).sum()
+                    : port.queue.size()).sum();
             context.recordDbaSummary(budgetSequence, budgetBytes, budgetActualBytes, budgetBytes - budgetActualBytes,
                     budgetReservedNs, budgetActualNs, pendingPackets);
         }

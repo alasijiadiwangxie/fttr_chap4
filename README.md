@@ -10,7 +10,15 @@
 - 等待队列不设容量上限。HE SU 模式根据包长、开销和 PHY 参数计算数据 PPDU 时长，可启用 DATA–SIFS–ACK 交换。固定时延模式可用于回归对照。
 - SFU 和 STA 的吞吐量统一按从 0 到最后事件的时间窗口计算。日志同时记录逐包时序，以及按业务类别、设备和全局汇总的统计。
 
-信道干扰、OFDMA、DBA 和 AP 节能机制可作为后续独立扩展。
+光侧提供分帧 FCFS、REPORT/BWmap、多 Alloc-ID 逻辑队列及可选的 RR、GIANT DBA 策略。信道干扰、OFDMA 和 AP 节能机制可作为后续独立扩展。
+
+### 可选的 T-CONT 逻辑队列
+
+`fiber.uplink.tcont.enabled=true` 可在 `rr`、`rr-multi` 和 `giant` 模式下为同一 SFU 配置多个 Alloc-ID。各对象按 VO/VI/BE/BK 映射维护独立的光侧 FIFO、REPORT、需求账本、预算和结算，并共享上行发送资源。默认使用每 SFU 一个 FIFO 和 `allocationId = 2 × sfuId`。
+
+Type 2/3/4 的 SI 参数以帧数配置，AB 参数以字节配置。配置方法与参数范围见 [T-CONT 验收报告](docs/pon/15-tcont-bandwidth-test.md)。
+
+设置 `fiber.uplink.dba.mode=giant` 启用基础 GIANT。该模式需要 T-CONT、`pon-framed`、REPORT、BWmap、需求账本和有限的 REPORT-only 轮询。GIANT 根据 SI 到期状态先分配 Type 2/3 的保障带宽，再分配 Type 3/4 的剩余带宽。可将模式设为 `rr-multi` 复用同一组业务进行对照。计数规则和复现命令见 [GIANT 验收报告](docs/pon/16-giant-dba-test.md)。
 
 ## 构建与运行
 

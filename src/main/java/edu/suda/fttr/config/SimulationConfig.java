@@ -1,5 +1,6 @@
 package edu.suda.fttr.config;
 
+import edu.suda.fttr.dba.TcontTopology;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.link.WifiFrameExchange;
 import edu.suda.fttr.mac.EdcaParameters;
@@ -33,6 +34,8 @@ public final class SimulationConfig {
     private final boolean dbaShadowEnabled;
     private final boolean dbaExecutionEnabled;
     private final boolean dbaMultiGrantEnabled;
+    private final boolean dbaGiantEnabled;
+    private final TcontTopology tcontTopology;
 
     SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs,
                      PonLink ponDownlink, PonLink ponUplink, long wifiDelayUs, WirelessPhy wirelessPhy,
@@ -40,7 +43,7 @@ public final class SimulationConfig {
                      WifiRetryPolicy wifiRetryPolicy,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled,
                      boolean demandLedgerEnabled, boolean dbaShadowEnabled, boolean dbaExecutionEnabled,
-                     boolean dbaMultiGrantEnabled) {
+                     boolean dbaMultiGrantEnabled, boolean dbaGiantEnabled, TcontTopology tcontTopology) {
         this.inputEvents = List.copyOf(inputEvents);
         this.sfuCount = sfuCount;
         this.staSfuIds = List.copyOf(staSfuIds);
@@ -60,6 +63,8 @@ public final class SimulationConfig {
         this.dbaShadowEnabled = dbaShadowEnabled;
         this.dbaExecutionEnabled = dbaExecutionEnabled;
         this.dbaMultiGrantEnabled = dbaMultiGrantEnabled;
+        this.dbaGiantEnabled = dbaGiantEnabled;
+        this.tcontTopology = tcontTopology;
     }
 
     /** 首个报文的长度，兼容原有单包调用。多包场景从各报文读取长度。 */
@@ -179,6 +184,15 @@ public final class SimulationConfig {
 
     public boolean dbaMultiGrantEnabled() {
         return dbaMultiGrantEnabled;
+    }
+
+    public boolean dbaGiantEnabled() {
+        return dbaGiantEnabled;
+    }
+
+    /** 显式的 Alloc-ID / SFU / 业务类型映射；默认关闭时仍保留旧单对象编号。 */
+    public TcontTopology tcontTopology() {
+        return tcontTopology;
     }
 
     /** 单方向的共享光发送器配置，传播时延与原有固定光链路时延分别设置。 */

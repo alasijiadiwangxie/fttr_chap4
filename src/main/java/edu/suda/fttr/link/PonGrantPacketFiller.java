@@ -45,7 +45,8 @@ public final class PonGrantPacketFiller {
                        long slotStartNs, QueueView view) {
         Objects.requireNonNull(view, "SFU queue view");
         Integer owner = allocationOwners.get(allocationId);
-        if (owner == null || owner != sfuId || view.sfuId() != sfuId) {
+        if (owner == null || owner != sfuId || view.sfuId() != sfuId
+                || (view.allocationId() != 0 && view.allocationId() != allocationId)) {
             throw new IllegalArgumentException("Unknown allocationId or mismatched SFU queue owner");
         }
         if (grantBytes < 0 || grantDurationNs < 0 || slotStartNs < view.snapshotTimeNs()) {
@@ -143,11 +144,20 @@ public final class PonGrantPacketFiller {
      * 或正在发送的报文。历史视图保留历史事实；需要当前状态时应重新向 Port 获取视图。
      */
     public static final class QueueView {
+        private final long allocationId;
         private final int sfuId;
         private final long snapshotTimeNs;
         private final List<PacketView> packets;
 
         public QueueView(int sfuId, long snapshotTimeNs, List<PacketView> packets) {
+            this(0, sfuId, snapshotTimeNs, packets);
+        }
+
+        /** 带 Alloc-ID 的生产视图，防止同一 SFU 内其他逻辑 FIFO 被误用于当前授权。 */
+        public QueueView(long allocationId, int sfuId, long snapshotTimeNs, List<PacketView> packets) {
+            if (allocationId < 0) {
+                throw new IllegalArgumentException("Queue allocationId must be nonnegative");
+            }
             if (sfuId < 1 || snapshotTimeNs < 0) {
                 throw new IllegalArgumentException("SFU queue owner must be positive and snapshot time nonnegative");
             }
@@ -165,10 +175,12 @@ public final class PonGrantPacketFiller {
             }
             // 同刻报文沿用原列表顺序，禁止按 ID 或其他容器遍历顺序重新排序。
             this.sfuId = sfuId;
+            this.allocationId = allocationId;
             this.snapshotTimeNs = snapshotTimeNs;
         }
 
         public int sfuId() { return sfuId; }
+        public long allocationId() { return allocationId; }
         public long snapshotTimeNs() { return snapshotTimeNs; }
         public List<PacketView> packets() { return packets; }
     }

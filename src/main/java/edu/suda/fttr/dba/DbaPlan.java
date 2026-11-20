@@ -28,7 +28,7 @@ public final class DbaPlan {
         return targetFrameId;
     }
 
-    /** 集合结构为未来每帧多个对象保留空间；当前 RR 最多生成一个正预算。 */
+    /** 各策略按目标帧生成一个或多个对象的预算，允许空计划。 */
     public List<Grant> grants() {
         return grants;
     }

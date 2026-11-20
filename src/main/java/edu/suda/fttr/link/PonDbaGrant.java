@@ -59,7 +59,8 @@ public final class PonDbaGrant {
 
     void finish(long nowNs, PonUplinkReport snapshot) {
         if (result == null || report != null || nowNs != endNs || completedBytes != selectedBytes()
-                || snapshot.sfuId() != sfuId || snapshot.snapshotTimeNs() != endNs) {
+                || snapshot.sfuId() != sfuId || snapshot.allocationId() != allocationId
+                || snapshot.snapshotTimeNs() != endNs) {
             throw new IllegalStateException("DATA budget cannot settle before all selected DATA completes");
         }
         report = snapshot;

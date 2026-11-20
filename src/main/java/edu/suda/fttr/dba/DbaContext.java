@@ -72,7 +72,11 @@ public final class DbaContext {
      * 串行化的向上取整则在策略及计划校验阶段再次核验。
      */
     public BigInteger capacityBytes() {
-        return BigDecimal.valueOf(availableNs()).multiply(rateMbps)
+        return capacityBytes(availableNs());
+    }
+
+    BigInteger capacityBytes(long availableNs) {
+        return BigDecimal.valueOf(availableNs).multiply(rateMbps)
                 .divide(BITS_PER_BYTE_NS, 0, RoundingMode.FLOOR).toBigIntegerExact();
     }
 
@@ -82,7 +86,7 @@ public final class DbaContext {
 
     /**
      * 一个逻辑分配对象。allocationId 标识调度对象，sfuId 标识物理 SFU；两者语义独立，
-     * 因此未来多个 allocationId 可以属于同一 SFU。当前并不实现 T-CONT 服务等级。
+     * 因此多个 allocationId 可以属于同一 SFU。profile 为 GIANT 提供 T-CONT 的服务参数。
      */
     public static final class Allocation {
         private final long allocationId;
@@ -91,6 +95,7 @@ public final class DbaContext {
         private final Long reportFrameId;
         private final Long reportAgeNs;
         private final boolean budgetOutstanding;
+        private final TcontProfile profile;
 
         public Allocation(long allocationId, int sfuId, Long knownDemandBytes,
                           Long reportFrameId, Long reportAgeNs) {
@@ -100,6 +105,12 @@ public final class DbaContext {
         /** 未结算预算是独立的授权状态，不改变 REPORT 的 UNKNOWN/KNOWN 或净需求数值。 */
         public Allocation(long allocationId, int sfuId, Long knownDemandBytes,
                           Long reportFrameId, Long reportAgeNs, boolean budgetOutstanding) {
+            this(allocationId, sfuId, knownDemandBytes, reportFrameId, reportAgeNs, budgetOutstanding, null);
+        }
+
+        /** T-CONT 参数为不可变元数据；单对象兼容模式使用 null。 */
+        public Allocation(long allocationId, int sfuId, Long knownDemandBytes,
+                          Long reportFrameId, Long reportAgeNs, boolean budgetOutstanding, TcontProfile profile) {
             if (allocationId < 1 || sfuId < 1 || (knownDemandBytes != null && knownDemandBytes < 0)
                     || (reportFrameId != null && reportFrameId < 0) || (reportAgeNs != null && reportAgeNs < 0)) {
                 throw new IllegalArgumentException("DBA allocation identity or known demand is outside its valid range");
@@ -108,12 +119,16 @@ public final class DbaContext {
             if (knownDemandBytes == null && (reportFrameId != null || reportAgeNs != null)) {
                 throw new IllegalArgumentException("Unknown DBA demand must not contain REPORT metadata");
             }
+            if (profile != null && (profile.allocationId() != allocationId || profile.sfuId() != sfuId)) {
+                throw new IllegalArgumentException("T-CONT profile identity does not match DBA allocation");
+            }
             this.allocationId = allocationId;
             this.sfuId = sfuId;
             this.knownDemandBytes = knownDemandBytes;
             this.reportFrameId = reportFrameId;
             this.reportAgeNs = reportAgeNs;
             this.budgetOutstanding = budgetOutstanding;
+            this.profile = profile;
         }
 
         public long allocationId() {
@@ -143,6 +158,10 @@ public final class DbaContext {
 
         public boolean budgetOutstanding() {
             return budgetOutstanding;
+        }
+
+        public TcontProfile profile() {
+            return profile;
         }
     }
 }

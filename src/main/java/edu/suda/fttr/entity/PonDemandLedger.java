@@ -9,11 +9,17 @@ import java.util.Map;
 
 /** 以 MFU 已接收的 REPORT 和已创建的预约估计需求，不查询 SFU 队列。 */
 public final class PonDemandLedger {
-    private final Map<Integer, SfuHistory> histories = new HashMap<>();
+    // allocationId 是逻辑需求身份，sfuId 只用于校验物理归属。一个 SFU 的不同队列绝不共用账本。
+    private final Map<Long, AllocationHistory> histories = new HashMap<>();
 
     /** 一个完整报文对应一个预约，报文 ID 作为该预约在仿真中的唯一标识。 */
     public boolean recordGrant(int sfuId, int grantId, long createNs, int grantedBytes) {
-        SfuHistory history = histories.computeIfAbsent(sfuId, key -> new SfuHistory());
+        return recordAllocationGrant(2L * sfuId, sfuId, grantId, createNs, grantedBytes);
+    }
+
+    public boolean recordAllocationGrant(long allocationId, int sfuId, int grantId, long createNs,
+                                         int grantedBytes) {
+        AllocationHistory history = historyForWrite(allocationId, sfuId);
         if (history.grantsById.containsKey(grantId)) {
             return false;
         }
@@ -29,14 +35,20 @@ public final class PonDemandLedger {
 
     /** 使用 MFU 当前已经接受的快照。报表查询不改变 REPORT 或授权历史。 */
     public Estimate estimate(int sfuId, long timeNs, Mfu.ReceivedUplinkReport latest) {
+        return estimateAllocation(2L * sfuId, sfuId, timeNs, latest);
+    }
+
+    /** 显式 allocation API 避免将旧 int 参数的 SFU 语义误当成 Alloc-ID。 */
+    public Estimate estimateAllocation(long allocationId, int sfuId, long timeNs,
+                                       Mfu.ReceivedUplinkReport latest) {
+        AllocationHistory history = historyForRead(allocationId, sfuId);
         if (latest == null || latest.receiveTimeNs() > timeNs) {
             return Estimate.UNKNOWN;
         }
         PonUplinkReport report = latest.report();
-        if (report.sfuId() != sfuId) {
-            throw new IllegalArgumentException("REPORT SFU ID does not match the demand estimate");
+        if (report.sfuId() != sfuId || report.allocationId() != allocationId) {
+            throw new IllegalArgumentException("REPORT allocation / SFU does not match the demand estimate");
         }
-        SfuHistory history = histories.get(sfuId);
         long granted = 0;
         if (history != null) {
             // 同一帧事件先采样、后授权。因此快照边界同刻创建的授权计入区间。
@@ -57,10 +69,15 @@ public final class PonDemandLedger {
 
     /** 真实预算有独立身份，不以 packetId 写入原 FCFS 逐包授权历史。 */
     public boolean recordBudgetGrant(int sfuId, long grantId, long createNs, long startNs, long endNs, long bytes) {
+        return recordAllocationBudgetGrant(2L * sfuId, sfuId, grantId, createNs, startNs, endNs, bytes);
+    }
+
+    public boolean recordAllocationBudgetGrant(long allocationId, int sfuId, long grantId, long createNs,
+                                               long startNs, long endNs, long bytes) {
         if (sfuId < 1 || grantId < 1 || createNs < 0 || startNs <= createNs || endNs <= startNs || bytes < 1) {
             throw new IllegalArgumentException("Invalid real budget ledger entry");
         }
-        SfuHistory history = histories.computeIfAbsent(sfuId, key -> new SfuHistory());
+        AllocationHistory history = historyForWrite(allocationId, sfuId);
         Budget previous = history.budgets.get(grantId);
         if (previous != null) {
             if (previous.createNs != createNs || previous.startNs != startNs
@@ -69,8 +86,8 @@ public final class PonDemandLedger {
             }
             return false;
         }
-        if (hasOutstandingBudget(sfuId, createNs)) {
-            throw new IllegalStateException("SFU already has an unsettled DATA budget");
+        if (hasOutstandingAllocationBudget(allocationId, createNs)) {
+            throw new IllegalStateException("Allocation already has an unsettled DATA budget");
         }
         history.budgets.put(grantId, new Budget(createNs, startNs, endNs, bytes));
         return true;
@@ -78,7 +95,12 @@ public final class PonDemandLedger {
 
     /** 仅在 MFU 收到逻辑结算后，以实际发送量替换预算扣减；不用未收到的 SFU 执行信息。 */
     public boolean settleBudgetGrant(int sfuId, long grantId, long receiveNs, long actualBytes) {
-        SfuHistory history = histories.get(sfuId);
+        return settleAllocationBudgetGrant(2L * sfuId, sfuId, grantId, receiveNs, actualBytes);
+    }
+
+    public boolean settleAllocationBudgetGrant(long allocationId, int sfuId, long grantId, long receiveNs,
+                                               long actualBytes) {
+        AllocationHistory history = historyForRead(allocationId, sfuId);
         Budget budget = history == null ? null : history.budgets.get(grantId);
         if (budget == null || receiveNs < budget.endNs || actualBytes < 0 || actualBytes > budget.bytes) {
             throw new IllegalArgumentException("Unknown, premature or over-budget DATA settlement");
@@ -95,20 +117,54 @@ public final class PonDemandLedger {
     }
 
     public boolean hasOutstandingBudget(int sfuId, long timeNs) {
-        SfuHistory history = histories.get(sfuId);
+        return hasOutstandingAllocationBudget(2L * sfuId, timeNs);
+    }
+
+    public boolean hasOutstandingAllocationBudget(long allocationId, long timeNs) {
+        AllocationHistory history = histories.get(allocationId);
         return history != null && history.budgets.values().stream().anyMatch(budget -> budget.createNs <= timeNs
                 && (budget.settleNs < 0 || budget.settleNs > timeNs));
     }
 
     public boolean hasBudgetGrant(int sfuId, long grantId) {
-        SfuHistory history = histories.get(sfuId);
+        return hasAllocationBudget(2L * sfuId, grantId);
+    }
+
+    public boolean hasAllocationBudget(long allocationId, long grantId) {
+        AllocationHistory history = histories.get(allocationId);
         return history != null && history.budgets.containsKey(grantId);
     }
 
-    private static final class SfuHistory {
+    private AllocationHistory historyForWrite(long allocationId, int sfuId) {
+        AllocationHistory history = historyForRead(allocationId, sfuId);
+        if (history == null) {
+            history = new AllocationHistory(sfuId);
+            histories.put(allocationId, history);
+        }
+        return history;
+    }
+
+    /** 读操作只校验已有映射，不创建历史，也不会把 UNKNOWN 变成已知零需求。 */
+    private AllocationHistory historyForRead(long allocationId, int sfuId) {
+        if (allocationId < 1 || sfuId < 1) {
+            throw new IllegalArgumentException("Allocation and SFU IDs must be positive");
+        }
+        AllocationHistory history = histories.get(allocationId);
+        if (history != null && history.sfuId != sfuId) {
+            throw new IllegalArgumentException("Allocation ID belongs to another SFU");
+        }
+        return history;
+    }
+
+    private static final class AllocationHistory {
+        private final int sfuId;
         private final List<Grant> grants = new ArrayList<>();
         private final Map<Integer, Grant> grantsById = new HashMap<>();
         private final Map<Long, Budget> budgets = new HashMap<>();
+
+        private AllocationHistory(int sfuId) {
+            this.sfuId = sfuId;
+        }
 
         /** 用二分法取得快照和查询边界的已授权字节前缀，避免逐次扫描历史。 */
         private long prefixBytes(long timeNs, boolean inclusive) {

@@ -1,5 +1,7 @@
 package edu.suda.fttr.config;
 
+import edu.suda.fttr.dba.TcontProfile;
+import edu.suda.fttr.dba.TcontTopology;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.link.PonLinkTiming;
@@ -23,7 +25,9 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -48,6 +52,9 @@ public final class ConfigLoader {
     private static final String UPLINK_POLL_INTERVAL_FRAMES = FIBER_UPLINK + "poll.interval.frames";
     private static final String UPLINK_POLL_END_US = FIBER_UPLINK + "poll.end.us";
     private static final String UPLINK_DBA_MODE = FIBER_UPLINK + "dba.mode";
+    private static final String TCONT_PREFIX = FIBER_UPLINK + "tcont.";
+    private static final String TCONT_ENABLED = TCONT_PREFIX + "enabled";
+    private static final String TCONT_ALLOC_IDS = TCONT_PREFIX + "alloc.ids";
     private static final String MAC_EXCHANGE = "wifi.mac.exchange";
     private static final String MAC_ACCESS = "wifi.mac.access";
     private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
@@ -61,7 +68,7 @@ public final class ConfigLoader {
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
             UPLINK_REPORT_ENABLED, UPLINK_BWMAP_ENABLED, UPLINK_DEMAND_LEDGER_ENABLED,
             UPLINK_POLL_ENABLED, UPLINK_POLL_BYTES, UPLINK_POLL_INTERVAL_FRAMES, UPLINK_POLL_END_US,
-            UPLINK_DBA_MODE,
+            UPLINK_DBA_MODE, TCONT_ENABLED, TCONT_ALLOC_IDS,
             "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
             MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
             MAC_MAX_RETRIES, EDCA_SEED);
@@ -76,6 +83,9 @@ public final class ConfigLoader {
     private static final Pattern POISSON_SOURCE = Pattern.compile(
             "traffic\\.(sfu|sta)\\.([1-9][0-9]*)\\.(rate\\.pps|packet\\.bytes|seed|class\\.weights|duration\\.us|"
                     + "class\\.(VO|VI|BE|BK)\\.(rate\\.pps|rate\\.mbps|packet\\.bytes))");
+    private static final Pattern TCONT_ALLOCATION_KEY = Pattern.compile(
+            "fiber\\.uplink\\.tcont\\.alloc\\.([1-9][0-9]*)\\.(sfu\\.id|type|classes|si\\.max\\.frames|"
+                    + "si\\.min\\.frames|ab\\.min\\.bytes|ab\\.sur\\.bytes)");
     private static final AccessCategory[] CATEGORIES = AccessCategory.values();
 
     private static final class PoissonTraffic {
@@ -130,11 +140,16 @@ public final class ConfigLoader {
         SimulationConfig.PonLink ponDownlink = readPonLink(properties, FIBER_DOWNLINK, "10000", bwmapPropagationNs);
         SimulationConfig.PonLink ponUplink = readPonLink(properties, FIBER_UPLINK, "2500", bwmapPropagationNs);
         boolean demandLedgerEnabled = readDemandLedgerEnabled(properties, ponUplink);
-        boolean dbaShadowEnabled = readDbaShadowEnabled(properties, ponUplink, demandLedgerEnabled);
-        String dbaMode = properties.getProperty(UPLINK_DBA_MODE, "fcfs").strip();
-        boolean dbaMultiGrantEnabled = dbaMode.equals("rr-multi");
+        String dbaMode = readDbaMode(properties, ponUplink, demandLedgerEnabled);
+        boolean dbaShadowEnabled = dbaMode.equals("shadow-rr");
+        boolean dbaGiantEnabled = dbaMode.equals("giant");
+        boolean dbaMultiGrantEnabled = dbaMode.equals("rr-multi") || dbaGiantEnabled;
         boolean dbaExecutionEnabled = dbaMode.equals("rr") || dbaMultiGrantEnabled;
-        if (dbaExecutionEnabled && sfuCount > 2) {
+        TcontTopology tcontTopology = readTcontTopology(properties, sfuCount, dbaExecutionEnabled);
+        if (dbaGiantEnabled && !tcontTopology.enabled()) {
+            throw new IllegalArgumentException("giant requires " + TCONT_ENABLED + "=true");
+        }
+        if (dbaExecutionEnabled && sfuCount > 2 && !tcontTopology.enabled()) {
             throw new IllegalArgumentException("Real DBA execution currently supports one or two SFUs");
         }
         boolean hasFixedDelay = properties.containsKey(FIBER_DELAY_US);
@@ -170,23 +185,84 @@ public final class ConfigLoader {
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
                 frameExchange, edcaParameters, accessMode, retryPolicy, downlink.windowsUs, uplink.windowsUs,
                 directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled,
-                dbaMultiGrantEnabled);
+                dbaMultiGrantEnabled, dbaGiantEnabled, tcontTopology);
     }
 
-    private static boolean readDbaShadowEnabled(Properties properties, SimulationConfig.PonLink uplink,
-                                                 boolean demandLedgerEnabled) {
+    private static TcontTopology readTcontTopology(Properties properties, int sfuCount, boolean dbaExecutionEnabled) {
+        String enabledValue = properties.getProperty(TCONT_ENABLED, "false").strip();
+        if (!enabledValue.equals("true") && !enabledValue.equals("false")) {
+            throw new IllegalArgumentException(TCONT_ENABLED + " must be true or false");
+        }
+        if (!enabledValue.equals("true")) {
+            for (String key : properties.stringPropertyNames()) {
+                if (key.startsWith(TCONT_PREFIX) && !key.equals(TCONT_ENABLED)) {
+                    throw new IllegalArgumentException(key + " requires " + TCONT_ENABLED + "=true");
+                }
+            }
+            return TcontTopology.disabled(sfuCount);
+        }
+        // 真实 DBA 路径依赖 pon-framed、BWmap、REPORT、账本和有限轮询。
+        if (!dbaExecutionEnabled) {
+            throw new IllegalArgumentException(TCONT_ENABLED + " requires fiber.uplink.dba.mode=rr, rr-multi or giant");
+        }
+        Set<Long> allocationIds = new HashSet<>();
+        List<TcontProfile> profiles = new ArrayList<>();
+        for (String rawId : requireProperty(properties, TCONT_ALLOC_IDS).split(",", -1)) {
+            long allocationId = parseNonNegativeLong(rawId, TCONT_ALLOC_IDS);
+            if (allocationId == 0 || !allocationIds.add(allocationId)) {
+                throw new IllegalArgumentException(TCONT_ALLOC_IDS + " requires unique positive allocation IDs");
+            }
+            String prefix = TCONT_PREFIX + "alloc." + allocationId + ".";
+            int sfuId = readPositiveInt(properties, prefix + "sfu.id");
+            int type = readPositiveInt(properties, prefix + "type");
+            Set<AccessCategory> classes = EnumSet.noneOf(AccessCategory.class);
+            for (String rawClass : requireProperty(properties, prefix + "classes").split(",", -1)) {
+                AccessCategory category;
+                try {
+                    category = AccessCategory.valueOf(rawClass.strip());
+                } catch (IllegalArgumentException exception) {
+                    throw new IllegalArgumentException(prefix + "classes must contain VO, VI, BE or BK", exception);
+                }
+                if (!classes.add(category)) {
+                    throw new IllegalArgumentException(prefix + "classes contains a duplicate business class");
+                }
+            }
+            int siMax = readPositiveInt(properties, prefix + "si.max.frames");
+            // Type 2 不使用剩余带宽阶段，其 SImin / ABsur 可以省略，含义明确为零。
+            long siMinLong = type == 2 && !properties.containsKey(prefix + "si.min.frames") ? 0
+                    : readNonNegativeLong(properties, prefix + "si.min.frames");
+            if (siMinLong > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException(prefix + "si.min.frames must fit a nonnegative integer");
+            }
+            long abMin = readNonNegativeLong(properties, prefix + "ab.min.bytes");
+            long abSur = type == 2 && !properties.containsKey(prefix + "ab.sur.bytes") ? 0
+                    : readNonNegativeLong(properties, prefix + "ab.sur.bytes");
+            profiles.add(new TcontProfile(allocationId, sfuId, type, classes, siMax, (int) siMinLong, abMin, abSur));
+        }
+        // 已声明但未列入 alloc.ids 的对象也必须报错，防止部分参数被静默忽略。
+        for (String key : properties.stringPropertyNames()) {
+            Matcher matcher = TCONT_ALLOCATION_KEY.matcher(key);
+            if (matcher.matches() && !allocationIds.contains(parseNonNegativeLong(matcher.group(1), key))) {
+                throw new IllegalArgumentException("T-CONT allocation is not listed in " + TCONT_ALLOC_IDS + ": " + key);
+            }
+        }
+        return new TcontTopology(sfuCount, profiles);
+    }
+
+    private static String readDbaMode(Properties properties, SimulationConfig.PonLink uplink,
+                                      boolean demandLedgerEnabled) {
         String mode = properties.getProperty(UPLINK_DBA_MODE, "fcfs").strip();
         if (mode.equals("fcfs")) {
-            return false;
+            return mode;
         }
-        if (!mode.equals("shadow-rr") && !mode.equals("rr") && !mode.equals("rr-multi")) {
-            throw new IllegalArgumentException(UPLINK_DBA_MODE + " must be fcfs, shadow-rr, rr or rr-multi");
+        if (!mode.equals("shadow-rr") && !mode.equals("rr") && !mode.equals("rr-multi") && !mode.equals("giant")) {
+            throw new IllegalArgumentException(UPLINK_DBA_MODE + " must be fcfs, shadow-rr, rr, rr-multi or giant");
         }
         if (uplink == null || uplink.framePeriodNs() == 0 || uplink.bwmapPropagationNs() < 0
                 || !uplink.reportEnabled() || !demandLedgerEnabled || uplink.polling() == null) {
             throw new IllegalArgumentException(mode + " requires pon-framed, BWmap, REPORT, demand ledger and polling");
         }
-        return mode.equals("shadow-rr");
+        return mode;
     }
 
     private static boolean readDemandLedgerEnabled(Properties properties, SimulationConfig.PonLink ponUplink) {
@@ -571,7 +647,8 @@ public final class ConfigLoader {
                                      boolean poisson, DirectionMode directionMode) {
         // 模式间的字段不能混用，防止手填报文或流量源的设置被忽略。
         for (String key : properties.stringPropertyNames()) {
-            if (KEYS.contains(key) || PHY_KEYS.contains(key) || EDCA_AC_KEY.matcher(key).matches()) {
+            if (KEYS.contains(key) || PHY_KEYS.contains(key) || EDCA_AC_KEY.matcher(key).matches()
+                    || TCONT_ALLOCATION_KEY.matcher(key).matches()) {
                 continue;
             }
             Matcher packet = PACKET_OVERRIDE.matcher(key);

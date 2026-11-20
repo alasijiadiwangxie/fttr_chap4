@@ -43,6 +43,13 @@ public final class Simulator {
         PonDbaShadowPlanner shadowPlanner = config.dbaShadowEnabled()
                 ? new PonDbaShadowPlanner(config.staSfuIds(), uplinkConfig.rateMbps(), uplinkConfig.framePeriodNs()) : null;
         Mfu mfu = new Mfu(config.staSfuIds(), ponDownlink, demandLedgerEnabled, shadowPlanner);
+        if (config.tcontTopology().enabled()) {
+            mfu.configureTcont(config.tcontTopology());
+            ponUplink.configureTcont(config.tcontTopology());
+        }
+        if (config.dbaGiantEnabled()) {
+            mfu.enableGiantDba();
+        }
         if (config.dbaExecutionEnabled()) {
             ponUplink.enableDbaExecution(mfu, config.dbaMultiGrantEnabled());
         }
@@ -110,13 +117,17 @@ public final class Simulator {
                     }
                     break;
                 case PON_UPLINK_FRAME:
-                    if (uplinkConfig.reportEnabled()) {
+                    if (config.tcontTopology().enabled()) {
+                        for (edu.suda.fttr.dba.TcontProfile profile : config.tcontTopology().profiles()) {
+                            mfu.recordAllocationDemand(profile.allocationId(), "FRAME_BOUNDARY", context);
+                        }
+                    } else if (uplinkConfig.reportEnabled()) {
                         long frameId = context.nowTicks() / uplinkConfig.framePeriodNs();
                         for (Sfu sfu : sfus) {
                             context.recordMfuReportState(frameId, sfu.id(), mfu.latestUplinkReport(sfu.id()));
                         }
                     }
-                    if (demandLedgerEnabled) {
+                    if (demandLedgerEnabled && !config.tcontTopology().enabled()) {
                         for (Sfu sfu : sfus) {
                             mfu.recordUplinkDemand(sfu.id(), "FRAME_BOUNDARY", context);
                         }
