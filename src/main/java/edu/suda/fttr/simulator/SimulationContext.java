@@ -262,6 +262,10 @@ public final class SimulationContext {
         trace.recordDbaDecision(plan, controlNs);
     }
 
+    public void recordDbaMultiPlan(DbaPlan plan, long controlNs) {
+        trace.recordDbaMultiPlan(plan, controlNs);
+    }
+
     public void recordDbaObjectState(DbaContext input, DbaContext.Allocation allocation) {
         trace.recordDbaObjectState(input, allocation);
     }

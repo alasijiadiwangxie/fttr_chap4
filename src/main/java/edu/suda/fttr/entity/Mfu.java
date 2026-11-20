@@ -9,6 +9,7 @@ import edu.suda.fttr.dba.DbaPlan;
 import edu.suda.fttr.dba.DbaPlanValidator;
 import edu.suda.fttr.dba.DbaPolicy;
 import edu.suda.fttr.dba.RoundRobinDbaPolicy;
+import edu.suda.fttr.dba.MultiGrantRoundRobinDbaPolicy;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
 
@@ -27,7 +28,8 @@ public final class Mfu {
     private final PonDemandLedger demandLedger;
     private final PonDbaShadowPlanner shadowPlanner;
     private long receivedUplinkReports;
-    private final DbaPolicy executionPolicy = new RoundRobinDbaPolicy();
+    private DbaPolicy executionPolicy = new RoundRobinDbaPolicy();
+    private boolean multiGrantEnabled;
 
     public Mfu(List<Integer> staSfuIds) {
         this(staSfuIds, null);
@@ -137,6 +139,14 @@ public final class Mfu {
         }
     }
 
+    /** 启动配置时选择独立的多授权RR；重复配置不重置游标，原单授权RR不变。 */
+    public void enableMultiGrantDba() {
+        if (!multiGrantEnabled) {
+            executionPolicy = new MultiGrantRoundRobinDbaPolicy();
+            multiGrantEnabled = true;
+        }
+    }
+
     /** 真正的 MFU 决策入口，仅复制已接收 REPORT 和需求账本中的数值，不读取远端 FIFO。 */
     public DbaPlan planDbaExecution(long targetFrameId, long controlNs, BigDecimal rateMbps,
                                     long periodNs, SimulationContext simulation) {
@@ -157,8 +167,20 @@ public final class Mfu {
             simulation.recordDbaObjectState(input, allocation);
         }
         DbaPlan plan = executionPolicy.plan(input);
-        new DbaPlanValidator().validateAndPreview(input, plan);
-        simulation.recordDbaDecision(plan, controlNs);
+        List<DbaPlanValidator.Slot> slots = new DbaPlanValidator().validateAndPreview(input, plan);
+        if (multiGrantEnabled) {
+            // 把统一校验器的只读窗口物化为执行偏移，不在链路层另写一套多窗口排放公式。
+            long frameStart = Math.multiplyExact(targetFrameId, periodNs);
+            List<DbaPlan.Grant> executable = new ArrayList<>();
+            for (DbaPlanValidator.Slot slot : slots) {
+                executable.add(new DbaPlan.Grant(slot.allocationId(), slot.sfuId(), slot.plannedBytes(),
+                        slot.endNs() - slot.startNs(), slot.startNs() - frameStart));
+            }
+            plan = new DbaPlan(plan.decisionTimeNs(), plan.targetFrameId(), executable, plan.decisionReason());
+            simulation.recordDbaMultiPlan(plan, controlNs);
+        } else {
+            simulation.recordDbaDecision(plan, controlNs);
+        }
         return plan;
     }
 

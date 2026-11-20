@@ -256,6 +256,28 @@ public final class TraceLogger {
                 choice == null ? 0 : choice.plannedDurationNs(), controlNs, plan.decisionReason());
     }
 
+    /** 多授权模式同时记录整帧计划和逐笔预算，不能用原单授权标量日志隐去其他SFU。 */
+    public void recordDbaMultiPlan(DbaPlan plan, long controlNs) {
+        java.math.BigInteger bytes = java.math.BigInteger.ZERO;
+        long durationNs = 0;
+        for (DbaPlan.Grant grant : plan.grants()) {
+            bytes = bytes.add(java.math.BigInteger.valueOf(grant.plannedBytes()));
+            durationNs = Math.addExact(durationNs, grant.plannedDurationNs());
+        }
+        output.printf(Locale.ROOT, "node=MFU event=PON_DBA_MULTI_PLAN time_ns=%d target_frame_id=%d "
+                        + "grant_count=%d planned_bytes=%s planned_duration_ns=%d control_reserved_ns=%d "
+                        + "decision_reason=%s%n", plan.decisionTimeNs(), plan.targetFrameId(), plan.grants().size(),
+                bytes, durationNs, controlNs, plan.decisionReason());
+        int index = 0;
+        for (DbaPlan.Grant grant : plan.grants()) {
+            output.printf(Locale.ROOT, "node=MFU event=PON_DBA_MULTI_DECISION time_ns=%d target_frame_id=%d "
+                            + "allocation_id=%d sfu_id=%d planned_bytes=%d planned_duration_ns=%d "
+                            + "grant_index=%d slot_offset_ns=%d decision_reason=%s%n",
+                    plan.decisionTimeNs(), plan.targetFrameId(), grant.allocationId(), grant.sfuId(),
+                    grant.plannedBytes(), grant.plannedDurationNs(), ++index, grant.startOffsetNs(), plan.decisionReason());
+        }
+    }
+
     /** 每个对象独立显示已知需求和授权阻塞；等待结算不改变KNOWN/UNKNOWN状态。 */
     public void recordDbaObjectState(DbaContext input, DbaContext.Allocation allocation) {
         output.printf(Locale.ROOT, "node=MFU event=PON_DBA_OBJECT_STATE time_ns=%d target_frame_id=%d "

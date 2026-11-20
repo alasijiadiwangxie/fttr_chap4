@@ -53,6 +53,7 @@ public final class PonUplink {
     private long budgetReservedNs;
     private long budgetActualNs;
     private long lastBudgetEndNs;
+    private boolean multiGrantEnabled;
 
     public PonUplink(BigDecimal rateMbps, long propagationNs) {
         this(rateMbps, propagationNs, 0);
@@ -98,11 +99,19 @@ public final class PonUplink {
 
     /** 可选真实路径；原构造和 FCFS 执行完全保持原样。 */
     public void enableDbaExecution(Mfu mfu) {
+        enableDbaExecution(mfu, false);
+    }
+
+    public void enableDbaExecution(Mfu mfu, boolean multiGrant) {
         if (dbaMfu != null || mfu == null || framePeriodNs <= 0 || bwmapPropagationNs < 0
                 || bwmapPropagationNs >= framePeriodNs || !reportEnabled || polling == null) {
             throw new IllegalArgumentException("Real rr DBA requires framed/report/BWmap/finite polling");
         }
         dbaMfu = mfu;
+        multiGrantEnabled = multiGrant;
+        if (multiGrant) {
+            mfu.enableMultiGrantDba();
+        }
         refreshDbaFiller();
     }
 
@@ -384,11 +393,14 @@ public final class PonUplink {
             nextPollFrame = last - frameId >= polling.intervalFrames() ? frameId + polling.intervalFrames() : 0;
         }
         DbaPlan plan = dbaMfu.planDbaExecution(targetFrame, controlNs, rateMbps, framePeriodNs, context);
-        if (plan.grants().size() > 1) {
+        if (!multiGrantEnabled && plan.grants().size() > 1) {
             throw new IllegalStateException("Real rr DBA supports at most one DATA budget per target frame");
         }
         for (DbaPlan.Grant proposed : plan.grants()) {
-            long start = Math.addExact(targetStart, controlNs);
+            if (multiGrantEnabled && proposed.startOffsetNs() == null) {
+                throw new IllegalStateException("Multi-grant execution requires validated slot offsets");
+            }
+            long start = Math.addExact(targetStart, multiGrantEnabled ? proposed.startOffsetNs() : controlNs);
             long end = Math.addExact(start, proposed.plannedDurationNs());
             if (start < lastBudgetEndNs || end > Math.addExact(targetStart, framePeriodNs)) {
                 throw new IllegalStateException("Real DATA budget overlaps another slot or exceeds its frame");

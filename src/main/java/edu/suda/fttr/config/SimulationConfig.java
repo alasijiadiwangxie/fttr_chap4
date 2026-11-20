@@ -32,13 +32,15 @@ public final class SimulationConfig {
     private final boolean demandLedgerEnabled;
     private final boolean dbaShadowEnabled;
     private final boolean dbaExecutionEnabled;
+    private final boolean dbaMultiGrantEnabled;
 
     SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs,
                      PonLink ponDownlink, PonLink ponUplink, long wifiDelayUs, WirelessPhy wirelessPhy,
                      WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters, WifiAccessMode wifiAccessMode,
                      WifiRetryPolicy wifiRetryPolicy,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled,
-                     boolean demandLedgerEnabled, boolean dbaShadowEnabled, boolean dbaExecutionEnabled) {
+                     boolean demandLedgerEnabled, boolean dbaShadowEnabled, boolean dbaExecutionEnabled,
+                     boolean dbaMultiGrantEnabled) {
         this.inputEvents = List.copyOf(inputEvents);
         this.sfuCount = sfuCount;
         this.staSfuIds = List.copyOf(staSfuIds);
@@ -57,6 +59,7 @@ public final class SimulationConfig {
         this.demandLedgerEnabled = demandLedgerEnabled;
         this.dbaShadowEnabled = dbaShadowEnabled;
         this.dbaExecutionEnabled = dbaExecutionEnabled;
+        this.dbaMultiGrantEnabled = dbaMultiGrantEnabled;
     }
 
     /** 首个报文的长度，兼容原有单包调用。多包场景从各报文读取长度。 */
@@ -172,6 +175,10 @@ public final class SimulationConfig {
 
     public boolean dbaExecutionEnabled() {
         return dbaExecutionEnabled;
+    }
+
+    public boolean dbaMultiGrantEnabled() {
+        return dbaMultiGrantEnabled;
     }
 
     /** 单方向的共享光发送器配置，传播时延与原有固定光链路时延分别设置。 */

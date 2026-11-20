@@ -44,7 +44,7 @@ public final class Simulator {
                 ? new PonDbaShadowPlanner(config.staSfuIds(), uplinkConfig.rateMbps(), uplinkConfig.framePeriodNs()) : null;
         Mfu mfu = new Mfu(config.staSfuIds(), ponDownlink, demandLedgerEnabled, shadowPlanner);
         if (config.dbaExecutionEnabled()) {
-            ponUplink.enableDbaExecution(mfu);
+            ponUplink.enableDbaExecution(mfu, config.dbaMultiGrantEnabled());
         }
         SimulationContext context = new SimulationContext(trace, runSummary, config.usesNanosecondTicks(),
                 retryPolicy != null, demandLedgerEnabled ? mfu : null);

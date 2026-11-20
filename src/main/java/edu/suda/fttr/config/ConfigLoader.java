@@ -131,9 +131,11 @@ public final class ConfigLoader {
         SimulationConfig.PonLink ponUplink = readPonLink(properties, FIBER_UPLINK, "2500", bwmapPropagationNs);
         boolean demandLedgerEnabled = readDemandLedgerEnabled(properties, ponUplink);
         boolean dbaShadowEnabled = readDbaShadowEnabled(properties, ponUplink, demandLedgerEnabled);
-        boolean dbaExecutionEnabled = properties.getProperty(UPLINK_DBA_MODE, "fcfs").strip().equals("rr");
+        String dbaMode = properties.getProperty(UPLINK_DBA_MODE, "fcfs").strip();
+        boolean dbaMultiGrantEnabled = dbaMode.equals("rr-multi");
+        boolean dbaExecutionEnabled = dbaMode.equals("rr") || dbaMultiGrantEnabled;
         if (dbaExecutionEnabled && sfuCount > 2) {
-            throw new IllegalArgumentException("Real rr DBA currently supports one or two SFUs");
+            throw new IllegalArgumentException("Real DBA execution currently supports one or two SFUs");
         }
         boolean hasFixedDelay = properties.containsKey(FIBER_DELAY_US);
         long fiberUs = hasFixedDelay || (ponDownlink == null && ponUplink == null)
@@ -167,7 +169,8 @@ public final class ConfigLoader {
                 frameExchange);
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
                 frameExchange, edcaParameters, accessMode, retryPolicy, downlink.windowsUs, uplink.windowsUs,
-                directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled);
+                directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled,
+                dbaMultiGrantEnabled);
     }
 
     private static boolean readDbaShadowEnabled(Properties properties, SimulationConfig.PonLink uplink,
@@ -176,8 +179,8 @@ public final class ConfigLoader {
         if (mode.equals("fcfs")) {
             return false;
         }
-        if (!mode.equals("shadow-rr") && !mode.equals("rr")) {
-            throw new IllegalArgumentException(UPLINK_DBA_MODE + " must be fcfs, shadow-rr or rr");
+        if (!mode.equals("shadow-rr") && !mode.equals("rr") && !mode.equals("rr-multi")) {
+            throw new IllegalArgumentException(UPLINK_DBA_MODE + " must be fcfs, shadow-rr, rr or rr-multi");
         }
         if (uplink == null || uplink.framePeriodNs() == 0 || uplink.bwmapPropagationNs() < 0
                 || !uplink.reportEnabled() || !demandLedgerEnabled || uplink.polling() == null) {
