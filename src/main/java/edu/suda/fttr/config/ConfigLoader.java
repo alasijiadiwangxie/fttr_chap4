@@ -1,5 +1,6 @@
 package edu.suda.fttr.config;
 
+import edu.suda.fttr.dba.GiantSlaAdmission;
 import edu.suda.fttr.dba.TcontProfile;
 import edu.suda.fttr.dba.TcontTopology;
 import edu.suda.fttr.entity.AccessCategory;
@@ -85,7 +86,8 @@ public final class ConfigLoader {
                     + "class\\.(VO|VI|BE|BK)\\.(rate\\.pps|rate\\.mbps|packet\\.bytes))");
     private static final Pattern TCONT_ALLOCATION_KEY = Pattern.compile(
             "fiber\\.uplink\\.tcont\\.alloc\\.([1-9][0-9]*)\\.(sfu\\.id|type|classes|si\\.max\\.frames|"
-                    + "si\\.min\\.frames|ab\\.min\\.bytes|ab\\.sur\\.bytes)");
+                    + "si\\.min\\.frames|ab\\.min\\.bytes|ab\\.sur\\.bytes|"
+                    + "si\\.fixed\\.frames|ab\\.fixed\\.bytes|si\\.be\\.frames|ab\\.be\\.bytes)");
     private static final AccessCategory[] CATEGORIES = AccessCategory.values();
 
     private static final class PoissonTraffic {
@@ -142,12 +144,21 @@ public final class ConfigLoader {
         boolean demandLedgerEnabled = readDemandLedgerEnabled(properties, ponUplink);
         String dbaMode = readDbaMode(properties, ponUplink, demandLedgerEnabled);
         boolean dbaShadowEnabled = dbaMode.equals("shadow-rr");
-        boolean dbaGiantEnabled = dbaMode.equals("giant");
+        boolean dbaGiantCompleteEnabled = dbaMode.equals("giant-complete");
+        boolean dbaGiantEnabled = dbaMode.equals("giant") || dbaGiantCompleteEnabled;
         boolean dbaMultiGrantEnabled = dbaMode.equals("rr-multi") || dbaGiantEnabled;
         boolean dbaExecutionEnabled = dbaMode.equals("rr") || dbaMultiGrantEnabled;
         TcontTopology tcontTopology = readTcontTopology(properties, sfuCount, dbaExecutionEnabled);
         if (dbaGiantEnabled && !tcontTopology.enabled()) {
-            throw new IllegalArgumentException("giant requires " + TCONT_ENABLED + "=true");
+            throw new IllegalArgumentException(dbaMode + " requires " + TCONT_ENABLED + "=true");
+        }
+        if (dbaGiantEnabled && !dbaGiantCompleteEnabled
+                && tcontTopology.profiles().stream().anyMatch(profile -> profile.type() == 1 || profile.type() == 5)) {
+            throw new IllegalArgumentException("giant is the Type 2/3/4 baseline; use giant-complete for Type 1 or 5");
+        }
+        if (dbaGiantCompleteEnabled) {
+            GiantSlaAdmission.validate(tcontTopology.profiles(), ponUplink.framePeriodNs(), ponUplink.rateMbps(),
+                    ponUplink.polling().bytes());
         }
         if (dbaExecutionEnabled && sfuCount > 2 && !tcontTopology.enabled()) {
             throw new IllegalArgumentException("Real DBA execution currently supports one or two SFUs");
@@ -185,7 +196,7 @@ public final class ConfigLoader {
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
                 frameExchange, edcaParameters, accessMode, retryPolicy, downlink.windowsUs, uplink.windowsUs,
                 directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled,
-                dbaMultiGrantEnabled, dbaGiantEnabled, tcontTopology);
+                dbaMultiGrantEnabled, dbaGiantEnabled, dbaGiantCompleteEnabled, tcontTopology);
     }
 
     private static TcontTopology readTcontTopology(Properties properties, int sfuCount, boolean dbaExecutionEnabled) {
@@ -203,7 +214,7 @@ public final class ConfigLoader {
         }
         // 真实 DBA 路径依赖 pon-framed、BWmap、REPORT、账本和有限轮询。
         if (!dbaExecutionEnabled) {
-            throw new IllegalArgumentException(TCONT_ENABLED + " requires fiber.uplink.dba.mode=rr, rr-multi or giant");
+            throw new IllegalArgumentException(TCONT_ENABLED + " requires fiber.uplink.dba.mode=rr, rr-multi, giant or giant-complete");
         }
         Set<Long> allocationIds = new HashSet<>();
         List<TcontProfile> profiles = new ArrayList<>();
@@ -227,17 +238,7 @@ public final class ConfigLoader {
                     throw new IllegalArgumentException(prefix + "classes contains a duplicate business class");
                 }
             }
-            int siMax = readPositiveInt(properties, prefix + "si.max.frames");
-            // Type 2 不使用剩余带宽阶段，其 SImin / ABsur 可以省略，含义明确为零。
-            long siMinLong = type == 2 && !properties.containsKey(prefix + "si.min.frames") ? 0
-                    : readNonNegativeLong(properties, prefix + "si.min.frames");
-            if (siMinLong > Integer.MAX_VALUE) {
-                throw new IllegalArgumentException(prefix + "si.min.frames must fit a nonnegative integer");
-            }
-            long abMin = readNonNegativeLong(properties, prefix + "ab.min.bytes");
-            long abSur = type == 2 && !properties.containsKey(prefix + "ab.sur.bytes") ? 0
-                    : readNonNegativeLong(properties, prefix + "ab.sur.bytes");
-            profiles.add(new TcontProfile(allocationId, sfuId, type, classes, siMax, (int) siMinLong, abMin, abSur));
+            profiles.add(readTcontProfile(properties, prefix, allocationId, sfuId, type, classes));
         }
         // 已声明但未列入 alloc.ids 的对象也必须报错，防止部分参数被静默忽略。
         for (String key : properties.stringPropertyNames()) {
@@ -249,14 +250,53 @@ public final class ConfigLoader {
         return new TcontTopology(sfuCount, profiles);
     }
 
+    private static TcontProfile readTcontProfile(Properties properties, String prefix, long allocationId,
+                                                 int sfuId, int type, Set<AccessCategory> classes) {
+        // Type 1 只有固定带宽；Type 1/2 可省略未启用的 SImin / ABsur。
+        int siMax = type == 1 ? readTcontInterval(properties, prefix + "si.max.frames", true)
+                : readPositiveInt(properties, prefix + "si.max.frames");
+        int siMin = readTcontInterval(properties, prefix + "si.min.frames", type == 1 || type == 2);
+        long abMin = readTcontQuota(properties, prefix + "ab.min.bytes", type == 1);
+        long abSur = readTcontQuota(properties, prefix + "ab.sur.bytes", type == 1 || type == 2);
+
+        String siFixedKey = prefix + "si.fixed.frames";
+        String abFixedKey = prefix + "ab.fixed.bytes";
+        String siBeKey = prefix + "si.be.frames";
+        String abBeKey = prefix + "ab.be.bytes";
+        if (type >= 2 && type <= 4) {
+            for (String key : List.of(siFixedKey, abFixedKey, siBeKey, abBeKey)) {
+                if (properties.containsKey(key)) {
+                    throw new IllegalArgumentException(key + " is not used by Type " + type);
+                }
+            }
+            return new TcontProfile(allocationId, sfuId, type, classes, siMax, siMin, abMin, abSur);
+        }
+        return new TcontProfile(allocationId, sfuId, type, classes, siMax, siMin, abMin, abSur,
+                readTcontInterval(properties, siFixedKey, false), readTcontQuota(properties, abFixedKey, false),
+                readTcontInterval(properties, siBeKey, type == 1), readTcontQuota(properties, abBeKey, type == 1));
+    }
+
+    private static int readTcontInterval(Properties properties, String key, boolean optional) {
+        long value = readTcontQuota(properties, key, optional);
+        if (value > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(key + " must fit a nonnegative integer");
+        }
+        return (int) value;
+    }
+
+    private static long readTcontQuota(Properties properties, String key, boolean optional) {
+        return optional && !properties.containsKey(key) ? 0 : readNonNegativeLong(properties, key);
+    }
+
     private static String readDbaMode(Properties properties, SimulationConfig.PonLink uplink,
                                       boolean demandLedgerEnabled) {
         String mode = properties.getProperty(UPLINK_DBA_MODE, "fcfs").strip();
         if (mode.equals("fcfs")) {
             return mode;
         }
-        if (!mode.equals("shadow-rr") && !mode.equals("rr") && !mode.equals("rr-multi") && !mode.equals("giant")) {
-            throw new IllegalArgumentException(UPLINK_DBA_MODE + " must be fcfs, shadow-rr, rr, rr-multi or giant");
+        if (!mode.equals("shadow-rr") && !mode.equals("rr") && !mode.equals("rr-multi")
+                && !mode.equals("giant") && !mode.equals("giant-complete")) {
+            throw new IllegalArgumentException(UPLINK_DBA_MODE + " must be fcfs, shadow-rr, rr, rr-multi, giant or giant-complete");
         }
         if (uplink == null || uplink.framePeriodNs() == 0 || uplink.bwmapPropagationNs() < 0
                 || !uplink.reportEnabled() || !demandLedgerEnabled || uplink.polling() == null) {

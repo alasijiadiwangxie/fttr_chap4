@@ -11,19 +11,28 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 基于 Leligou 等（2006）图 2、3 的两阶段 GIANT。计数器按帧推进。
- * 调度只读取 MFU 的需求快照，授权执行、传播与未用预算结算由原链路负责。
+ * 按帧规划。经典模式保留第 16 步结果，完整模式增加固定服务、完整的阶段区分与流水预约。
+ * 两种模式只消费 MFU 的不可变需求快照。
  */
 public final class GiantDbaPolicy implements DbaPolicy {
     public enum Reason {
         INACTIVE, NOT_DUE, UNKNOWN, NO_DEMAND, AWAITING_SETTLEMENT, NO_CAPACITY, GRANTED, PARTIAL_CAPACITY
     }
 
-    private final Map<Long, Decision> previous = new HashMap<>();
+    private final boolean complete;
+    private final Map<Long, Service> previous = new HashMap<>();
     private long lastFrameId = -1;
-    private long lastType3SurplusId;
-    private long lastType4SurplusId;
+    private long nonAssuredCursor;
+    private long bestEffortCursor;
     private List<Decision> lastDecisions = List.of();
+
+    public GiantDbaPolicy() {
+        this(false);
+    }
+
+    public GiantDbaPolicy(boolean complete) {
+        this.complete = complete;
+    }
 
     @Override
     public DbaPlan plan(DbaContext context) {
@@ -34,38 +43,39 @@ public final class GiantDbaPolicy implements DbaPolicy {
         }
 
         List<Service> services = new ArrayList<>();
-        List<Service> type3 = new ArrayList<>();
-        List<Service> type4 = new ArrayList<>();
         for (DbaContext.Allocation allocation : context.allocations()) {
-            services.add(new Service(allocation, previous.get(allocation.allocationId())));
+            services.add(new Service(allocation, previous.get(allocation.allocationId()), complete));
         }
         services.sort(Comparator.comparingInt((Service service) -> service.profile.type())
-                .thenComparingLong(service -> service.allocation.allocationId()));
+                .thenComparingLong(Service::id));
 
         FrameBudget frame = new FrameBudget(context);
-        // 优先完成所有保障决策，再把空间留给剩余阶段。保障阶段以类型和 ID 定序。
         for (Service service : services) {
-            service.assuredReason = allocate(service, service.siMaxBefore, service.profile.abMinBytes(), frame);
-            service.assuredBytes = service.budgetBytes;
-            switch (service.profile.type()) {
-                case 3: type3.add(service); break;
-                case 4: type4.add(service); break;
-                default: break;
+            allocate(service, service.fixed, frame);
+        }
+        List<Service> nonAssured = new ArrayList<>();
+        List<Service> bestEffort = new ArrayList<>();
+        for (Service service : services) {
+            allocate(service, service.assured, frame);
+            if (service.nonAssured.interval > 0) {
+                nonAssured.add(service);
+            }
+            if (service.bestEffort.interval > 0) {
+                bestEffort.add(service);
             }
         }
-        lastType3SurplusId = allocateSurplus(type3, lastType3SurplusId, frame);
-        lastType4SurplusId = allocateSurplus(type4, lastType4SurplusId, frame);
+        nonAssuredCursor = allocateSurplus(nonAssured, nonAssuredCursor, frame, false);
+        bestEffortCursor = allocateSurplus(bestEffort, bestEffortCursor, frame, true);
 
         List<DbaPlan.Grant> grants = new ArrayList<>();
         for (Service service : frame.admitted) {
-            grants.add(new DbaPlan.Grant(service.allocation.allocationId(), service.allocation.sfuId(),
-                    service.budgetBytes, service.durationNs));
+            grants.add(new DbaPlan.Grant(service.id(), service.allocation.sfuId(),
+                    service.budgetBytes, service.durationNs, null, service.fixed.granted));
         }
         List<Decision> decisions = new ArrayList<>();
         for (Service service : services) {
-            Decision decision = new Decision(service);
-            decisions.add(decision);
-            previous.put(decision.allocation().allocationId(), decision);
+            decisions.add(new Decision(service, complete));
+            previous.put(service.id(), service);
         }
         lastDecisions = List.copyOf(decisions);
         lastFrameId = frameId;
@@ -73,69 +83,88 @@ public final class GiantDbaPolicy implements DbaPolicy {
                 grants.isEmpty() ? "GIANT_NO_GRANT" : "GIANT");
     }
 
-    /** 最近一帧的不可变决策快照，供 MFU 在通过统一校验后记录。 */
     public List<Decision> lastDecisions() {
         return lastDecisions;
     }
 
-    private static long allocateSurplus(List<Service> group, long lastServedId, FrameBudget frame) {
-        // 各剩余阶段各有一个游标。起点在本轮固定，无预算时游标不动。
+    private long allocateSurplus(List<Service> group, long cursor, FrameBudget frame, boolean bestEffort) {
+        group.sort(Comparator.comparingLong(Service::id));
         int start = 0;
-        while (start < group.size() && group.get(start).allocation.allocationId() <= lastServedId) {
+        while (start < group.size() && group.get(start).id() <= cursor) {
             start++;
         }
+        long firstServed = 0;
+        boolean constrained = false;
         for (int offset = 0; offset < group.size(); offset++) {
             int index = (int) (((long) start + offset) % group.size());
             Service service = group.get(index);
-            service.surplusReason = allocate(service, service.siMinBefore, service.profile.abSurBytes(), frame);
-            if (service.budgetBytes > service.assuredBytes) {
-                lastServedId = service.allocation.allocationId();
+            Phase phase = bestEffort ? service.bestEffort : service.nonAssured;
+            allocate(service, phase, frame);
+            if (phase.granted > 0) {
+                if (firstServed == 0) {
+                    firstServed = service.id();
+                }
+                cursor = service.id();
             }
+            constrained |= phase.reason == Reason.NO_CAPACITY || phase.reason == Reason.PARTIAL_CAPACITY;
         }
-        return lastServedId;
+        // 完整模式不能把帧尾的零碎字节当成一次公平轮转。拥塞时把下轮首选机会
+        // 交给本轮首个正预算对象之后的同级对象，后者有机会得到足够装载整包的窗口。
+        return complete && constrained && firstServed != 0 ? firstServed : cursor;
     }
 
-    private static Reason allocate(Service service, int counter, long quota, FrameBudget frame) {
-        if (counter == 0) {
-            return Reason.INACTIVE;
+    private void allocate(Service service, Phase phase, FrameBudget frame) {
+        if (phase.before == 0) {
+            return;
         }
-        if (counter > 1) {
-            return Reason.NOT_DUE;
+        if (phase.before > 1) {
+            phase.reason = Reason.NOT_DUE;
+            return;
         }
         DbaContext.Allocation allocation = service.allocation;
-        if (allocation.budgetOutstanding()) {
-            return Reason.AWAITING_SETTLEMENT;
-        }
-        if (!allocation.known()) {
-            return Reason.UNKNOWN;
-        }
-        long wanted = Math.min(quota, allocation.knownDemandBytes() - service.budgetBytes);
-        if (wanted == 0) {
-            return Reason.NO_DEMAND;
+        if (phase == service.fixed) {
+            // 固定预约独立于 REPORT。空 FIFO 的预留仍占时隙，但不会计作 DATA。
+            phase.wanted = phase.quota;
+        } else {
+            if (!complete && allocation.budgetOutstanding()) {
+                phase.reason = Reason.AWAITING_SETTLEMENT;
+                return;
+            }
+            if (!allocation.known()) {
+                phase.reason = Reason.UNKNOWN;
+                return;
+            }
+            phase.wanted = Math.min(phase.quota, Math.max(0, allocation.knownDemandBytes() - service.budgetBytes));
+            if (phase.wanted == 0) {
+                phase.reason = Reason.NO_DEMAND;
+                return;
+            }
         }
 
-        // 合并预算的总字节只做一次 ceil。已有预算的纳秒可在本对象内重新使用，
-        // 因此额外阶段只扣合并后增加的时长；不能借用别的对象的纳秒取整余量。
+        // 已有额度与本阶段额度属于同一窗口，只扣合并后增加的纳秒。
         BigInteger capacity = frame.context.capacityBytes(frame.remainingNs + service.durationNs)
                 .subtract(BigInteger.valueOf(service.budgetBytes));
-        long extra = capacity.min(BigInteger.valueOf(wanted)).longValueExact();
-        if (extra <= 0) {
-            return Reason.NO_CAPACITY;
+        phase.granted = capacity.min(BigInteger.valueOf(phase.wanted)).longValueExact();
+        if (phase.granted == 0) {
+            phase.reason = Reason.NO_CAPACITY;
+            return;
         }
         if (service.budgetBytes == 0) {
             frame.admitted.add(service);
         }
-        service.budgetBytes += extra;
+        phase.order = ++frame.phaseOrder;
+        service.budgetBytes += phase.granted;
         long ns = PonLinkTiming.serializationNs(service.budgetBytes, frame.context.rateMbps());
         frame.remainingNs -= ns - service.durationNs;
         service.durationNs = ns;
-        return extra < wanted ? Reason.PARTIAL_CAPACITY : Reason.GRANTED;
+        phase.reason = phase.granted < phase.wanted ? Reason.PARTIAL_CAPACITY : Reason.GRANTED;
     }
 
     private static final class FrameBudget {
         private final DbaContext context;
         private final List<Service> admitted = new ArrayList<>();
         private long remainingNs;
+        private int phaseOrder;
 
         private FrameBudget(DbaContext context) {
             this.context = context;
@@ -143,68 +172,110 @@ public final class GiantDbaPolicy implements DbaPolicy {
         }
     }
 
+    /** 计数器与额度状态。0 表示该阶段不适用，1 是本帧到期。 */
+    private static final class Phase {
+        private final int interval;
+        private final int before;
+        private final long quota;
+        private final boolean periodic;
+        private long wanted;
+        private long granted;
+        private int order;
+        private Reason reason = Reason.INACTIVE;
+
+        private Phase(int interval, long quota, boolean periodic, Phase previous) {
+            this.interval = interval;
+            this.quota = quota;
+            this.periodic = periodic;
+            before = previous == null ? interval : previous.after();
+        }
+
+        private int after() {
+            if (before == 1 && (periodic || granted > 0)) {
+                return interval;
+            }
+            return before > 1 ? before - 1 : before;
+        }
+    }
+
     private static final class Service {
         private final DbaContext.Allocation allocation;
         private final TcontProfile profile;
-        private final int siMaxBefore;
-        private final int siMinBefore;
-        private Reason assuredReason = Reason.INACTIVE;
-        private Reason surplusReason = Reason.INACTIVE;
-        private long assuredBytes;
+        private final Phase fixed;
+        private final Phase assured;
+        private final Phase nonAssured;
+        private final Phase bestEffort;
         private long budgetBytes;
         private long durationNs;
 
-        private Service(DbaContext.Allocation allocation, Decision previous) {
+        private Service(DbaContext.Allocation allocation, Service prior, boolean complete) {
             this.allocation = allocation;
             profile = allocation.profile();
             if (profile == null) {
                 throw new IllegalArgumentException("GIANT requires a T-CONT profile for every allocation");
             }
-            siMaxBefore = previous != null ? previous.siMaxAfter() : profile.type() == 4 ? 0 : profile.siMaxFrames();
-            siMinBefore = previous != null ? previous.siMinAfter() : profile.siMinFrames();
+            int type = profile.type();
+            if (!complete && (type == 1 || type == 5)) {
+                throw new IllegalArgumentException("Type 1 and Type 5 require complete GIANT");
+            }
+            boolean assuredActive = type == 2 || type == 3 || type == 5;
+            boolean nonAssuredActive = type == 3 || type == 5;
+            fixed = new Phase(profile.siFixedFrames(), profile.abFixedBytes(), true,
+                    prior == null ? null : prior.fixed);
+            assured = new Phase(assuredActive ? profile.siMaxFrames() : 0, profile.abMinBytes(), true,
+                    prior == null ? null : prior.assured);
+            nonAssured = new Phase(nonAssuredActive ? profile.siMinFrames() : 0, profile.abSurBytes(), false,
+                    prior == null ? null : prior.nonAssured);
+            bestEffort = new Phase(type == 4 ? profile.siMinFrames() : profile.siBeFrames(),
+                    type == 4 ? profile.abSurBytes() : profile.abBeBytes(), false,
+                    prior == null ? null : prior.bestEffort);
+        }
+
+        private long id() {
+            return allocation.allocationId();
         }
     }
 
+    /** 每帧创建新 Service，已发布快照不再修改。记录阶段决策顺序与额度，供验收复核。 */
     public static final class Decision {
-        private final DbaContext.Allocation allocation;
-        private final int siMaxBefore;
-        private final int siMaxAfter;
-        private final int siMinBefore;
-        private final int siMinAfter;
-        private final Reason assuredReason;
-        private final Reason surplusReason;
-        private final long assuredBytes;
-        private final long surplusBytes;
-        private final long budgetBytes;
-        private final long durationNs;
+        private final Service service;
+        private final boolean complete;
 
-        private Decision(Service service) {
-            allocation = service.allocation;
-            siMaxBefore = service.siMaxBefore;
-            siMinBefore = service.siMinBefore;
-            assuredReason = service.assuredReason;
-            surplusReason = service.surplusReason;
-            assuredBytes = service.assuredBytes;
-            budgetBytes = service.budgetBytes;
-            surplusBytes = budgetBytes - assuredBytes;
-            durationNs = service.durationNs;
-            // SImax 到期即重置，哪怕本轮没有授权。SImin 到期后等待正额外预算；
-            // 两者都按规划走时钟，不等待 DATA 装载或结算反馈。
-            siMaxAfter = siMaxBefore == 1 ? service.profile.siMaxFrames() : Math.max(0, siMaxBefore - 1);
-            siMinAfter = surplusBytes > 0 ? service.profile.siMinFrames()
-                    : siMinBefore > 1 ? siMinBefore - 1 : siMinBefore;
+        private Decision(Service service, boolean complete) {
+            this.service = service;
+            this.complete = complete;
         }
 
-        public DbaContext.Allocation allocation() { return allocation; }
-        public int siMaxBefore() { return siMaxBefore; }
-        public int siMaxAfter() { return siMaxAfter; }
-        public int siMinBefore() { return siMinBefore; }
-        public int siMinAfter() { return siMinAfter; }
-        public Reason assuredReason() { return assuredReason; }
-        public Reason surplusReason() { return surplusReason; }
-        public long assuredBytes() { return assuredBytes; }
-        public long surplusBytes() { return surplusBytes; }
-        public long budgetBytes() { return budgetBytes; }
-        public long durationNs() { return durationNs; }
+        private Phase minPhase() {
+            return service.profile.type() == 4 ? service.bestEffort : service.nonAssured;
+        }
+
+        public boolean complete() { return complete; }
+        public DbaContext.Allocation allocation() { return service.allocation; }
+        public int siMaxBefore() { return service.assured.before; }
+        public int siMaxAfter() { return service.assured.after(); }
+        public int siMinBefore() { return minPhase().before; }
+        public int siMinAfter() { return minPhase().after(); }
+        public int siFixedBefore() { return service.fixed.before; }
+        public int siFixedAfter() { return service.fixed.after(); }
+        public int siBeBefore() { return service.profile.type() == 5 ? service.bestEffort.before : 0; }
+        public int siBeAfter() { return service.profile.type() == 5 ? service.bestEffort.after() : 0; }
+        public Reason assuredReason() { return service.assured.reason; }
+        public Reason surplusReason() { return minPhase().reason; }
+        public Reason fixedReason() { return service.fixed.reason; }
+        public Reason nonAssuredReason() { return service.nonAssured.reason; }
+        public Reason bestEffortReason() { return service.bestEffort.reason; }
+        public long assuredBytes() { return service.assured.granted; }
+        public long assuredWantedBytes() { return service.assured.wanted; }
+        public long surplusBytes() { return nonAssuredBytes() + bestEffortBytes(); }
+        public long fixedBytes() { return service.fixed.granted; }
+        public long nonAssuredBytes() { return service.nonAssured.granted; }
+        public long bestEffortBytes() { return service.bestEffort.granted; }
+        public long budgetBytes() { return service.budgetBytes; }
+        public long durationNs() { return service.durationNs; }
+        public int fixedOrder() { return service.fixed.order; }
+        public int assuredOrder() { return service.assured.order; }
+        public int nonAssuredOrder() { return service.nonAssured.order; }
+        public int bestEffortOrder() { return service.bestEffort.order; }
     }
 }

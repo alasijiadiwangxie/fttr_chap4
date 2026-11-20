@@ -44,6 +44,7 @@ public final class DbaPlan {
         private final long plannedBytes;
         private final long plannedDurationNs;
         private final Long startOffsetNs;
+        private final long fixedBytes;
 
         /** 未指定偏移时，由校验预览器在控制预留之后按集合顺序连续排放。 */
         public Grant(long allocationId, int sfuId, long plannedBytes, long plannedDurationNs) {
@@ -55,11 +56,18 @@ public final class DbaPlan {
          * 保留非法原值交由统一校验器拒绝，避免各个策略采用不一致的修正规则。
          */
         public Grant(long allocationId, int sfuId, long plannedBytes, long plannedDurationNs, Long startOffsetNs) {
+            this(allocationId, sfuId, plannedBytes, plannedDurationNs, startOffsetNs, 0);
+        }
+
+        /** 固定成分可以独立于 REPORT 发放，其余字节仍受 MFU 已知剩余需求约束。 */
+        public Grant(long allocationId, int sfuId, long plannedBytes, long plannedDurationNs, Long startOffsetNs,
+                     long fixedBytes) {
             this.allocationId = allocationId;
             this.sfuId = sfuId;
             this.plannedBytes = plannedBytes;
             this.plannedDurationNs = plannedDurationNs;
             this.startOffsetNs = startOffsetNs;
+            this.fixedBytes = fixedBytes;
         }
 
         public long allocationId() {
@@ -80,6 +88,10 @@ public final class DbaPlan {
 
         public Long startOffsetNs() {
             return startOffsetNs;
+        }
+
+        public long fixedBytes() {
+            return fixedBytes;
         }
     }
 }

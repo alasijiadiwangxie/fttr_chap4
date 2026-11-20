@@ -16,6 +16,10 @@ import java.util.Set;
  */
 public final class DbaPlanValidator {
     public List<Slot> validateAndPreview(DbaContext context, DbaPlan plan) {
+        return validateAndPreview(context, plan, false);
+    }
+
+    public List<Slot> validateAndPreview(DbaContext context, DbaPlan plan, boolean complete) {
         Objects.requireNonNull(context, "DBA context");
         Objects.requireNonNull(plan, "DBA plan");
         if (plan.decisionTimeNs() != context.decisionTimeNs()
@@ -51,11 +55,16 @@ public final class DbaPlanValidator {
                 if (grant.plannedBytes() < 0 || grant.plannedDurationNs() < 0) {
                     throw new IllegalArgumentException("Plan bytes and duration must be nonnegative");
                 }
-                if (grant.plannedBytes() > 0 && (!allocation.known()
+                if (grant.fixedBytes() < 0 || grant.fixedBytes() > grant.plannedBytes()
+                        || (grant.fixedBytes() > 0 && (!complete || allocation.profile() == null
+                        || grant.fixedBytes() > allocation.profile().abFixedBytes()))) {
+                    throw new IllegalArgumentException("Plan exceeds configured fixed bandwidth quota");
+                }
+                if (grant.plannedBytes() > grant.fixedBytes() && (!allocation.known()
                         || grant.plannedBytes() > allocation.knownDemandBytes())) {
                     throw new IllegalArgumentException("Plan exceeds known effective demand or demand is UNKNOWN");
                 }
-                if (grant.plannedBytes() > 0 && allocation.budgetOutstanding()) {
+                if (!complete && grant.plannedBytes() > 0 && allocation.budgetOutstanding()) {
                     throw new IllegalArgumentException("Allocation already has an unsettled DATA budget");
                 }
                 long expectedNs = grant.plannedBytes() == 0 ? 0
@@ -82,7 +91,7 @@ public final class DbaPlanValidator {
                 // 零预算合法，但不产生虚构的发送窗口；正预算按计划顺序放置。
                 if (grant.plannedBytes() > 0) {
                     slots.add(new Slot(grant.allocationId(), grant.sfuId(), startNs, endNs,
-                            grant.plannedBytes()));
+                            grant.plannedBytes(), grant.fixedBytes()));
                     cursorNs = endNs;
                 }
             }
@@ -99,13 +108,15 @@ public final class DbaPlanValidator {
         private final long startNs;
         private final long endNs;
         private final long plannedBytes;
+        private final long fixedBytes;
 
-        private Slot(long allocationId, int sfuId, long startNs, long endNs, long plannedBytes) {
+        private Slot(long allocationId, int sfuId, long startNs, long endNs, long plannedBytes, long fixedBytes) {
             this.allocationId = allocationId;
             this.sfuId = sfuId;
             this.startNs = startNs;
             this.endNs = endNs;
             this.plannedBytes = plannedBytes;
+            this.fixedBytes = fixedBytes;
         }
 
         public long allocationId() { return allocationId; }
@@ -113,5 +124,6 @@ public final class DbaPlanValidator {
         public long startNs() { return startNs; }
         public long endNs() { return endNs; }
         public long plannedBytes() { return plannedBytes; }
+        public long fixedBytes() { return fixedBytes; }
     }
 }

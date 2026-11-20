@@ -104,6 +104,7 @@ def read_execution(name: str, settings: dict[str, str], trace: list[dict]) -> li
     propagation_ns = int(Decimal(settings["fiber.uplink.propagation.us"]) * 1000)
     bwmap_propagation_ns = int(Decimal(settings["fiber.downlink.propagation.us"]) * 1000)
     rate_mbps = Decimal(settings["fiber.uplink.rate.mbps"])
+    pipelined = settings["fiber.uplink.dba.mode"] == "giant-complete"
     for tx in events(trace, "PON_DBA_BWMAP_TX"):
         grant_id, allocation, frame = (tx[field] for field in ("grant_id", "allocation_id", "target_frame_id"))
         require((allocation, frame) not in accounted_slots, f"{name}: split or duplicate reservation")
@@ -121,13 +122,16 @@ def read_execution(name: str, settings: dict[str, str], trace: list[dict]) -> li
                 and int(fill["time_ns"]) == start_ns and int(slot_end["time_ns"]) == end_ns
                 and int(settle["time_ns"]) == end_ns + propagation_ns,
                 f"{name}: invalid BWmap, transmit or settlement timing")
-        require(last_settlement.get(allocation, -1) < tx["_index"],
-                f"{name}: created a second reservation before the first one settled")
+        if not pipelined:
+            require(last_settlement.get(allocation, -1) < tx["_index"],
+                    f"{name}: created a second reservation before the first one settled")
         last_settlement[allocation] = settle["_index"]
         require(planned == actual + unused and actual == int(fill["selected_bytes"])
                 and int(fill["selected_duration_ns"]) + int(fill["unused_duration_ns"]) == end_ns - start_ns,
                 f"{name}: unused budget does not reconcile")
-        require(int(debit["effective_before"]) - planned == int(debit["effective_after"]),
+        before, after = int(debit["effective_before"]), int(debit["effective_after"])
+        expected_after = (-1 if before == -1 else max(0, before - planned)) if pipelined else before - planned
+        require(after == expected_after,
                 f"{name}: reservation debit does not reconcile")
         starts = events(group, "PON_DBA_DATA_START")
         ends = events(group, "PON_DBA_DATA_END")

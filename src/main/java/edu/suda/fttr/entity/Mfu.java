@@ -34,6 +34,7 @@ public final class Mfu {
     private long receivedUplinkReports;
     private DbaPolicy executionPolicy = new RoundRobinDbaPolicy();
     private boolean multiGrantEnabled;
+    private boolean giantCompleteEnabled;
     private TcontTopology tcontTopology;
 
     public Mfu(List<Integer> staSfuIds) {
@@ -204,12 +205,17 @@ public final class Mfu {
 
     /** 每轮仿真有自己的 GIANT 服务计数器，授权仍走同一条多预算执行路径。 */
     public void enableGiantDba() {
+        enableGiantDba(false);
+    }
+
+    public void enableGiantDba(boolean complete) {
         if (tcontTopology == null) {
             throw new IllegalStateException("GIANT DBA requires configured T-CONT profiles");
         }
         if (!(executionPolicy instanceof GiantDbaPolicy)) {
-            executionPolicy = new GiantDbaPolicy();
+            executionPolicy = new GiantDbaPolicy(complete);
             multiGrantEnabled = true;
+            giantCompleteEnabled = complete;
         }
     }
 
@@ -247,7 +253,7 @@ public final class Mfu {
             simulation.recordDbaObjectState(input, allocation);
         }
         DbaPlan plan = executionPolicy.plan(input);
-        List<DbaPlanValidator.Slot> slots = new DbaPlanValidator().validateAndPreview(input, plan);
+        List<DbaPlanValidator.Slot> slots = new DbaPlanValidator().validateAndPreview(input, plan, giantCompleteEnabled);
         if (executionPolicy instanceof GiantDbaPolicy) {
             for (GiantDbaPolicy.Decision decision : ((GiantDbaPolicy) executionPolicy).lastDecisions()) {
                 simulation.recordGiantDecision(input, decision);
@@ -259,7 +265,7 @@ public final class Mfu {
             List<DbaPlan.Grant> executable = new ArrayList<>();
             for (DbaPlanValidator.Slot slot : slots) {
                 executable.add(new DbaPlan.Grant(slot.allocationId(), slot.sfuId(), slot.plannedBytes(),
-                        slot.endNs() - slot.startNs(), slot.startNs() - frameStart));
+                        slot.endNs() - slot.startNs(), slot.startNs() - frameStart, slot.fixedBytes()));
             }
             plan = new DbaPlan(plan.decisionTimeNs(), plan.targetFrameId(), executable, plan.decisionReason());
             simulation.recordDbaMultiPlan(plan, controlNs);
@@ -275,15 +281,26 @@ public final class Mfu {
             throw new IllegalArgumentException("DATA budget does not match MFU topology or creation time");
         }
         PonDemandLedger.Estimate before = estimateAllocationDemand(grant.allocationId(), context.nowTicks());
+        if (grant.fixedBytes() > 0 && (!giantCompleteEnabled
+                || grant.fixedBytes() > tcontTopology.profile(grant.allocationId()).abFixedBytes())) {
+            throw new IllegalArgumentException("DATA budget exceeds configured fixed bandwidth quota");
+        }
         if (!demandLedger.hasAllocationBudget(grant.allocationId(), grant.id())
+                && grant.budgetBytes() > grant.fixedBytes()
                 && (!before.known() || grant.budgetBytes() > before.effectiveKnownBytes())) {
             throw new IllegalArgumentException("DATA budget exceeds MFU known effective demand");
         }
-        if (demandLedger.recordAllocationBudgetGrant(grant.allocationId(), grant.sfuId(), grant.id(),
-                grant.createNs(), grant.startNs(), grant.endNs(), grant.budgetBytes())) {
+        boolean created = giantCompleteEnabled
+                ? demandLedger.recordPipelinedAllocationBudgetGrant(grant.allocationId(), grant.sfuId(), grant.id(),
+                    grant.createNs(), grant.targetFrameId(), grant.startNs(), grant.endNs(), grant.budgetBytes(),
+                    grant.fixedBytes())
+                : demandLedger.recordAllocationBudgetGrant(grant.allocationId(), grant.sfuId(), grant.id(),
+                    grant.createNs(), grant.startNs(), grant.endNs(), grant.budgetBytes());
+        if (created) {
+            PonDemandLedger.Estimate after = estimateAllocationDemand(grant.allocationId(), context.nowTicks());
             context.recordDbaExecution("PON_DBA_LEDGER_CREATED", grant, "ledger_debit_bytes=" + grant.budgetBytes()
-                    + " effective_before=" + before.effectiveKnownBytes() + " effective_after="
-                    + estimateAllocationDemand(grant.allocationId(), context.nowTicks()).effectiveKnownBytes());
+                    + " effective_before=" + (before.known() ? before.effectiveKnownBytes() : -1)
+                    + " effective_after=" + (after.known() ? after.effectiveKnownBytes() : -1));
             recordGrantDemand(grant, "DBA_BUDGET_CREATED", context);
         }
     }

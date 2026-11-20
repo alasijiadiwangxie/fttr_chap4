@@ -13,6 +13,7 @@ public final class PonDbaGrant {
     private final long startNs;
     private final long endNs;
     private final long budgetBytes;
+    private final long fixedBytes;
     private boolean received;
     private PonGrantPacketFiller.Result result;
     private long completedBytes;
@@ -20,8 +21,14 @@ public final class PonDbaGrant {
 
     public PonDbaGrant(long id, long allocationId, int sfuId, long createNs, long targetFrameId,
                        long startNs, long endNs, long budgetBytes) {
+        this(id, allocationId, sfuId, createNs, targetFrameId, startNs, endNs, budgetBytes, 0);
+    }
+
+    public PonDbaGrant(long id, long allocationId, int sfuId, long createNs, long targetFrameId,
+                       long startNs, long endNs, long budgetBytes, long fixedBytes) {
         if (id < 1 || allocationId < 1 || sfuId < 1 || createNs < 0 || targetFrameId < 1
-                || startNs <= createNs || endNs <= startNs || budgetBytes <= 0) {
+                || startNs <= createNs || endNs <= startNs || budgetBytes <= 0
+                || fixedBytes < 0 || fixedBytes > budgetBytes) {
             throw new IllegalArgumentException("Invalid real DBA budget identity, window or bytes");
         }
         this.id = id;
@@ -32,6 +39,7 @@ public final class PonDbaGrant {
         this.startNs = startNs;
         this.endNs = endNs;
         this.budgetBytes = budgetBytes;
+        this.fixedBytes = fixedBytes;
     }
 
     void receive(long nowNs) {
@@ -74,6 +82,7 @@ public final class PonDbaGrant {
     public long startNs() { return startNs; }
     public long endNs() { return endNs; }
     public long budgetBytes() { return budgetBytes; }
+    public long fixedBytes() { return fixedBytes; }
     public boolean received() { return received; }
     public boolean started() { return result != null; }
     public boolean finished() { return report != null; }

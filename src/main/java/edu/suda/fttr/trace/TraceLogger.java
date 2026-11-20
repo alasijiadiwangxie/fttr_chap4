@@ -343,7 +343,7 @@ public final class TraceLogger {
                 allocation.reportAgeNs() == null ? -1 : allocation.reportAgeNs(), allocation.budgetOutstanding());
     }
 
-    /** 即使没有预算，也保留本帧每个 Alloc-ID 的到期判断和两个阶段各自的原因。 */
+    /** 即使没有预算，也保留本帧每个 Alloc-ID 的到期判断和各阶段的原因。 */
     public void recordGiantDecision(DbaContext input, GiantDbaPolicy.Decision decision) {
         DbaContext.Allocation allocation = decision.allocation();
         TcontProfile profile = allocation.profile();
@@ -353,7 +353,7 @@ public final class TraceLogger {
                         + "ab_min_bytes=%d ab_sur_bytes=%d assured_bytes=%d surplus_bytes=%d "
                         + "budget_bytes=%d duration_ns=%d assured_reason=%s surplus_reason=%s "
                         + "state=%s known_demand_bytes=%d budget_outstanding=%s report_frame_id=%d "
-                        + "report_age_ns=%d control_reserved_ns=%d%n",
+                        + "report_age_ns=%d control_reserved_ns=%d%s%n",
                 input.decisionTimeNs(), input.targetFrameId(), allocation.allocationId(), allocation.sfuId(),
                 profile.type(), profile.siMaxFrames(), profile.siMinFrames(), decision.siMaxBefore(),
                 decision.siMaxAfter(), decision.siMinBefore(), decision.siMinAfter(), profile.abMinBytes(),
@@ -361,20 +361,36 @@ public final class TraceLogger {
                 decision.durationNs(), decision.assuredReason(), decision.surplusReason(),
                 allocation.known() ? "KNOWN" : "UNKNOWN", allocation.known() ? allocation.knownDemandBytes() : -1,
                 allocation.budgetOutstanding(), allocation.reportFrameId() == null ? -1 : allocation.reportFrameId(),
-                allocation.reportAgeNs() == null ? -1 : allocation.reportAgeNs(), input.controlReservedNs());
+                allocation.reportAgeNs() == null ? -1 : allocation.reportAgeNs(), input.controlReservedNs(),
+                decision.complete() ? completeGiantDetails(profile, decision) : "");
+    }
+
+    private static String completeGiantDetails(TcontProfile profile, GiantDbaPolicy.Decision decision) {
+        return String.format(Locale.ROOT,
+                " si_fixed_frames=%d si_fixed_before=%d si_fixed_after=%d ab_fixed_bytes=%d "
+                        + "si_be_frames=%d si_be_before=%d si_be_after=%d ab_be_bytes=%d "
+                        + "fixed_bytes=%d fixed_reason=%s non_assured_bytes=%d non_assured_reason=%s "
+                        + "best_effort_bytes=%d best_effort_reason=%s assured_wanted_bytes=%d "
+                        + "fixed_order=%d assured_order=%d non_assured_order=%d best_effort_order=%d",
+                profile.siFixedFrames(), decision.siFixedBefore(), decision.siFixedAfter(), profile.abFixedBytes(),
+                profile.siBeFrames(), decision.siBeBefore(), decision.siBeAfter(), profile.abBeBytes(),
+                decision.fixedBytes(), decision.fixedReason(), decision.nonAssuredBytes(), decision.nonAssuredReason(),
+                decision.bestEffortBytes(), decision.bestEffortReason(), decision.assuredWantedBytes(),
+                decision.fixedOrder(), decision.assuredOrder(), decision.nonAssuredOrder(), decision.bestEffortOrder());
     }
 
     /** 真实预算日志显式保留 D 前缀，不与原逐包 grant_id 或轮询 R 前缀混用。 */
     public void recordDbaExecution(String action, PonDbaGrant grant, long nowNs, String details) {
         output.printf(Locale.ROOT, "node=%s event=%s time_ns=%d grant_id=D%d allocation_id=%d sfu_id=%d "
                         + "grant_create_ns=%d target_frame_id=%d tx_start_ns=%d tx_end_ns=%d "
-                        + "budget_bytes=%d selected_bytes=%d actual_bytes=%d unused_bytes=%d execution_state=%s%s%n",
+                        + "budget_bytes=%d selected_bytes=%d actual_bytes=%d unused_bytes=%d execution_state=%s%s%s%n",
                 action.endsWith("_TX") || action.endsWith("_RX") && action.contains("SETTLEMENT")
                         || action.contains("LEDGER") ? "MFU" : "SFU",
                 action, nowNs, grant.id(), grant.allocationId(), grant.sfuId(), grant.createNs(),
                 grant.targetFrameId(), grant.startNs(), grant.endNs(), grant.budgetBytes(),
                 grant.selectedBytes(), grant.actualBytes(), grant.unusedBytes(),
                 grant.finished() ? "COMPLETED" : grant.started() ? "LOADED" : grant.received() ? "RECEIVED" : "CREATED",
+                grant.fixedBytes() == 0 ? "" : " fixed_bytes=" + grant.fixedBytes(),
                 details.isEmpty() ? "" : " " + details);
     }
 

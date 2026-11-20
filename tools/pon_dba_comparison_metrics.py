@@ -164,7 +164,8 @@ def _age_stats(states: list[dict]) -> dict:
 
 
 def analyze_run(log: str, settings: dict[str, str], load: str, seed: int, variant: str,
-                traffic_end_ns: int, decision_end_ns: int, observation_end_ns: int) -> RunMetrics:
+                traffic_end_ns: int, decision_end_ns: int, observation_end_ns: int,
+                *, include_undelivered: bool = False) -> RunMetrics:
     """Validate and summarize one stdout trace. Use [0, observation_end_ns) for observations."""
     require(0 < traffic_end_ns <= observation_end_ns <= decision_end_ns, "Inconsistent experiment horizons")
     require(_ns(settings["fiber.uplink.poll.end.us"]) == decision_end_ns,
@@ -317,4 +318,19 @@ def analyze_run(log: str, settings: dict[str, str], load: str, seed: int, varian
                   "dropped_packets", "dropped_bytes", "pending_packets", "pending_bytes",
                   "data_busy_ns", "data_reserved_ns", "budget_bytes", "unused_budget_bytes"):
         require(aggregate[field] == sum(row[field] for row in metrics[:-1]), f"T-CONT {field} does not sum to TOTAL")
+    if include_undelivered:
+        for row in packet_delays:
+            row.update(status="delivered", drop_ns="")
+        for packet_id in arrivals.keys() - delivered.keys():
+            packet, enq, drop = arrivals[packet_id], queued.get(packet_id), drops.get(packet_id)
+            allocation = packet_alloc[packet_id]
+            sfu, kind = profiles[allocation]
+            packet_delays.append(dict(
+                identity, allocation_id=allocation, sfu_id=sfu, tcont_type=kind,
+                packet_id=packet_id, source_sta_id=packet["source_sta_id"], access_category=packet["type"],
+                packet_bytes=int(packet["bytes"]), generation_ns=packet["_time_ns"],
+                pon_enqueue_ns=enq["_time_ns"] if enq else "", drop_ns=drop["_time_ns"] if drop else "",
+                status="dropped" if drop else "pending", in_observation=False,
+            ))
+        packet_delays.sort(key=lambda row: int(row["packet_id"]))
     return RunMetrics(metrics, packet_delays, workload)

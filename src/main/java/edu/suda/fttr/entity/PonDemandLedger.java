@@ -74,22 +74,51 @@ public final class PonDemandLedger {
 
     public boolean recordAllocationBudgetGrant(long allocationId, int sfuId, long grantId, long createNs,
                                                long startNs, long endNs, long bytes) {
-        if (sfuId < 1 || grantId < 1 || createNs < 0 || startNs <= createNs || endNs <= startNs || bytes < 1) {
+        return recordAllocationBudgetGrant(allocationId, sfuId, grantId, createNs, 0, startNs, endNs, bytes, 0);
+    }
+
+    /**
+     * MFU 已对扣除在途预约后的净需求做过校验。一个对象可以同时有多笔未结算预算，
+     * 但每帧至多一笔，后续窗口必须晚于前一窗口且不能重叠。
+     */
+    public boolean recordPipelinedAllocationBudgetGrant(long allocationId, int sfuId, long grantId, long createNs,
+                                                        long targetFrameId, long startNs, long endNs, long bytes,
+                                                        long fixedBytes) {
+        if (targetFrameId < 1) {
+            throw new IllegalArgumentException("Pipelined budget requires a positive target frame ID");
+        }
+        return recordAllocationBudgetGrant(allocationId, sfuId, grantId, createNs, targetFrameId, startNs, endNs,
+                bytes, fixedBytes);
+    }
+
+    private boolean recordAllocationBudgetGrant(long allocationId, int sfuId, long grantId, long createNs,
+                                                long targetFrameId, long startNs, long endNs, long bytes,
+                                                long fixedBytes) {
+        if (sfuId < 1 || grantId < 1 || createNs < 0 || startNs <= createNs || endNs <= startNs || bytes < 1
+                || fixedBytes < 0 || fixedBytes > bytes) {
             throw new IllegalArgumentException("Invalid real budget ledger entry");
         }
         AllocationHistory history = historyForWrite(allocationId, sfuId);
         Budget previous = history.budgets.get(grantId);
         if (previous != null) {
             if (previous.createNs != createNs || previous.startNs != startNs
-                    || previous.endNs != endNs || previous.bytes != bytes) {
+                    || previous.endNs != endNs || previous.bytes != bytes
+                    || previous.targetFrameId != targetFrameId || previous.fixedBytes != fixedBytes) {
                 throw new IllegalArgumentException("Conflicting duplicate DATA budget");
             }
             return false;
         }
-        if (hasOutstandingAllocationBudget(allocationId, createNs)) {
+        if (targetFrameId == 0 && hasOutstandingAllocationBudget(allocationId, createNs)) {
             throw new IllegalStateException("Allocation already has an unsettled DATA budget");
         }
-        history.budgets.put(grantId, new Budget(createNs, startNs, endNs, bytes));
+        Budget latest = history.latestBudget;
+        if (targetFrameId > 0 && latest != null && (targetFrameId <= latest.targetFrameId
+                || createNs <= latest.createNs || startNs < latest.endNs)) {
+            throw new IllegalArgumentException("Pipelined budgets must use distinct ordered and disjoint frame windows");
+        }
+        Budget budget = new Budget(createNs, targetFrameId, startNs, endNs, bytes, fixedBytes);
+        history.budgets.put(grantId, budget);
+        history.latestBudget = budget;
         return true;
     }
 
@@ -161,6 +190,7 @@ public final class PonDemandLedger {
         private final List<Grant> grants = new ArrayList<>();
         private final Map<Integer, Grant> grantsById = new HashMap<>();
         private final Map<Long, Budget> budgets = new HashMap<>();
+        private Budget latestBudget;
 
         private AllocationHistory(int sfuId) {
             this.sfuId = sfuId;
@@ -185,17 +215,21 @@ public final class PonDemandLedger {
 
     private static final class Budget {
         private final long createNs;
+        private final long targetFrameId;
         private final long startNs;
         private final long endNs;
         private final long bytes;
+        private final long fixedBytes;
         private long settleNs = -1;
         private long actualBytes;
 
-        private Budget(long createNs, long startNs, long endNs, long bytes) {
+        private Budget(long createNs, long targetFrameId, long startNs, long endNs, long bytes, long fixedBytes) {
             this.createNs = createNs;
+            this.targetFrameId = targetFrameId;
             this.startNs = startNs;
             this.endNs = endNs;
             this.bytes = bytes;
+            this.fixedBytes = fixedBytes;
         }
     }
 

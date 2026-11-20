@@ -515,7 +515,7 @@ public final class PonUplink {
                 throw new IllegalStateException("Real DATA budget overlaps another slot or exceeds its frame");
             }
             PonDbaGrant grant = new PonDbaGrant(++budgetSequence, proposed.allocationId(), proposed.sfuId(),
-                    now, targetFrame, start, end, proposed.plannedBytes());
+                    now, targetFrame, start, end, proposed.plannedBytes(), proposed.fixedBytes());
             dbaMfu.recordDbaBudgetCreated(grant, context);
             budgetGrants.put(grant.id(), grant);
             lastBudgetEndNs = end;
