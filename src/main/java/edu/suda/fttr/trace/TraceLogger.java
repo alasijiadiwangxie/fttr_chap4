@@ -1,9 +1,19 @@
 package edu.suda.fttr.trace;
 
 import edu.suda.fttr.entity.AccessCategory;
+import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.entity.PonDemandLedger;
+import edu.suda.fttr.entity.PonDbaShadowPlanner;
 import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
+import edu.suda.fttr.link.PonUplinkReport;
+import edu.suda.fttr.link.PonReportPoll;
+import edu.suda.fttr.link.PonDbaGrant;
+import edu.suda.fttr.dba.DbaPlan;
+import edu.suda.fttr.dba.DbaContext;
+import edu.suda.fttr.dba.GiantDbaPolicy;
+import edu.suda.fttr.dba.TcontProfile;
 import edu.suda.fttr.simulator.Event;
 
 import java.io.PrintStream;
@@ -47,6 +57,23 @@ public final class TraceLogger {
             case FIBER_TX_START:
                 write(event, packet.isUplink() ? "SFU" : "MFU", "FIBER_TX_START");
                 break;
+            case FIBER_TX_END:
+                write(event, packet.isUplink() ? "SFU" : "MFU", "FIBER_TX_END");
+                break;
+            case PON_UPLINK_FRAME:
+                // 光侧调度器单独记录每个授权及对应的帧统计。
+                break;
+            case PON_BWMAP_RX:
+            case PON_POLL_BWMAP_RX:
+            case PON_POLL_START:
+            case PON_POLL_END:
+            case PON_POLL_REPORT_RX:
+            case PON_DBA_BWMAP_RX:
+            case PON_DBA_SLOT_START:
+            case PON_DBA_SLOT_END:
+            case PON_DBA_SETTLEMENT_RX:
+                // 目标 SFU 核对预约及接收时刻后，再记录 BWmap 接收。
+                break;
             case PACKET_ARRIVAL_AT_SFU:
                 write(event, "SFU", "ARRIVAL");
                 break;
@@ -63,6 +90,9 @@ public final class TraceLogger {
             case PACKET_ARRIVAL_AT_STA:
             case PACKET_ARRIVAL_AT_MFU:
                 // 接收端确认目的 ID 后，通过 recordDelivery 记录实际接收者。
+                break;
+            case PON_UPLINK_REPORT_RX:
+                // MFU 校验收到的快照并判定是否更新状态后，再记录接收结果。
                 break;
             case WIFI_ARRIVAL_AT_SFU:
                 // SFU 收齐上行 DATA。链路随后单独记录 DATA 到达和无线资源释放。
@@ -85,6 +115,325 @@ public final class TraceLogger {
 
     private void write(Event event, String node, String action) {
         write(event.packet(), event.timeTicks(), node, action, event.sfuId());
+    }
+
+    public void recordPollEvent(PonReportPoll poll, String action, long nowNs) {
+        if (poll.allocationSpecific()) {
+            output.printf(Locale.ROOT, "node=PON event=%s time_ns=%d poll_id=%d allocation_id=%d sfu_id=%d "
+                            + "grant_frame_id=%d target_frame_id=%d bwmap_tx_ns=%d tx_start_ns=%d tx_end_ns=%d%n",
+                    action, nowNs, poll.id(), poll.allocationId(), poll.sfuId(), poll.grantFrameId(),
+                    poll.targetFrameId(), poll.grantTxNs(), poll.startNs(), poll.endNs());
+            return;
+        }
+        String receiver = action.equals("PON_POLL_BWMAP_TX") ? "MFU" : "SFU";
+        String rx = action.equals("PON_POLL_BWMAP_RX") ? " bwmap_rx_ns=" + nowNs : "";
+        output.printf(Locale.ROOT, "t_us=%s node=%s event=%s poll_id=%d grant_id=R%d grant_type=REPORT_ONLY "
+                        + "sfu_id=%d grant_frame_id=%d target_frame_id=%d bwmap_tx_ns=%d%s tx_start_ns=%d tx_end_ns=%d%n",
+                formatMicroseconds(nowNs), receiver, action, poll.id(), poll.id(), poll.sfuId(), poll.grantFrameId(),
+                poll.targetFrameId(), poll.grantTxNs(), rx, poll.startNs(), poll.endNs());
+    }
+
+    public void recordPollSnapshot(PonReportPoll poll) {
+        PonUplinkReport r = poll.report();
+        if (poll.allocationSpecific()) {
+            recordPonUplinkReport(r);
+            return;
+        }
+        output.printf(Locale.ROOT, "node=SFU event=PON_POLL_REPORT poll_id=%d sfu_id=%d frame_id=%d snapshot_time_ns=%d "
+                        + "pending_packets=%d pending_bytes=%d eligible_packets=%d eligible_bytes=%d%n",
+                poll.id(), r.sfuId(), r.frameId(), r.snapshotTimeNs(), r.pendingPackets(), r.pendingBytes(),
+                r.eligiblePackets(), r.eligibleBytes());
+    }
+
+    public void recordPollReception(PonReportPoll poll, long nowNs, boolean applied) {
+        PonUplinkReport r = poll.report();
+        if (poll.allocationSpecific()) {
+            // MFU 接收路径另记一次 TCONT_REPORT_RX，避免同一报告出现两条接收记录。
+            return;
+        }
+        output.printf(Locale.ROOT, "t_us=%s node=MFU event=PON_POLL_REPORT_RX poll_id=%d grant_id=R%d "
+                        + "grant_type=REPORT_ONLY sfu_id=%d grant_frame_id=%d target_frame_id=%d bwmap_tx_ns=%d "
+                        + "tx_start_ns=%d tx_end_ns=%d snapshot_time_ns=%d pending_packets=%d pending_bytes=%d "
+                        + "eligible_bytes=%d receive_time_ns=%d applied=%b%n",
+                formatMicroseconds(nowNs), poll.id(), poll.id(), poll.sfuId(), poll.grantFrameId(), poll.targetFrameId(),
+                poll.grantTxNs(), poll.startNs(), poll.endNs(), r.snapshotTimeNs(), r.pendingPackets(), r.pendingBytes(),
+                r.eligibleBytes(), nowNs, applied);
+    }
+
+    public void recordPollFrame(long id, long startNs, long endNs, long dataNs, long reportNs) {
+        long busyNs = dataNs + reportNs;
+        output.printf(Locale.ROOT, "summary=PON_POLL_FRAME frame_id=%d frame_start_ns=%d frame_end_ns=%d "
+                        + "data_busy_ns=%d report_busy_ns=%d busy_ns=%d idle_ns=%d utilization=%.9f%n",
+                id, startNs, endNs, dataNs, reportNs, busyNs, endNs - startNs - busyNs,
+                utilization(busyNs, endNs - startNs));
+    }
+
+    public void recordPollingSummary(long polls, long dataNs, long reportNs) {
+        output.printf(Locale.ROOT, "summary=PON_POLLING polls=%d data_busy_ns=%d report_busy_ns=%d total_busy_ns=%d%n",
+                polls, dataNs, reportNs, dataNs + reportNs);
+    }
+
+    public void recordPonDownlinkEnqueue(Packet packet, int sfuId, long timeTicks) {
+        write(packet, timeTicks, "MFU", "PON_DOWNLINK_ENQUEUE", sfuId);
+    }
+
+    public void recordPonUplinkEnqueue(Packet packet, int sfuId, long timeTicks) {
+        write(packet, timeTicks, "SFU", "PON_UPLINK_ENQUEUE", sfuId);
+    }
+
+    public void recordTcontEnqueue(Packet packet, long allocationId, int sfuId, long timeNs) {
+        output.printf(Locale.ROOT, "node=SFU event=TCONT_ENQUEUE time_ns=%d allocation_id=%d sfu_id=%d "
+                        + "packet_id=%d packet_bytes=%d ac=%s%n",
+                timeNs, allocationId, sfuId, packet.id(), packet.bytes(), packet.type());
+    }
+
+    public void recordPonUplinkReport(PonUplinkReport report) {
+        if (report.allocationSpecific()) {
+            output.printf(Locale.ROOT, "node=SFU event=TCONT_REPORT frame_id=%d allocation_id=%d sfu_id=%d "
+                            + "snapshot_time_ns=%d pending_packets=%d pending_bytes=%d eligible_packets=%d eligible_bytes=%d%n",
+                    report.frameId(), report.allocationId(), report.sfuId(), report.snapshotTimeNs(), report.pendingPackets(),
+                    report.pendingBytes(), report.eligiblePackets(), report.eligibleBytes());
+            return;
+        }
+        output.printf(Locale.ROOT, "node=SFU event=PON_UPLINK_REPORT frame_id=%d sfu_id=%d snapshot_time_ns=%d "
+                        + "pending_packets=%d pending_bytes=%d eligible_packets=%d eligible_bytes=%d%n",
+                report.frameId(), report.sfuId(), report.snapshotTimeNs(), report.pendingPackets(),
+                report.pendingBytes(), report.eligiblePackets(), report.eligibleBytes());
+    }
+
+    public void recordPonUplinkReportReception(PonUplinkReport report, int packetId, long receiveNs, boolean applied) {
+        output.printf(Locale.ROOT, "t_us=%s node=MFU event=PON_UPLINK_REPORT_RX frame_id=%d sfu_id=%d packet_id=%d "
+                        + "snapshot_time_ns=%d receive_time_ns=%d pending_bytes=%d eligible_bytes=%d applied=%b%n",
+                formatMicroseconds(receiveNs), report.frameId(), report.sfuId(), packetId, report.snapshotTimeNs(),
+                receiveNs, report.pendingBytes(), report.eligibleBytes(), applied);
+    }
+
+    public void recordMfuReportState(long frameId, int sfuId, long boundaryNs, Mfu.ReceivedUplinkReport latest) {
+        String prefix = String.format(Locale.ROOT, "node=MFU event=PON_UPLINK_REPORT_STATE frame_id=%d "
+                + "sfu_id=%d boundary_time_ns=%d", frameId, sfuId, boundaryNs);
+        if (latest == null) {
+            output.println(prefix + " status=UNKNOWN");
+            return;
+        }
+        PonUplinkReport report = latest.report();
+        output.printf(Locale.ROOT, "%s status=KNOWN latest_report_frame_id=%d latest_snapshot_time_ns=%d "
+                        + "latest_receive_time_ns=%d known_pending_bytes=%d known_eligible_bytes=%d report_age_ns=%d%n",
+                prefix, report.frameId(), report.snapshotTimeNs(), latest.receiveTimeNs(),
+                report.pendingBytes(), report.eligibleBytes(), boundaryNs - report.snapshotTimeNs());
+    }
+
+    public void recordPonUplinkReportSummary(long generated, long received, long withoutGrant) {
+        output.printf(Locale.ROOT, "summary=PON_UPLINK_REPORTS generated=%d received=%d without_grant=%d%n",
+                generated, received, withoutGrant);
+    }
+
+    public void recordPonUplinkGrant(Packet packet, int sfuId, long frameId, long enqueueNs, long grantNs,
+                                     long startNs, long endNs) {
+        output.printf(Locale.ROOT, "t_us=%s node=MFU event=PON_UPLINK_GRANT frame_id=%d packet_id=%d sfu_id=%d "
+                        + "enqueue_time_ns=%d grant_time_ns=%d tx_start_ns=%d tx_end_ns=%d%n",
+                formatMicroseconds(grantNs), frameId, packet.id(), sfuId, enqueueNs, grantNs, startNs, endNs);
+    }
+
+    public void recordDemandLedgerGrant(int sfuId, int grantId, long createNs, int grantBytes) {
+        output.printf(Locale.ROOT, "node=MFU event=PON_DEMAND_LEDGER_GRANT sfu_id=%d grant_id=%d "
+                        + "grant_create_ns=%d grant_bytes=%d%n", sfuId, grantId, createNs, grantBytes);
+    }
+
+    public void recordDemandLedgerState(int sfuId, long timeNs, String trigger, PonDemandLedger.Estimate estimate) {
+        String prefix = String.format(Locale.ROOT, "node=MFU event=PON_DEMAND_LEDGER time_ns=%d sfu_id=%d trigger=%s",
+                timeNs, sfuId, trigger);
+        if (!estimate.known()) {
+            output.println(prefix + " state=UNKNOWN");
+            return;
+        }
+        Mfu.ReceivedUplinkReport received = estimate.report();
+        PonUplinkReport report = received.report();
+        output.printf(Locale.ROOT, "%s state=KNOWN latest_report_frame_id=%d report_snapshot_ns=%d report_receive_ns=%d "
+                        + "reported_pending_bytes=%d granted_bytes_since_snapshot=%d effective_known_bytes=%d "
+                        + "report_age_ns=%d%n",
+                prefix, report.frameId(), report.snapshotTimeNs(), received.receiveTimeNs(), report.pendingBytes(),
+                estimate.grantedBytesSinceSnapshot(), estimate.effectiveKnownBytes(), estimate.reportAgeNs());
+    }
+
+    public void recordTcontDemandState(long allocationId, int sfuId, long timeNs, String trigger,
+                                      PonDemandLedger.Estimate estimate) {
+        String prefix = String.format(Locale.ROOT,
+                "node=MFU event=TCONT_DEMAND time_ns=%d allocation_id=%d sfu_id=%d trigger=%s",
+                timeNs, allocationId, sfuId, trigger);
+        if (!estimate.known()) {
+            output.println(prefix + " state=UNKNOWN");
+            return;
+        }
+        Mfu.ReceivedUplinkReport received = estimate.report();
+        PonUplinkReport report = received.report();
+        output.printf(Locale.ROOT, "%s state=KNOWN latest_report_frame_id=%d report_snapshot_ns=%d report_receive_ns=%d "
+                        + "reported_pending_bytes=%d granted_bytes_since_snapshot=%d effective_known_bytes=%d report_age_ns=%d%n",
+                prefix, report.frameId(), report.snapshotTimeNs(), received.receiveTimeNs(), report.pendingBytes(),
+                estimate.grantedBytesSinceSnapshot(), estimate.effectiveKnownBytes(), estimate.reportAgeNs());
+    }
+
+    public void recordTcontReportReceived(PonUplinkReport report, long nowNs, boolean applied, String kind) {
+        output.printf(Locale.ROOT, "node=MFU event=TCONT_REPORT_RX time_ns=%d frame_id=%d allocation_id=%d sfu_id=%d "
+                        + "snapshot_time_ns=%d pending_bytes=%d eligible_bytes=%d applied=%b report_kind=%s%n",
+                nowNs, report.frameId(), report.allocationId(), report.sfuId(), report.snapshotTimeNs(),
+                report.pendingBytes(), report.eligibleBytes(), applied, kind);
+    }
+
+    public void recordDbaShadow(PonDbaShadowPlanner.Decision decision) {
+        output.printf(Locale.ROOT, "node=MFU event=PON_DBA_SHADOW decision_time_ns=%d target_frame_id=%d "
+                        + "selected_sfu_id=%d report_frame_id=%d report_age_ns=%d effective_known_bytes=%d "
+                        + "control_reserved_ns=%d available_data_ns=%d data_capacity_bytes=%s planned_grant_bytes=%d "
+                        + "planned_grant_ns=%d decision_reason=%s unknown_sfus=%d known_zero_sfus=%d%n",
+                decision.decisionTimeNs(), decision.targetFrameId(), decision.selectedSfuId(),
+                decision.reportFrameId() == null ? -1 : decision.reportFrameId(),
+                decision.reportAgeNs() == null ? -1 : decision.reportAgeNs(), decision.effectiveKnownBytes(),
+                decision.controlReservedNs(), decision.availableDataNs(), decision.dataCapacityBytes(),
+                decision.plannedGrantBytes(), decision.plannedGrantNs(), decision.decisionReason(),
+                decision.unknownSfus(), decision.knownZeroSfus());
+        // 独立观测行保留第 9 步原始日志逐字兼容；预览时间不是实际 BWmap 或 DATA 时隙。
+        output.printf(Locale.ROOT, "node=MFU event=PON_DBA_POLICY decision_time_ns=%d target_frame_id=%d "
+                        + "policy_name=shadow-rr allocation_id=%d sfu_id=%d known_demand_bytes=%d planned_bytes=%d "
+                        + "planned_duration_ns=%d decision_reason=%s preview_start_ns=%d preview_end_ns=%d%n",
+                decision.decisionTimeNs(), decision.targetFrameId(), decision.allocationId(), decision.selectedSfuId(),
+                decision.effectiveKnownBytes(), decision.plannedGrantBytes(), decision.plannedGrantNs(),
+                decision.decisionReason(), decision.preview().isEmpty() ? -1 : decision.preview().get(0).startNs(),
+                decision.preview().isEmpty() ? -1 : decision.preview().get(0).endNs());
+    }
+
+    public void recordDbaDecision(DbaPlan plan, long controlNs) {
+        DbaPlan.Grant choice = plan.grants().isEmpty() ? null : plan.grants().get(0);
+        output.printf(Locale.ROOT, "node=MFU event=PON_DBA_DECISION time_ns=%d target_frame_id=%d "
+                        + "allocation_id=%d sfu_id=%d planned_bytes=%d planned_duration_ns=%d "
+                        + "control_reserved_ns=%d decision_reason=%s%n",
+                plan.decisionTimeNs(), plan.targetFrameId(), choice == null ? 0 : choice.allocationId(),
+                choice == null ? 0 : choice.sfuId(), choice == null ? 0 : choice.plannedBytes(),
+                choice == null ? 0 : choice.plannedDurationNs(), controlNs, plan.decisionReason());
+    }
+
+    /** 多授权模式同时记录整帧计划和逐笔预算，不能用原单授权标量日志隐去其他SFU。 */
+    public void recordDbaMultiPlan(DbaPlan plan, long controlNs) {
+        java.math.BigInteger bytes = java.math.BigInteger.ZERO;
+        long durationNs = 0;
+        for (DbaPlan.Grant grant : plan.grants()) {
+            bytes = bytes.add(java.math.BigInteger.valueOf(grant.plannedBytes()));
+            durationNs = Math.addExact(durationNs, grant.plannedDurationNs());
+        }
+        output.printf(Locale.ROOT, "node=MFU event=PON_DBA_MULTI_PLAN time_ns=%d target_frame_id=%d "
+                        + "grant_count=%d planned_bytes=%s planned_duration_ns=%d control_reserved_ns=%d "
+                        + "decision_reason=%s%n", plan.decisionTimeNs(), plan.targetFrameId(), plan.grants().size(),
+                bytes, durationNs, controlNs, plan.decisionReason());
+        int index = 0;
+        for (DbaPlan.Grant grant : plan.grants()) {
+            output.printf(Locale.ROOT, "node=MFU event=PON_DBA_MULTI_DECISION time_ns=%d target_frame_id=%d "
+                            + "allocation_id=%d sfu_id=%d planned_bytes=%d planned_duration_ns=%d "
+                            + "grant_index=%d slot_offset_ns=%d decision_reason=%s%n",
+                    plan.decisionTimeNs(), plan.targetFrameId(), grant.allocationId(), grant.sfuId(),
+                    grant.plannedBytes(), grant.plannedDurationNs(), ++index, grant.startOffsetNs(), plan.decisionReason());
+        }
+    }
+
+    /** 每个对象独立显示已知需求和授权阻塞；等待结算不改变KNOWN/UNKNOWN状态。 */
+    public void recordDbaObjectState(DbaContext input, DbaContext.Allocation allocation) {
+        output.printf(Locale.ROOT, "node=MFU event=PON_DBA_OBJECT_STATE time_ns=%d target_frame_id=%d "
+                        + "allocation_id=%d sfu_id=%d state=%s known_demand_bytes=%d report_frame_id=%d "
+                        + "report_age_ns=%d budget_outstanding=%s%n",
+                input.decisionTimeNs(), input.targetFrameId(), allocation.allocationId(), allocation.sfuId(),
+                allocation.known() ? "KNOWN" : "UNKNOWN", allocation.known() ? allocation.knownDemandBytes() : -1,
+                allocation.reportFrameId() == null ? -1 : allocation.reportFrameId(),
+                allocation.reportAgeNs() == null ? -1 : allocation.reportAgeNs(), allocation.budgetOutstanding());
+    }
+
+    /** 即使没有预算，也保留本帧每个 Alloc-ID 的到期判断和各阶段的原因。 */
+    public void recordGiantDecision(DbaContext input, GiantDbaPolicy.Decision decision) {
+        DbaContext.Allocation allocation = decision.allocation();
+        TcontProfile profile = allocation.profile();
+        output.printf(Locale.ROOT, "node=MFU event=PON_GIANT_DECISION time_ns=%d target_frame_id=%d "
+                        + "allocation_id=%d sfu_id=%d type=%d si_max_frames=%d si_min_frames=%d "
+                        + "si_max_before=%d si_max_after=%d si_min_before=%d si_min_after=%d "
+                        + "ab_min_bytes=%d ab_sur_bytes=%d assured_bytes=%d surplus_bytes=%d "
+                        + "budget_bytes=%d duration_ns=%d assured_reason=%s surplus_reason=%s "
+                        + "state=%s known_demand_bytes=%d budget_outstanding=%s report_frame_id=%d "
+                        + "report_age_ns=%d control_reserved_ns=%d%s%n",
+                input.decisionTimeNs(), input.targetFrameId(), allocation.allocationId(), allocation.sfuId(),
+                profile.type(), profile.siMaxFrames(), profile.siMinFrames(), decision.siMaxBefore(),
+                decision.siMaxAfter(), decision.siMinBefore(), decision.siMinAfter(), profile.abMinBytes(),
+                profile.abSurBytes(), decision.assuredBytes(), decision.surplusBytes(), decision.budgetBytes(),
+                decision.durationNs(), decision.assuredReason(), decision.surplusReason(),
+                allocation.known() ? "KNOWN" : "UNKNOWN", allocation.known() ? allocation.knownDemandBytes() : -1,
+                allocation.budgetOutstanding(), allocation.reportFrameId() == null ? -1 : allocation.reportFrameId(),
+                allocation.reportAgeNs() == null ? -1 : allocation.reportAgeNs(), input.controlReservedNs(),
+                decision.complete() ? completeGiantDetails(profile, decision) : "");
+    }
+
+    private static String completeGiantDetails(TcontProfile profile, GiantDbaPolicy.Decision decision) {
+        return String.format(Locale.ROOT,
+                " si_fixed_frames=%d si_fixed_before=%d si_fixed_after=%d ab_fixed_bytes=%d "
+                        + "si_be_frames=%d si_be_before=%d si_be_after=%d ab_be_bytes=%d "
+                        + "fixed_bytes=%d fixed_reason=%s non_assured_bytes=%d non_assured_reason=%s "
+                        + "best_effort_bytes=%d best_effort_reason=%s assured_wanted_bytes=%d "
+                        + "fixed_order=%d assured_order=%d non_assured_order=%d best_effort_order=%d",
+                profile.siFixedFrames(), decision.siFixedBefore(), decision.siFixedAfter(), profile.abFixedBytes(),
+                profile.siBeFrames(), decision.siBeBefore(), decision.siBeAfter(), profile.abBeBytes(),
+                decision.fixedBytes(), decision.fixedReason(), decision.nonAssuredBytes(), decision.nonAssuredReason(),
+                decision.bestEffortBytes(), decision.bestEffortReason(), decision.assuredWantedBytes(),
+                decision.fixedOrder(), decision.assuredOrder(), decision.nonAssuredOrder(), decision.bestEffortOrder());
+    }
+
+    /** 真实预算日志显式保留 D 前缀，不与原逐包 grant_id 或轮询 R 前缀混用。 */
+    public void recordDbaExecution(String action, PonDbaGrant grant, long nowNs, String details) {
+        output.printf(Locale.ROOT, "node=%s event=%s time_ns=%d grant_id=D%d allocation_id=%d sfu_id=%d "
+                        + "grant_create_ns=%d target_frame_id=%d tx_start_ns=%d tx_end_ns=%d "
+                        + "budget_bytes=%d selected_bytes=%d actual_bytes=%d unused_bytes=%d execution_state=%s%s%s%n",
+                action.endsWith("_TX") || action.endsWith("_RX") && action.contains("SETTLEMENT")
+                        || action.contains("LEDGER") ? "MFU" : "SFU",
+                action, nowNs, grant.id(), grant.allocationId(), grant.sfuId(), grant.createNs(),
+                grant.targetFrameId(), grant.startNs(), grant.endNs(), grant.budgetBytes(),
+                grant.selectedBytes(), grant.actualBytes(), grant.unusedBytes(),
+                grant.finished() ? "COMPLETED" : grant.started() ? "LOADED" : grant.received() ? "RECEIVED" : "CREATED",
+                grant.fixedBytes() == 0 ? "" : " fixed_bytes=" + grant.fixedBytes(),
+                details.isEmpty() ? "" : " " + details);
+    }
+
+    public void recordDbaSummary(long budgets, long grantedBytes, long actualBytes, long unusedBytes,
+                                  long reservedNs, long actualNs, long pendingPackets) {
+        output.printf(Locale.ROOT, "summary=PON_DBA_EXECUTION grants=%d budget_bytes=%d actual_bytes=%d "
+                        + "unused_bytes=%d reserved_ns=%d actual_data_ns=%d unused_ns=%d pending_packets=%d%n",
+                budgets, grantedBytes, actualBytes, unusedBytes, reservedNs, actualNs, reservedNs - actualNs,
+                pendingPackets);
+    }
+
+    public void recordPonBwmap(Packet packet, int sfuId, long grantFrameId, long targetFrameId, long grantTxNs,
+                               long startNs, long endNs, long nowNs, boolean received) {
+        String reception = received ? " grant_rx_ns=" + nowNs : "";
+        output.printf(Locale.ROOT, "t_us=%s node=%s event=%s grant_frame_id=%d target_frame_id=%d packet_id=%d "
+                        + "sfu_id=%d grant_tx_ns=%d%s tx_start_ns=%d tx_end_ns=%d granted_bytes=%d%n",
+                formatMicroseconds(nowNs), received ? "SFU" : "MFU", received ? "PON_BWMAP_RX" : "PON_BWMAP_TX",
+                grantFrameId, targetFrameId, packet.id(), sfuId, grantTxNs, reception, startNs, endNs, packet.bytes());
+    }
+
+    public void recordPonBwmapSummary(long packets, double ungrantedWaitUs, double reservedWaitUs,
+                                      double serializationUs) {
+        output.printf(Locale.ROOT, "summary=PON_BWMAP packets=%d avg_ungranted_wait_us=%.6f "
+                        + "avg_reserved_wait_us=%.6f avg_serialization_us=%.6f%n",
+                packets, ungrantedWaitUs, reservedWaitUs, serializationUs);
+    }
+
+    public void recordPonUplinkFrame(long frameId, long frameStartNs, long frameEndNs, int packets, long busyNs) {
+        long periodNs = frameEndNs - frameStartNs;
+        output.printf(Locale.ROOT, "summary=PON_UPLINK_FRAME frame_id=%d frame_start_ns=%d frame_end_ns=%d "
+                        + "allocated_packets=%d busy_ns=%d idle_ns=%d utilization=%.9f%n",
+                frameId, frameStartNs, frameEndNs, packets, busyNs, periodNs - busyNs, utilization(busyNs, periodNs));
+    }
+
+    public void recordPonUplinkFrames(long frames, long periodNs, long packets, long busyNs, double grantWaitUs) {
+        long windowNs = frames * periodNs;
+        output.printf(Locale.ROOT, "summary=PON_UPLINK_FRAMES frames=%d frame_period_ns=%d window_ns=%d "
+                        + "allocated_packets=%d busy_ns=%d idle_ns=%d avg_grant_wait_us=%.6f utilization=%.9f%n",
+                frames, periodNs, windowNs, packets, busyNs, windowNs - busyNs, grantWaitUs, utilization(busyNs, windowNs));
+    }
+
+    private static double utilization(long busyNs, long windowNs) {
+        return windowNs == 0 ? 0.0 : (double) busyNs / windowNs;
     }
 
     private void write(Packet packet, long timeTicks, String node, String action, int sfuId) {
@@ -226,6 +575,15 @@ public final class TraceLogger {
 
     public void recordWirelessPhyRate(double rateMbps) {
         output.printf(Locale.ROOT, "summary=WIFI_PHY model=HE_SU phy_rate_mbps=%.6f%n", rateMbps);
+    }
+
+    public void recordPonSummary(Packet.Direction direction, long sentPackets, double averageWaitUs,
+                                 double averageSerializationUs, long busyTicks, long windowTicks, double utilization) {
+        String link = direction == Packet.Direction.UL ? "UPLINK" : "DOWNLINK";
+        output.printf(Locale.ROOT, "summary=PON_%s sent_packets=%d avg_queue_wait_us=%.6f "
+                        + "avg_serialization_us=%.6f busy_us=%s window_us=%s utilization=%.6f%n",
+                link, sentPackets, averageWaitUs, averageSerializationUs, formatMicroseconds(busyTicks),
+                formatMicroseconds(windowTicks), utilization);
     }
 
     public void recordClassSummary(AccessCategory type, int sentPackets, double waitUs, double delayUs) {

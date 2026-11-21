@@ -1,7 +1,11 @@
 package edu.suda.fttr.config;
 
+import edu.suda.fttr.dba.GiantSlaAdmission;
+import edu.suda.fttr.dba.TcontProfile;
+import edu.suda.fttr.dba.TcontTopology;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.link.PonLinkTiming;
 import edu.suda.fttr.link.WifiFrameExchange;
 import edu.suda.fttr.mac.EdcaParameters;
 import edu.suda.fttr.mac.EdcaParameters.AcParameters;
@@ -22,16 +26,36 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
+import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.function.ToLongFunction;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** 读取并校验完整的场景配置，再开始处理仿真事件。 */
 public final class ConfigLoader {
     private static final String DEFAULT_SCENARIO = "/phase1-minimal-downlink.properties";
+    private static final String FIBER_DELAY_US = "fiber.delay.us";
+    private static final String FIBER_DOWNLINK = "fiber.downlink.";
+    private static final String FIBER_UPLINK = "fiber.uplink.";
+    private static final String DOWNLINK_PROPAGATION_US = FIBER_DOWNLINK + "propagation.us";
+    private static final String UPLINK_FRAME_PERIOD_US = FIBER_UPLINK + "frame.period.us";
+    private static final String UPLINK_REPORT_ENABLED = FIBER_UPLINK + "report.enabled";
+    private static final String UPLINK_BWMAP_ENABLED = FIBER_UPLINK + "bwmap.enabled";
+    private static final String UPLINK_DEMAND_LEDGER_ENABLED = FIBER_UPLINK + "demand.ledger.enabled";
+    private static final String UPLINK_POLL_ENABLED = FIBER_UPLINK + "poll.enabled";
+    private static final String UPLINK_POLL_BYTES = FIBER_UPLINK + "poll.bytes";
+    private static final String UPLINK_POLL_INTERVAL_FRAMES = FIBER_UPLINK + "poll.interval.frames";
+    private static final String UPLINK_POLL_END_US = FIBER_UPLINK + "poll.end.us";
+    private static final String UPLINK_DBA_MODE = FIBER_UPLINK + "dba.mode";
+    private static final String TCONT_PREFIX = FIBER_UPLINK + "tcont.";
+    private static final String TCONT_ENABLED = TCONT_PREFIX + "enabled";
+    private static final String TCONT_ALLOC_IDS = TCONT_PREFIX + "alloc.ids";
     private static final String MAC_EXCHANGE = "wifi.mac.exchange";
     private static final String MAC_ACCESS = "wifi.mac.access";
     private static final String MAC_SIFS_US = "wifi.mac.sifs.us";
@@ -41,7 +65,12 @@ public final class ConfigLoader {
     private static final String MAC_MAX_RETRIES = "wifi.mac.retry.max";
     private static final String EDCA_SEED = "wifi.mac.edca.seed";
     private static final Set<String> KEYS = Set.of(
-            "fiber.delay.us", "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
+            FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", DOWNLINK_PROPAGATION_US,
+            FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
+            UPLINK_REPORT_ENABLED, UPLINK_BWMAP_ENABLED, UPLINK_DEMAND_LEDGER_ENABLED,
+            UPLINK_POLL_ENABLED, UPLINK_POLL_BYTES, UPLINK_POLL_INTERVAL_FRAMES, UPLINK_POLL_END_US,
+            UPLINK_DBA_MODE, TCONT_ENABLED, TCONT_ALLOC_IDS,
+            "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
             MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
             MAC_MAX_RETRIES, EDCA_SEED);
     private static final Set<String> PHY_KEYS = Set.of(
@@ -55,6 +84,10 @@ public final class ConfigLoader {
     private static final Pattern POISSON_SOURCE = Pattern.compile(
             "traffic\\.(sfu|sta)\\.([1-9][0-9]*)\\.(rate\\.pps|packet\\.bytes|seed|class\\.weights|duration\\.us|"
                     + "class\\.(VO|VI|BE|BK)\\.(rate\\.pps|rate\\.mbps|packet\\.bytes))");
+    private static final Pattern TCONT_ALLOCATION_KEY = Pattern.compile(
+            "fiber\\.uplink\\.tcont\\.alloc\\.([1-9][0-9]*)\\.(sfu\\.id|type|classes|si\\.max\\.frames|"
+                    + "si\\.min\\.frames|ab\\.min\\.bytes|ab\\.sur\\.bytes|"
+                    + "si\\.fixed\\.frames|ab\\.fixed\\.bytes|si\\.be\\.frames|ab\\.be\\.bytes)");
     private static final AccessCategory[] CATEGORIES = AccessCategory.values();
 
     private static final class PoissonTraffic {
@@ -105,7 +138,34 @@ public final class ConfigLoader {
         int sfuCount = properties.containsKey("sfu.count") ? readPositiveInt(properties, "sfu.count") : 1;
         validateKeys(properties, arrivalsUs.size(), staCount, sfuCount, poisson, directionMode);
         List<Integer> staSfuIds = readStaAssociations(properties, staCount, sfuCount);
-        long fiberUs = readNonNegativeLong(properties, "fiber.delay.us");
+        long bwmapPropagationNs = readBwmapPropagationNs(properties);
+        SimulationConfig.PonLink ponDownlink = readPonLink(properties, FIBER_DOWNLINK, "10000", bwmapPropagationNs);
+        SimulationConfig.PonLink ponUplink = readPonLink(properties, FIBER_UPLINK, "2500", bwmapPropagationNs);
+        boolean demandLedgerEnabled = readDemandLedgerEnabled(properties, ponUplink);
+        String dbaMode = readDbaMode(properties, ponUplink, demandLedgerEnabled);
+        boolean dbaShadowEnabled = dbaMode.equals("shadow-rr");
+        boolean dbaGiantCompleteEnabled = dbaMode.equals("giant-complete");
+        boolean dbaGiantEnabled = dbaMode.equals("giant") || dbaGiantCompleteEnabled;
+        boolean dbaMultiGrantEnabled = dbaMode.equals("rr-multi") || dbaGiantEnabled;
+        boolean dbaExecutionEnabled = dbaMode.equals("rr") || dbaMultiGrantEnabled;
+        TcontTopology tcontTopology = readTcontTopology(properties, sfuCount, dbaExecutionEnabled);
+        if (dbaGiantEnabled && !tcontTopology.enabled()) {
+            throw new IllegalArgumentException(dbaMode + " requires " + TCONT_ENABLED + "=true");
+        }
+        if (dbaGiantEnabled && !dbaGiantCompleteEnabled
+                && tcontTopology.profiles().stream().anyMatch(profile -> profile.type() == 1 || profile.type() == 5)) {
+            throw new IllegalArgumentException("giant is the Type 2/3/4 baseline; use giant-complete for Type 1 or 5");
+        }
+        if (dbaGiantCompleteEnabled) {
+            GiantSlaAdmission.validate(tcontTopology.profiles(), ponUplink.framePeriodNs(), ponUplink.rateMbps(),
+                    ponUplink.polling().bytes());
+        }
+        if (dbaExecutionEnabled && sfuCount > 2 && !tcontTopology.enabled()) {
+            throw new IllegalArgumentException("Real DBA execution currently supports one or two SFUs");
+        }
+        boolean hasFixedDelay = properties.containsKey(FIBER_DELAY_US);
+        long fiberUs = hasFixedDelay || (ponDownlink == null && ponUplink == null)
+                ? readNonNegativeLong(properties, FIBER_DELAY_US) : 0;
         WirelessPhy wirelessPhy = readWirelessPhy(properties);
         EdcaParameters edcaParameters = readEdcaParameters(properties);
         WifiAccessMode accessMode = readWifiAccessMode(properties);
@@ -117,16 +177,295 @@ public final class ConfigLoader {
                 ? readDownlinkSources(properties, sfuCount, staSfuIds, durationUs) : new PoissonTraffic();
         PoissonTraffic uplink = poisson && directionMode.allows(Packet.Direction.UL)
                 ? readUplinkSources(properties, staCount, durationUs, downlink.windowsUs.size()) : new PoissonTraffic();
+        List<Event> manualEvents = poisson ? List.of() : readManualEvents(properties, arrivalsUs, staCount, directionMode);
+        // 保留固定方向的时延参数。未生成报文的正速率泊松源也属于已配置业务。
+        if (!hasFixedDelay) {
+            if (ponDownlink == null && hasTraffic(downlink, manualEvents, Packet.Direction.DL)) {
+                throw new IllegalArgumentException("Missing property: " + FIBER_DELAY_US + " is required by fixed downlink fiber");
+            }
+            if (ponUplink == null && hasTraffic(uplink, manualEvents, Packet.Direction.UL)) {
+                throw new IllegalArgumentException("Missing property: " + FIBER_DELAY_US + " is required by fixed uplink fiber");
+            }
+        }
         List<TrafficGenerator.Source> sources = new ArrayList<>(downlink.streams);
         sources.addAll(uplink.streams);
-        List<Event> inputEvents = poisson
-                ? TrafficGenerator.generate(sources)
-                : readManualEvents(properties, arrivalsUs, staCount, directionMode);
+        List<Event> inputEvents = poisson ? TrafficGenerator.generate(sources) : manualEvents;
 
-        validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange);
-        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, wifiUs, wirelessPhy, frameExchange,
-                edcaParameters, accessMode, retryPolicy, downlink.windowsUs, uplink.windowsUs,
-                directionMode.allows(Packet.Direction.UL));
+        validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
+                frameExchange);
+        return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
+                frameExchange, edcaParameters, accessMode, retryPolicy, downlink.windowsUs, uplink.windowsUs,
+                directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled,
+                dbaMultiGrantEnabled, dbaGiantEnabled, dbaGiantCompleteEnabled, tcontTopology);
+    }
+
+    private static TcontTopology readTcontTopology(Properties properties, int sfuCount, boolean dbaExecutionEnabled) {
+        String enabledValue = properties.getProperty(TCONT_ENABLED, "false").strip();
+        if (!enabledValue.equals("true") && !enabledValue.equals("false")) {
+            throw new IllegalArgumentException(TCONT_ENABLED + " must be true or false");
+        }
+        if (!enabledValue.equals("true")) {
+            for (String key : properties.stringPropertyNames()) {
+                if (key.startsWith(TCONT_PREFIX) && !key.equals(TCONT_ENABLED)) {
+                    throw new IllegalArgumentException(key + " requires " + TCONT_ENABLED + "=true");
+                }
+            }
+            return TcontTopology.disabled(sfuCount);
+        }
+        // 真实 DBA 路径依赖 pon-framed、BWmap、REPORT、账本和有限轮询。
+        if (!dbaExecutionEnabled) {
+            throw new IllegalArgumentException(TCONT_ENABLED + " requires fiber.uplink.dba.mode=rr, rr-multi, giant or giant-complete");
+        }
+        Set<Long> allocationIds = new HashSet<>();
+        List<TcontProfile> profiles = new ArrayList<>();
+        for (String rawId : requireProperty(properties, TCONT_ALLOC_IDS).split(",", -1)) {
+            long allocationId = parseNonNegativeLong(rawId, TCONT_ALLOC_IDS);
+            if (allocationId == 0 || !allocationIds.add(allocationId)) {
+                throw new IllegalArgumentException(TCONT_ALLOC_IDS + " requires unique positive allocation IDs");
+            }
+            String prefix = TCONT_PREFIX + "alloc." + allocationId + ".";
+            int sfuId = readPositiveInt(properties, prefix + "sfu.id");
+            int type = readPositiveInt(properties, prefix + "type");
+            Set<AccessCategory> classes = EnumSet.noneOf(AccessCategory.class);
+            for (String rawClass : requireProperty(properties, prefix + "classes").split(",", -1)) {
+                AccessCategory category;
+                try {
+                    category = AccessCategory.valueOf(rawClass.strip());
+                } catch (IllegalArgumentException exception) {
+                    throw new IllegalArgumentException(prefix + "classes must contain VO, VI, BE or BK", exception);
+                }
+                if (!classes.add(category)) {
+                    throw new IllegalArgumentException(prefix + "classes contains a duplicate business class");
+                }
+            }
+            profiles.add(readTcontProfile(properties, prefix, allocationId, sfuId, type, classes));
+        }
+        // 已声明但未列入 alloc.ids 的对象也必须报错，防止部分参数被静默忽略。
+        for (String key : properties.stringPropertyNames()) {
+            Matcher matcher = TCONT_ALLOCATION_KEY.matcher(key);
+            if (matcher.matches() && !allocationIds.contains(parseNonNegativeLong(matcher.group(1), key))) {
+                throw new IllegalArgumentException("T-CONT allocation is not listed in " + TCONT_ALLOC_IDS + ": " + key);
+            }
+        }
+        return new TcontTopology(sfuCount, profiles);
+    }
+
+    private static TcontProfile readTcontProfile(Properties properties, String prefix, long allocationId,
+                                                 int sfuId, int type, Set<AccessCategory> classes) {
+        // Type 1 只有固定带宽；Type 1/2 可省略未启用的 SImin / ABsur。
+        int siMax = type == 1 ? readTcontInterval(properties, prefix + "si.max.frames", true)
+                : readPositiveInt(properties, prefix + "si.max.frames");
+        int siMin = readTcontInterval(properties, prefix + "si.min.frames", type == 1 || type == 2);
+        long abMin = readTcontQuota(properties, prefix + "ab.min.bytes", type == 1);
+        long abSur = readTcontQuota(properties, prefix + "ab.sur.bytes", type == 1 || type == 2);
+
+        String siFixedKey = prefix + "si.fixed.frames";
+        String abFixedKey = prefix + "ab.fixed.bytes";
+        String siBeKey = prefix + "si.be.frames";
+        String abBeKey = prefix + "ab.be.bytes";
+        if (type >= 2 && type <= 4) {
+            for (String key : List.of(siFixedKey, abFixedKey, siBeKey, abBeKey)) {
+                if (properties.containsKey(key)) {
+                    throw new IllegalArgumentException(key + " is not used by Type " + type);
+                }
+            }
+            return new TcontProfile(allocationId, sfuId, type, classes, siMax, siMin, abMin, abSur);
+        }
+        return new TcontProfile(allocationId, sfuId, type, classes, siMax, siMin, abMin, abSur,
+                readTcontInterval(properties, siFixedKey, false), readTcontQuota(properties, abFixedKey, false),
+                readTcontInterval(properties, siBeKey, type == 1), readTcontQuota(properties, abBeKey, type == 1));
+    }
+
+    private static int readTcontInterval(Properties properties, String key, boolean optional) {
+        long value = readTcontQuota(properties, key, optional);
+        if (value > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(key + " must fit a nonnegative integer");
+        }
+        return (int) value;
+    }
+
+    private static long readTcontQuota(Properties properties, String key, boolean optional) {
+        return optional && !properties.containsKey(key) ? 0 : readNonNegativeLong(properties, key);
+    }
+
+    private static String readDbaMode(Properties properties, SimulationConfig.PonLink uplink,
+                                      boolean demandLedgerEnabled) {
+        String mode = properties.getProperty(UPLINK_DBA_MODE, "fcfs").strip();
+        if (mode.equals("fcfs")) {
+            return mode;
+        }
+        if (!mode.equals("shadow-rr") && !mode.equals("rr") && !mode.equals("rr-multi")
+                && !mode.equals("giant") && !mode.equals("giant-complete")) {
+            throw new IllegalArgumentException(UPLINK_DBA_MODE + " must be fcfs, shadow-rr, rr, rr-multi, giant or giant-complete");
+        }
+        if (uplink == null || uplink.framePeriodNs() == 0 || uplink.bwmapPropagationNs() < 0
+                || !uplink.reportEnabled() || !demandLedgerEnabled || uplink.polling() == null) {
+            throw new IllegalArgumentException(mode + " requires pon-framed, BWmap, REPORT, demand ledger and polling");
+        }
+        return mode;
+    }
+
+    private static boolean readDemandLedgerEnabled(Properties properties, SimulationConfig.PonLink ponUplink) {
+        if (!properties.containsKey(UPLINK_DEMAND_LEDGER_ENABLED)) {
+            return false;
+        }
+        if (ponUplink == null || ponUplink.framePeriodNs() == 0) {
+            throw new IllegalArgumentException(UPLINK_DEMAND_LEDGER_ENABLED + " requires fiber.uplink.mode=pon-framed");
+        }
+        String enabled = properties.getProperty(UPLINK_DEMAND_LEDGER_ENABLED).strip();
+        if (!enabled.equals("true") && !enabled.equals("false")) {
+            throw new IllegalArgumentException(UPLINK_DEMAND_LEDGER_ENABLED + " must be true or false");
+        }
+        return enabled.equals("true");
+    }
+
+    private static boolean hasTraffic(PoissonTraffic poisson, List<Event> manualEvents, Packet.Direction direction) {
+        return !poisson.streams.isEmpty() || manualEvents.stream().anyMatch(event -> event.packet().direction() == direction);
+    }
+
+    private static long readBwmapPropagationNs(Properties properties) {
+        if (!properties.containsKey(UPLINK_BWMAP_ENABLED)) {
+            return -1;
+        }
+        String uplinkModeKey = FIBER_UPLINK + "mode";
+        if (!properties.getProperty(uplinkModeKey, "fixed").strip().equals("pon-framed")) {
+            throw new IllegalArgumentException(UPLINK_BWMAP_ENABLED + " requires " + uplinkModeKey + "=pon-framed");
+        }
+        String enabled = properties.getProperty(UPLINK_BWMAP_ENABLED).strip();
+        if (!enabled.equals("true") && !enabled.equals("false")) {
+            throw new IllegalArgumentException(UPLINK_BWMAP_ENABLED + " must be true or false");
+        }
+        return enabled.equals("true") ? readPonDurationNs(properties, DOWNLINK_PROPAGATION_US, "0", false) : -1;
+    }
+
+    private static SimulationConfig.PonLink readPonLink(Properties properties, String prefix, String defaultRateMbps,
+                                                       long bwmapPropagationNs) {
+        String modeKey = prefix + "mode";
+        String rateKey = prefix + "rate.mbps";
+        String propagationKey = prefix + "propagation.us";
+        String mode = properties.getProperty(modeKey, "fixed").strip();
+        boolean uplink = prefix.equals(FIBER_UPLINK);
+        boolean framed = uplink && mode.equals("pon-framed");
+        boolean bwmapDownlink = !uplink && bwmapPropagationNs >= 0;
+        if (uplink && !framed && properties.containsKey(UPLINK_POLL_ENABLED)) {
+            throw new IllegalArgumentException(UPLINK_POLL_ENABLED + " requires " + modeKey + "=pon-framed");
+        }
+        if (uplink && !framed && hasPollingParameters(properties)) {
+            throw new IllegalArgumentException("Polling parameters require " + modeKey + "=pon-framed");
+        }
+        if (uplink && !framed && properties.containsKey(UPLINK_FRAME_PERIOD_US)) {
+            throw new IllegalArgumentException(UPLINK_FRAME_PERIOD_US + " requires " + modeKey + "=pon-framed");
+        }
+        if (uplink && !framed && properties.containsKey(UPLINK_REPORT_ENABLED)) {
+            throw new IllegalArgumentException(UPLINK_REPORT_ENABLED + " requires " + modeKey + "=pon-framed");
+        }
+        if (mode.equals("fixed")) {
+            // BWmap 使用下行传播时延，固定下行 DATA 仍使用 fiber.delay.us。
+            if (bwmapDownlink) {
+                if (properties.containsKey(rateKey)) {
+                    throw new IllegalArgumentException(rateKey + " requires " + modeKey + "=pon-shared");
+                }
+                return null;
+            }
+            if (properties.containsKey(rateKey) || properties.containsKey(propagationKey)) {
+                throw new IllegalArgumentException("PON rate and propagation require " + modeKey + "=pon-shared"
+                        + (uplink ? " or pon-framed" : ""));
+            }
+            return null;
+        }
+        if (!mode.equals("pon-shared") && !framed) {
+            throw new IllegalArgumentException(modeKey + " must be fixed or pon-shared" + (uplink ? " or pon-framed" : ""));
+        }
+        BigDecimal rateMbps;
+        try {
+            rateMbps = new BigDecimal(properties.getProperty(rateKey, defaultRateMbps).strip());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(rateKey + " must be a positive decimal number", e);
+        }
+        if (rateMbps.signum() <= 0) {
+            throw new IllegalArgumentException(rateKey + " must be a positive decimal number");
+        }
+        long propagationNs = bwmapDownlink ? bwmapPropagationNs : readPonDurationNs(properties, propagationKey, "0", false);
+        long framePeriodNs = framed ? readPonDurationNs(properties, UPLINK_FRAME_PERIOD_US, "125", true) : 0;
+        long linkBwmapPropagationNs = framed ? bwmapPropagationNs : -1;
+        if (linkBwmapPropagationNs >= framePeriodNs) {
+            throw new IllegalArgumentException(DOWNLINK_PROPAGATION_US + " must be less than "
+                    + UPLINK_FRAME_PERIOD_US + " when BWmap is enabled");
+        }
+        String reportEnabled = framed ? properties.getProperty(UPLINK_REPORT_ENABLED, "false").strip() : "false";
+        if (!reportEnabled.equals("true") && !reportEnabled.equals("false")) {
+            throw new IllegalArgumentException(UPLINK_REPORT_ENABLED + " must be true or false");
+        }
+        SimulationConfig.PonPolling polling = uplink
+                ? readPolling(properties, rateMbps, propagationNs, framePeriodNs, reportEnabled.equals("true"),
+                        linkBwmapPropagationNs) : null;
+        return new SimulationConfig.PonLink(rateMbps, propagationNs, framePeriodNs, reportEnabled.equals("true"),
+                linkBwmapPropagationNs, polling);
+    }
+
+    private static boolean hasPollingParameters(Properties properties) {
+        return properties.containsKey(UPLINK_POLL_BYTES) || properties.containsKey(UPLINK_POLL_INTERVAL_FRAMES)
+                || properties.containsKey(UPLINK_POLL_END_US);
+    }
+
+    private static SimulationConfig.PonPolling readPolling(Properties properties, BigDecimal rateMbps,
+                                                          long propagationNs, long framePeriodNs,
+                                                          boolean reportEnabled, long bwmapPropagationNs) {
+        String enabled = properties.getProperty(UPLINK_POLL_ENABLED, "false").strip();
+        if (!enabled.equals("true") && !enabled.equals("false")) {
+            throw new IllegalArgumentException(UPLINK_POLL_ENABLED + " must be true or false");
+        }
+        if (enabled.equals("false")) {
+            if (hasPollingParameters(properties)) {
+                throw new IllegalArgumentException("Polling parameters require " + UPLINK_POLL_ENABLED + "=true");
+            }
+            return null;
+        }
+        if (framePeriodNs == 0 || !reportEnabled || bwmapPropagationNs < 0) {
+            throw new IllegalArgumentException("REPORT-only polling requires pon-framed, REPORT and BWmap");
+        }
+        int bytes = properties.containsKey(UPLINK_POLL_BYTES) ? readPositiveInt(properties, UPLINK_POLL_BYTES) : 64;
+        int intervalFrames = properties.containsKey(UPLINK_POLL_INTERVAL_FRAMES)
+                ? readPositiveInt(properties, UPLINK_POLL_INTERVAL_FRAMES) : 1;
+        if (!properties.containsKey(UPLINK_POLL_END_US)) {
+            throw new IllegalArgumentException("Missing property: " + UPLINK_POLL_END_US);
+        }
+        long endNs = readPonDurationNs(properties, UPLINK_POLL_END_US, "0", true);
+        if (endNs <= framePeriodNs) {
+            throw new IllegalArgumentException(UPLINK_POLL_END_US + " must be greater than the frame period");
+        }
+        try {
+            long durationNs = PonLinkTiming.serializationNs(bytes, rateMbps);
+            if (durationNs > framePeriodNs) {
+                throw new IllegalArgumentException("REPORT-only slot exceeds the uplink frame capacity");
+            }
+            // 首次在帧 1 调度，此后每隔 intervalFrames 帧，调度边界严格早于 endNs。
+            long finalEligibleFrame = (endNs - 1) / framePeriodNs;
+            long lastPollFrame = 1 + ((finalEligibleFrame - 1) / intervalFrames) * intervalFrames;
+            long lastPollNs = Math.multiplyExact(lastPollFrame, framePeriodNs);
+            long targetStartNs = Math.addExact(lastPollNs, framePeriodNs);
+            Math.addExact(targetStartNs, framePeriodNs);
+            Math.addExact(Math.addExact(targetStartNs, durationNs), propagationNs);
+        } catch (ArithmeticException e) {
+            throw new IllegalArgumentException("Polling window exceeds the nanosecond clock range", e);
+        }
+        return new SimulationConfig.PonPolling(bytes, intervalFrames, endNs);
+    }
+
+    private static long readPonDurationNs(Properties properties, String key, String defaultUs, boolean positive) {
+        String constraint = positive ? "positive" : "non-negative";
+        long durationNs;
+        try {
+            durationNs = new BigDecimal(properties.getProperty(key, defaultUs).strip())
+                    .scaleByPowerOfTen(3).longValueExact();
+        } catch (NumberFormatException | ArithmeticException e) {
+            throw new IllegalArgumentException(key + " must be a " + constraint
+                    + " duration in microseconds representable in whole nanoseconds", e);
+        }
+        if (durationNs < (positive ? 1 : 0)) {
+            throw new IllegalArgumentException(key + " must be " + constraint);
+        }
+        return durationNs;
     }
 
     private static WifiRetryPolicy readWifiRetryPolicy(Properties properties, WifiAccessMode accessMode,
@@ -249,34 +588,61 @@ public final class ConfigLoader {
     }
 
     private static void validateCompletionClock(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds,
-                                                long fiberUs, long wifiUs, WirelessPhy wirelessPhy,
+                                                long fiberUs, SimulationConfig.PonLink ponDownlink,
+                                                SimulationConfig.PonLink ponUplink, long wifiUs, WirelessPhy wirelessPhy,
                                                 WifiFrameExchange frameExchange) {
         // 同一 SFU 按到达时刻累计无线工作量即可计算忙闲边界，优先级只改变其中的发送顺序。
-        boolean mixed = inputEvents.stream().anyMatch(event -> event.packet().direction() == Packet.Direction.UL)
-                && inputEvents.stream().anyMatch(event -> event.packet().direction() == Packet.Direction.DL);
+        boolean hasUplink = inputEvents.stream().anyMatch(event -> event.packet().isUplink());
+        boolean hasDownlink = inputEvents.stream().anyMatch(event -> !event.packet().isUplink());
+        boolean mixed = hasUplink && hasDownlink;
         long[] completion = new long[sfuCount];
-        long ticksPerUs = wirelessPhy == null ? 1 : 1000;
+        boolean bothFixed = ponDownlink == null && ponUplink == null;
+        long ticksPerUs = wirelessPhy == null && bothFixed ? 1 : 1_000;
         long responseTicks = frameExchange == null ? 0 : frameExchange.responseDurationNs();
         try {
-            long fiberTicks = Math.multiplyExact(fiberUs, ticksPerUs);
+            boolean usesFixedFiber = bothFixed || (ponDownlink == null && hasDownlink) || (ponUplink == null && hasUplink);
+            long fiberTicks = usesFixedFiber ? Math.multiplyExact(fiberUs, ticksPerUs) : 0;
+            long fixedWifiTicks = Math.multiplyExact(wifiUs, ticksPerUs);
+            ToLongFunction<Event> arrivalTicks = ponDownlink == null
+                    ? event -> wifiArrivalTicks(event, ticksPerUs, fiberTicks)
+                    : wifiArrivalTicksWithPon(inputEvents, ponDownlink)::get;
             List<Event> wifiArrivals = inputEvents;
             if (mixed) {
                 // 上行直接进入无线队列，下行先走光路，双向模式的入队顺序可能与生成顺序不同。
                 wifiArrivals = new ArrayList<>(inputEvents);
-                wifiArrivals.sort(Comparator.comparingLong(event -> wifiArrivalTicks(event, ticksPerUs, fiberTicks)));
+                wifiArrivals.sort(Comparator.comparingLong(arrivalTicks));
             }
             for (Event event : wifiArrivals) {
                 Packet packet = event.packet();
-                long arrival = wifiArrivalTicks(event, ticksPerUs, fiberTicks);
+                long uplinkSerializationNs = packet.isUplink() && ponUplink != null
+                        ? validateUplinkSerialization(packet, ponUplink) : 0;
+                long arrival = arrivalTicks.applyAsLong(event);
                 int sfuIndex = staSfuIds.get(packet.staId() - 1) - 1;
-                long dataTicks = wirelessPhy == null ? wifiUs : wirelessPhy.ppduDurationNs(packet.bytes());
+                long dataTicks = wirelessPhy == null ? fixedWifiTicks : wirelessPhy.ppduDurationNs(packet.bytes());
                 long exchangeTicks = Math.addExact(dataTicks, responseTicks);
                 completion[sfuIndex] = Math.addExact(Math.max(arrival, completion[sfuIndex]), exchangeTicks);
                 if (packet.isUplink()) {
-                    // 光路从 DATA 结束起算。纯上行可由资源释放时刻减去 SIFS 和 ACK 得到上界。
-                    // 双向时上行顺序由实际选队决定，此处只检查最早出发的光路时刻，运行时再校验实际时刻。
-                    long dataEnd = mixed ? Math.addExact(arrival, dataTicks) : completion[sfuIndex] - responseTicks;
-                    Math.addExact(dataEnd, fiberTicks);
+                    if (ponUplink == null) {
+                        // 固定上行保留原校验。双向时由实际选队决定光路出发顺序。
+                        long dataEnd = mixed ? Math.addExact(arrival, dataTicks) : completion[sfuIndex] - responseTicks;
+                        Math.addExact(dataEnd, fiberTicks);
+                    } else {
+                        // 实际 EDCA 与光侧排队顺序由仿真决定。先核对逐包最早可进入的帧和到达时刻。
+                        long earliestDataEnd = Math.addExact(arrival, dataTicks);
+                        long earliestTxStart = earliestDataEnd;
+                        long framePeriodNs = ponUplink.framePeriodNs();
+                        if (framePeriodNs > 0) {
+                            // 即使恰好在帧边界入队，最早也要到严格晚于入队时刻的下一帧。
+                            earliestTxStart = Math.addExact(earliestDataEnd, framePeriodNs - earliestDataEnd % framePeriodNs);
+                            if (ponUplink.bwmapPropagationNs() >= 0) {
+                                // BWmap 在调度边界下发，上行 DATA 最早从再下一帧开始发送。
+                                earliestTxStart = Math.addExact(earliestTxStart, framePeriodNs);
+                            }
+                            Math.addExact(earliestTxStart, framePeriodNs);
+                        }
+                        long earliestTxEnd = Math.addExact(earliestTxStart, uplinkSerializationNs);
+                        Math.addExact(earliestTxEnd, ponUplink.propagationNs());
+                    }
                 }
             }
         } catch (ArithmeticException e) {
@@ -284,16 +650,45 @@ public final class ConfigLoader {
         }
     }
 
+    private static long validateUplinkSerialization(Packet packet, SimulationConfig.PonLink ponUplink) {
+        long framePeriodNs = ponUplink.framePeriodNs();
+        long serializationNs = PonLinkTiming.serializationNs(packet.bytes(), ponUplink.rateMbps());
+        if (framePeriodNs > 0 && serializationNs > framePeriodNs) {
+            throw new IllegalArgumentException("PON uplink packet " + packet.id() + " requires " + serializationNs
+                    + " ns, exceeding frame capacity " + framePeriodNs + " ns");
+        }
+        return serializationNs;
+    }
+
     private static long wifiArrivalTicks(Event event, long ticksPerUs, long fiberTicks) {
         long input = Math.multiplyExact(event.timeUs(), ticksPerUs);
         return event.packet().isUplink() ? input : Math.addExact(input, fiberTicks);
+    }
+
+    private static Map<Event, Long> wifiArrivalTicksWithPon(List<Event> inputEvents,
+                                                           SimulationConfig.PonLink ponDownlink) {
+        // 输入已按时刻排序，同刻保留原序。预检沿共享 FIFO 顺序推进发送完成边界。
+        Map<Event, Long> arrivals = new HashMap<>();
+        long availableNs = 0;
+        for (Event event : inputEvents) {
+            long generatedNs = Math.multiplyExact(event.timeUs(), 1_000L);
+            if (event.packet().isUplink()) {
+                arrivals.put(event, generatedNs);
+            } else {
+                long serializationNs = PonLinkTiming.serializationNs(event.packet().bytes(), ponDownlink.rateMbps());
+                availableNs = Math.addExact(Math.max(generatedNs, availableNs), serializationNs);
+                arrivals.put(event, Math.addExact(availableNs, ponDownlink.propagationNs()));
+            }
+        }
+        return arrivals;
     }
 
     private static void validateKeys(Properties properties, int packetCount, int staCount, int sfuCount,
                                      boolean poisson, DirectionMode directionMode) {
         // 模式间的字段不能混用，防止手填报文或流量源的设置被忽略。
         for (String key : properties.stringPropertyNames()) {
-            if (KEYS.contains(key) || PHY_KEYS.contains(key) || EDCA_AC_KEY.matcher(key).matches()) {
+            if (KEYS.contains(key) || PHY_KEYS.contains(key) || EDCA_AC_KEY.matcher(key).matches()
+                    || TCONT_ALLOCATION_KEY.matcher(key).matches()) {
                 continue;
             }
             Matcher packet = PACKET_OVERRIDE.matcher(key);

@@ -1,0 +1,187 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1342 845" width="1342" height="845" role="img" aria-labelledby="title desc">
+<title id="title">PON upstream DBA performance summary</title><desc id="desc">Matched GIANT/RR inputs · 100 ms observation · 1200-byte packets · 2.5 Gb/s uplink</desc>
+<g font-family="Arial, Helvetica, sans-serif">
+<rect x="0" y="0" width="1342" height="845" rx="0" fill="white" stroke="none" stroke-width="1"/>
+<rect x="34" y="28" width="34" height="3" rx="0" fill="#11698A" stroke="none" stroke-width="1"/>
+<text x="34" y="64" font-size="30" fill="#172A3B" font-weight="700" text-anchor="start">PON upstream DBA performance summary</text>
+<text x="35" y="91" font-size="14" fill="#465D72" font-weight="400" text-anchor="start">Matched GIANT/RR inputs · 100 ms observation · 1200-byte packets · 2.5 Gb/s uplink</text>
+<circle cx="43" cy="119" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+<text x="55" y="123" font-size="13" fill="#172A3B" font-weight="400" text-anchor="start">giant-complete</text>
+<rect x="189.3" y="114.3" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+<text x="206" y="123" font-size="13" fill="#172A3B" font-weight="400" text-anchor="start">rr-multi</text>
+<text x="326" y="123" font-size="13" fill="#465D72" font-weight="400" text-anchor="start">Points show the mean of three seeds. Whiskers span the seed min–max.</text>
+<rect x="34" y="144" width="625" height="307" rx="7" fill="#FBFDFF" stroke="#DFE8EF" stroke-width="1"/>
+<text x="53" y="175" font-size="18" fill="#172A3B" font-weight="700" text-anchor="start">A · Sustained overload goodput</text>
+<text x="53" y="197" font-size="13" fill="#465D72" font-weight="400" text-anchor="start">8 Gb/s T4-only input · Configured T1 fixed windows retained</text>
+<text x="95" y="225" font-size="12" fill="#465D72" font-weight="700" text-anchor="start">Delivered (Gb/s)</text>
+<line x1="95" y1="397" x2="637" y2="397" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="401" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0</text>
+<line x1="95" y1="356.5" x2="637" y2="356.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="360.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0.75</text>
+<line x1="95" y1="316" x2="637" y2="316" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="320" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">1.5</text>
+<line x1="95" y1="275.5" x2="637" y2="275.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="279.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">2.25</text>
+<line x1="95" y1="235" x2="637" y2="235" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="239" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">3</text>
+<line x1="95" y1="262" x2="637" y2="262" stroke="#465D72" stroke-width="1" stroke-dasharray="5 4" opacity="0.8"/>
+<text x="99" y="256" font-size="11" fill="#465D72" font-weight="400" text-anchor="start">Physical rate</text>
+<text x="230.5" y="420" font-size="13" fill="#172A3B" font-weight="700" text-anchor="middle">4 SFUs</text>
+<text x="230.5" y="437" font-size="11" fill="#465D72" font-weight="400" text-anchor="middle">8 STAs</text>
+<text x="501.5" y="420" font-size="13" fill="#172A3B" font-weight="700" text-anchor="middle">8 SFUs</text>
+<text x="501.5" y="437" font-size="11" fill="#465D72" font-weight="400" text-anchor="middle">16 STAs</text>
+<line x1="204.5" y1="273.699" x2="204.5" y2="273.699" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="200.5" y1="273.699" x2="208.5" y2="273.699" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="200.5" y1="273.699" x2="208.5" y2="273.699" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<circle cx="204.5" cy="273.699" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+<text x="204.5" y="264.699" font-size="11" fill="#11698A" font-weight="700" text-anchor="middle">2.283</text>
+<line x1="256.5" y1="265.964" x2="256.5" y2="265.964" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="252.5" y1="265.964" x2="260.5" y2="265.964" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="252.5" y1="265.964" x2="260.5" y2="265.964" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<rect x="251.8" y="261.264" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+<text x="256.5" y="256.964" font-size="11" fill="#B95225" font-weight="700" text-anchor="middle">2.427</text>
+<line x1="475.5" y1="282.009" x2="475.5" y2="282.066" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="471.5" y1="282.009" x2="479.5" y2="282.009" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="471.5" y1="282.066" x2="479.5" y2="282.066" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<circle cx="475.5" cy="282.047" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+<text x="475.5" y="273.009" font-size="11" fill="#11698A" font-weight="700" text-anchor="middle">2.129</text>
+<line x1="527.5" y1="265.964" x2="527.5" y2="265.964" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="523.5" y1="265.964" x2="531.5" y2="265.964" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="523.5" y1="265.964" x2="531.5" y2="265.964" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<rect x="522.8" y="261.264" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+<text x="527.5" y="256.964" font-size="11" fill="#B95225" font-weight="700" text-anchor="middle">2.427</text>
+<rect x="683" y="144" width="625" height="307" rx="7" fill="#FBFDFF" stroke="#DFE8EF" stroke-width="1"/>
+<text x="702" y="175" font-size="18" fill="#172A3B" font-weight="700" text-anchor="start">B · Protected services under T4 overload</text>
+<text x="702" y="197" font-size="13" fill="#465D72" font-weight="400" text-anchor="start">8 SFUs · T4 at 8 Gb/s relative to the matched T4 = 0 baseline</text>
+<text x="744" y="225" font-size="12" fill="#465D72" font-weight="700" text-anchor="start">Change in FIFO P99 (ms)</text>
+<line x1="744" y1="397" x2="1286" y2="397" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="734" y="401" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0</text>
+<line x1="744" y1="356.5" x2="1286" y2="356.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="734" y="360.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0.2</text>
+<line x1="744" y1="316" x2="1286" y2="316" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="734" y="320" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0.4</text>
+<line x1="744" y1="275.5" x2="1286" y2="275.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="734" y="279.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0.6</text>
+<line x1="744" y1="235" x2="1286" y2="235" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="734" y="239" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0.8</text>
+<text x="834.333" y="420" font-size="13" fill="#172A3B" font-weight="700" text-anchor="middle">T1</text>
+<text x="834.333" y="437" font-size="11" fill="#465D72" font-weight="400" text-anchor="middle">Fixed</text>
+<text x="1015" y="420" font-size="13" fill="#172A3B" font-weight="700" text-anchor="middle">T2</text>
+<text x="1015" y="437" font-size="11" fill="#465D72" font-weight="400" text-anchor="middle">Assured</text>
+<text x="1195.67" y="420" font-size="13" fill="#172A3B" font-weight="700" text-anchor="middle">T3</text>
+<text x="1195.67" y="437" font-size="11" fill="#465D72" font-weight="400" text-anchor="middle">Assured + surplus</text>
+<line x1="808.333" y1="397" x2="808.333" y2="397" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="804.333" y1="397" x2="812.333" y2="397" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="804.333" y1="397" x2="812.333" y2="397" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<circle cx="808.333" cy="397" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+<text x="808.333" y="388" font-size="11" fill="#11698A" font-weight="700" text-anchor="middle">0.000</text>
+<line x1="860.333" y1="253.8" x2="860.333" y2="273.443" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="856.333" y1="253.8" x2="864.333" y2="253.8" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="856.333" y1="273.443" x2="864.333" y2="273.443" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<rect x="855.633" y="256.536" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+<text x="860.333" y="244.8" font-size="11" fill="#B95225" font-weight="700" text-anchor="middle">0.670</text>
+<line x1="989" y1="397" x2="989" y2="397" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="985" y1="397" x2="993" y2="397" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="985" y1="397" x2="993" y2="397" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<circle cx="989" cy="397" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+<text x="989" y="388" font-size="11" fill="#11698A" font-weight="700" text-anchor="middle">0.000</text>
+<line x1="1041" y1="294.332" x2="1041" y2="356.97" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="1037" y1="294.332" x2="1045" y2="294.332" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="1037" y1="356.97" x2="1045" y2="356.97" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<rect x="1036.3" y="327.892" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+<text x="1041" y="285.332" font-size="11" fill="#B95225" font-weight="700" text-anchor="middle">0.318</text>
+<line x1="1169.67" y1="397" x2="1169.67" y2="397" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="1165.67" y1="397" x2="1173.67" y2="397" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="1165.67" y1="397" x2="1173.67" y2="397" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<circle cx="1169.67" cy="397" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+<text x="1169.67" y="388" font-size="11" fill="#11698A" font-weight="700" text-anchor="middle">0.000</text>
+<line x1="1221.67" y1="289.57" x2="1221.67" y2="325.113" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="1217.67" y1="289.57" x2="1225.67" y2="289.57" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="1217.67" y1="325.113" x2="1225.67" y2="325.113" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<rect x="1216.97" y="307.436" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+<text x="1221.67" y="280.57" font-size="11" fill="#B95225" font-weight="700" text-anchor="middle">0.419</text>
+<rect x="34" y="469" width="625" height="307" rx="7" fill="#FBFDFF" stroke="#DFE8EF" stroke-width="1"/>
+<text x="53" y="500" font-size="18" fill="#172A3B" font-weight="700" text-anchor="start">C · T2 budget sensitivity</text>
+<text x="53" y="522" font-size="13" fill="#465D72" font-weight="400" text-anchor="start">2 SFUs · 3.05 Gb/s total input · SImax = 1 frame · ABmin per SFU</text>
+<text x="95" y="550" font-size="12" fill="#465D72" font-weight="700" text-anchor="start">Mean FIFO wait (ms)</text>
+<line x1="95" y1="722" x2="637" y2="722" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="726" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0</text>
+<line x1="95" y1="681.5" x2="637" y2="681.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="685.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">1</text>
+<line x1="95" y1="641" x2="637" y2="641" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="645" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">2</text>
+<line x1="95" y1="600.5" x2="637" y2="600.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="604.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">3</text>
+<line x1="95" y1="560" x2="637" y2="560" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="564" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">4</text>
+<line x1="95" y1="700.482" x2="637" y2="700.482" stroke="#B95225" stroke-width="1" stroke-dasharray="5 4" opacity="0.8"/>
+<text x="99" y="694.482" font-size="11" fill="#B95225" font-weight="400" text-anchor="start">RR mean 0.531</text>
+<text x="185.333" y="745" font-size="13" fill="#172A3B" font-weight="700" text-anchor="middle">2,400 B</text>
+<text x="185.333" y="762" font-size="11" fill="#465D72" font-weight="400" text-anchor="middle"></text>
+<text x="366" y="745" font-size="13" fill="#172A3B" font-weight="700" text-anchor="middle">3,600 B</text>
+<text x="366" y="762" font-size="11" fill="#465D72" font-weight="400" text-anchor="middle"></text>
+<text x="546.667" y="745" font-size="13" fill="#172A3B" font-weight="700" text-anchor="middle">4,800 B</text>
+<text x="546.667" y="762" font-size="11" fill="#465D72" font-weight="400" text-anchor="middle"></text>
+<line x1="185.333" y1="642.689" x2="366" y2="706.156" stroke="#11698A" stroke-width="1.65" stroke-dasharray="none" opacity="1"/>
+<line x1="366" y1="706.156" x2="546.667" y2="707.348" stroke="#11698A" stroke-width="1.65" stroke-dasharray="none" opacity="1"/>
+<line x1="185.333" y1="609.48" x2="185.333" y2="668.65" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="181.333" y1="609.48" x2="189.333" y2="609.48" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="181.333" y1="668.65" x2="189.333" y2="668.65" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<circle cx="185.333" cy="642.689" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+<text x="185.333" y="600.48" font-size="11" fill="#11698A" font-weight="700" text-anchor="middle">1.958</text>
+<line x1="366" y1="705.854" x2="366" y2="706.381" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="362" y1="705.854" x2="370" y2="705.854" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="362" y1="706.381" x2="370" y2="706.381" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<circle cx="366" cy="706.156" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+<text x="366" y="696.854" font-size="11" fill="#11698A" font-weight="700" text-anchor="middle">0.391</text>
+<line x1="546.667" y1="707.182" x2="546.667" y2="707.455" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="542.667" y1="707.182" x2="550.667" y2="707.182" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="542.667" y1="707.455" x2="550.667" y2="707.455" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<circle cx="546.667" cy="707.348" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+<text x="546.667" y="698.182" font-size="11" fill="#11698A" font-weight="700" text-anchor="middle">0.362</text>
+<rect x="683" y="469" width="625" height="307" rx="7" fill="#FBFDFF" stroke="#DFE8EF" stroke-width="1"/>
+<text x="702" y="500" font-size="18" fill="#172A3B" font-weight="700" text-anchor="start">D · T2 service interval and polling sensitivity</text>
+<text x="702" y="522" font-size="13" fill="#465D72" font-weight="400" text-anchor="start">2 SFUs · 3.05 Gb/s total input · Same nominal GIANT rate for SI1 and SI2</text>
+<text x="744" y="550" font-size="12" fill="#465D72" font-weight="700" text-anchor="start">FIFO P99 (ms)</text>
+<line x1="744" y1="722" x2="1286" y2="722" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="734" y="726" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0</text>
+<line x1="744" y1="681.5" x2="1286" y2="681.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="734" y="685.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">1.25</text>
+<line x1="744" y1="641" x2="1286" y2="641" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="734" y="645" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">2.5</text>
+<line x1="744" y1="600.5" x2="1286" y2="600.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="734" y="604.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">3.75</text>
+<line x1="744" y1="560" x2="1286" y2="560" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="734" y="564" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">5</text>
+<text x="811.75" y="745" font-size="13" fill="#172A3B" font-weight="700" text-anchor="middle">RR</text>
+<text x="811.75" y="762" font-size="11" fill="#465D72" font-weight="400" text-anchor="middle">Poll / 1 fr.</text>
+<text x="947.25" y="745" font-size="13" fill="#172A3B" font-weight="700" text-anchor="middle">GIANT SI1</text>
+<text x="947.25" y="762" font-size="11" fill="#465D72" font-weight="400" text-anchor="middle">3,600 B · poll / 1 fr.</text>
+<text x="1082.75" y="745" font-size="13" fill="#172A3B" font-weight="700" text-anchor="middle">GIANT SI2</text>
+<text x="1082.75" y="762" font-size="11" fill="#465D72" font-weight="400" text-anchor="middle">7,200 B · poll / 1 fr.</text>
+<text x="1218.25" y="745" font-size="13" fill="#172A3B" font-weight="700" text-anchor="middle">GIANT SI1</text>
+<text x="1218.25" y="762" font-size="11" fill="#465D72" font-weight="400" text-anchor="middle">3,600 B · poll / 4 fr.</text>
+<line x1="811.75" y1="695.884" x2="811.75" y2="697.989" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="807.75" y1="695.884" x2="815.75" y2="695.884" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="807.75" y1="697.989" x2="815.75" y2="697.989" stroke="#B95225" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<rect x="807.05" y="692.452" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+<text x="811.75" y="686.884" font-size="11" fill="#B95225" font-weight="700" text-anchor="middle">0.767</text>
+<line x1="947.25" y1="683.588" x2="947.25" y2="690.958" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="943.25" y1="683.588" x2="951.25" y2="683.588" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="943.25" y1="690.958" x2="951.25" y2="690.958" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<circle cx="947.25" cy="687.146" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+<text x="947.25" y="674.588" font-size="11" fill="#11698A" font-weight="700" text-anchor="middle">1.076</text>
+<line x1="1082.75" y1="684.65" x2="1082.75" y2="692.012" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="1078.75" y1="684.65" x2="1086.75" y2="684.65" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="1078.75" y1="692.012" x2="1086.75" y2="692.012" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<circle cx="1082.75" cy="688.305" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+<text x="1082.75" y="675.65" font-size="11" fill="#11698A" font-weight="700" text-anchor="middle">1.040</text>
+<line x1="1218.25" y1="601.298" x2="1218.25" y2="613.74" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="1214.25" y1="601.298" x2="1222.25" y2="601.298" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<line x1="1214.25" y1="613.74" x2="1222.25" y2="613.74" stroke="#11698A" stroke-width="1.6" stroke-dasharray="none" opacity="1"/>
+<circle cx="1218.25" cy="607.184" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+<text x="1218.25" y="592.298" font-size="11" fill="#11698A" font-weight="700" text-anchor="middle">3.544</text>
+<line x1="34" y1="796" x2="1308" y2="796" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="35" y="818" font-size="13" fill="#465D72" font-weight="400" text-anchor="start">FIFO wait runs from entry to optical loading. Packets still waiting at 100 ms are censored. The panels use different scales.</text>
+</g>
+</svg>

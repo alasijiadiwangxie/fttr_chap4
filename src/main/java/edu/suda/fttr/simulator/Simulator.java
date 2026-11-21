@@ -4,10 +4,13 @@ import edu.suda.fttr.config.SimulationConfig;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.entity.PonDbaShadowPlanner;
 import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
 import edu.suda.fttr.link.FiberLink;
 import edu.suda.fttr.link.FixedDelayModel;
+import edu.suda.fttr.link.PonDownlink;
+import edu.suda.fttr.link.PonUplink;
 import edu.suda.fttr.link.WifiLink;
 import edu.suda.fttr.mac.WifiRetryPolicy;
 import edu.suda.fttr.phy.WirelessPhy;
@@ -29,7 +32,29 @@ public final class Simulator {
         boolean runSummary = config.uplinkEnabled() || !downlinkWindowsUs.isEmpty() || config.inputEvents().size() > 1;
         WirelessPhy wirelessPhy = config.wirelessPhy();
         WifiRetryPolicy retryPolicy = config.wifiRetryPolicy();
-        SimulationContext context = new SimulationContext(trace, runSummary, wirelessPhy != null, retryPolicy != null);
+        SimulationConfig.PonLink downlinkConfig = config.ponDownlink();
+        SimulationConfig.PonLink uplinkConfig = config.ponUplink();
+        PonDownlink ponDownlink = downlinkConfig == null ? null
+                : new PonDownlink(downlinkConfig.rateMbps(), downlinkConfig.propagationNs());
+        PonUplink ponUplink = uplinkConfig == null ? null
+                : new PonUplink(uplinkConfig.rateMbps(), uplinkConfig.propagationNs(), uplinkConfig.framePeriodNs(),
+                        uplinkConfig.reportEnabled(), uplinkConfig.bwmapPropagationNs(), uplinkConfig.polling());
+        boolean demandLedgerEnabled = config.demandLedgerEnabled();
+        PonDbaShadowPlanner shadowPlanner = config.dbaShadowEnabled()
+                ? new PonDbaShadowPlanner(config.staSfuIds(), uplinkConfig.rateMbps(), uplinkConfig.framePeriodNs()) : null;
+        Mfu mfu = new Mfu(config.staSfuIds(), ponDownlink, demandLedgerEnabled, shadowPlanner);
+        if (config.tcontTopology().enabled()) {
+            mfu.configureTcont(config.tcontTopology());
+            ponUplink.configureTcont(config.tcontTopology());
+        }
+        if (config.dbaGiantEnabled()) {
+            mfu.enableGiantDba(config.dbaGiantCompleteEnabled());
+        }
+        if (config.dbaExecutionEnabled()) {
+            ponUplink.enableDbaExecution(mfu, config.dbaMultiGrantEnabled());
+        }
+        SimulationContext context = new SimulationContext(trace, runSummary, config.usesNanosecondTicks(),
+                retryPolicy != null, demandLedgerEnabled ? mfu : null);
         List<Map<Integer, Sta>> stationsBySfu = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             stationsBySfu.add(new HashMap<>());
@@ -41,7 +66,7 @@ public final class Simulator {
             stationsBySfu.get(sta.sfuId() - 1).put(sta.id(), sta);
         }
 
-        // 每台 SFU 都有各自的收包队列和发送状态，光链路也按目的 SFU 分开实例化。
+        // 原有逻辑光链路继续服务选用固定时延模式的方向。
         FixedDelayModel fiberDelay = new FixedDelayModel(config.fiberDelayUs());
         // 链路时长模型可共用。每台 SFU 各自维护一个与其 STA 共享的信道。
         WifiLink wifi = wirelessPhy == null ? new WifiLink(new FixedDelayModel(config.wifiDelayUs()))
@@ -50,14 +75,17 @@ public final class Simulator {
         List<Sfu> sfus = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             fibers.add(new FiberLink(fiberDelay));
-            sfus.add(new Sfu(i + 1, wifi, stationsBySfu.get(i), config.edcaParameters(), config.wifiAccessMode(),
-                    retryPolicy));
+            int sfuId = i + 1;
+            PonUplink.Port uplinkPort = ponUplink == null ? null : ponUplink.attachSfu(sfuId);
+            sfus.add(new Sfu(sfuId, wifi, stationsBySfu.get(i), config.edcaParameters(), config.wifiAccessMode(),
+                    retryPolicy, uplinkPort));
         }
-        Mfu mfu = new Mfu(config.staSfuIds());
-
         // 输入事件只提供报文和生成时间，实际路径由仿真器和设备根据关联表决定。
         for (Event input : config.inputEvents()) {
             context.scheduleInputEvent(input);
+        }
+        if (ponUplink != null) {
+            ponUplink.startPolling(config.staSfuIds(), context);
         }
 
         Event event;
@@ -73,7 +101,65 @@ public final class Simulator {
                     }
                     break;
                 case FIBER_TX_START:
-                    fibers.get(event.sfuId() - 1).transmit(event.packet(), event.sfuId(), context);
+                    if (ponUplink != null && event.packet().isUplink()) {
+                        ponUplink.start(event.packet(), event.sfuId(), context);
+                    } else if (ponDownlink != null && !event.packet().isUplink()) {
+                        ponDownlink.start(event.packet(), event.sfuId(), context);
+                    } else {
+                        fibers.get(event.sfuId() - 1).transmit(event.packet(), event.sfuId(), context);
+                    }
+                    break;
+                case FIBER_TX_END:
+                    if (event.packet().isUplink()) {
+                        ponUplink.finish(event.packet(), event.sfuId(), context);
+                    } else {
+                        ponDownlink.finish(event.packet(), event.sfuId(), context);
+                    }
+                    break;
+                case PON_UPLINK_FRAME:
+                    if (config.tcontTopology().enabled()) {
+                        for (edu.suda.fttr.dba.TcontProfile profile : config.tcontTopology().profiles()) {
+                            mfu.recordAllocationDemand(profile.allocationId(), "FRAME_BOUNDARY", context);
+                        }
+                    } else if (uplinkConfig.reportEnabled()) {
+                        long frameId = context.nowTicks() / uplinkConfig.framePeriodNs();
+                        for (Sfu sfu : sfus) {
+                            context.recordMfuReportState(frameId, sfu.id(), mfu.latestUplinkReport(sfu.id()));
+                        }
+                    }
+                    if (demandLedgerEnabled && !config.tcontTopology().enabled()) {
+                        for (Sfu sfu : sfus) {
+                            mfu.recordUplinkDemand(sfu.id(), "FRAME_BOUNDARY", context);
+                        }
+                    }
+                    ponUplink.scheduleFrame(context);
+                    break;
+                case PON_BWMAP_RX:
+                    sfus.get(event.sfuId() - 1).receivePonBwmap(event.packet(), context);
+                    break;
+                case PON_POLL_BWMAP_RX:
+                    sfus.get(event.sfuId() - 1).receivePollBwmap(event.reportPoll(), context);
+                    break;
+                case PON_POLL_START:
+                    ponUplink.startPoll(event.reportPoll(), context);
+                    break;
+                case PON_POLL_END:
+                    ponUplink.finishPoll(event.reportPoll(), context);
+                    break;
+                case PON_POLL_REPORT_RX:
+                    mfu.receivePolledReport(event.reportPoll(), context);
+                    break;
+                case PON_DBA_BWMAP_RX:
+                    ponUplink.receiveDbaBwmap(event.dbaGrant(), context);
+                    break;
+                case PON_DBA_SLOT_START:
+                    ponUplink.startDbaGrant(event.dbaGrant(), context);
+                    break;
+                case PON_DBA_SLOT_END:
+                    ponUplink.finishDbaGrant(event.dbaGrant(), context);
+                    break;
+                case PON_DBA_SETTLEMENT_RX:
+                    mfu.receiveDbaSettlement(event.dbaGrant(), context);
                     break;
                 case PACKET_ARRIVAL_AT_SFU:
                     sfus.get(event.sfuId() - 1).enqueueForWifi(event.packet(), context);
@@ -96,6 +182,9 @@ public final class Simulator {
                     break;
                 case PACKET_ARRIVAL_AT_MFU:
                     mfu.receiveUplink(event.packet(), event.sfuId(), context);
+                    break;
+                case PON_UPLINK_REPORT_RX:
+                    mfu.receiveUplinkReport(event.uplinkReport(), event.packet(), context);
                     break;
                 case WIFI_SELECT_NEXT:
                     sfus.get(event.sfuId() - 1).selectNext(context);
@@ -124,6 +213,13 @@ public final class Simulator {
         }
         if (wirelessPhy != null) {
             trace.recordWirelessPhyRate(wirelessPhy.phyRateMbps());
+        }
+        if (ponDownlink != null) {
+            ponDownlink.recordSummary(context);
+        }
+        if (ponUplink != null) {
+            ponUplink.recordSummary(context);
+            ponUplink.recordReportSummary(mfu.receivedUplinkReports(), context);
         }
         context.recordSummary(sfus, stations, config.uplinkEnabled());
     }

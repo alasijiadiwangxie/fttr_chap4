@@ -1,0 +1,419 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 683" width="1560" height="683" role="img" aria-labelledby="title desc">
+<title id="title">Upstream optical FIFO backlog under overload</title><desc id="desc">4 or 8 SFUs · 2 STAs per SFU · 100 ms observation · T4-only input retains the configured T1 fixed profile</desc>
+<g font-family="Arial, Helvetica, sans-serif">
+<rect x="0" y="0" width="1560" height="683" rx="0" fill="white" stroke="none" stroke-width="1"/>
+<rect x="34" y="27" width="34" height="3" rx="0" fill="#11698A" stroke="none" stroke-width="1"/>
+<text x="34" y="62" font-size="29" fill="#172A3B" font-weight="700" text-anchor="start">Upstream optical FIFO backlog under overload</text>
+<text x="35" y="88" font-size="14" fill="#465D72" font-weight="400" text-anchor="start">4 or 8 SFUs · 2 STAs per SFU · 100 ms observation · T4-only input retains the configured T1 fixed profile</text>
+<circle cx="43" cy="115" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+<text x="55" y="119" font-size="13" fill="#172A3B" font-weight="400" text-anchor="start">giant-complete</text>
+<rect x="193.3" y="110.3" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+<text x="210" y="119" font-size="13" fill="#172A3B" font-weight="400" text-anchor="start">rr-multi</text>
+<text x="327" y="119" font-size="13" fill="#465D72" font-weight="400" text-anchor="start">Points average available values across 3 matched seeds. Whiskers show the seed min–max.</text>
+<text x="177.6" y="157" font-size="16" fill="#172A3B" font-weight="700" text-anchor="middle">T4-only input</text>
+<text x="177.6" y="180" font-size="13" fill="#465D72" font-weight="400" text-anchor="middle">T4 offered 5,000 Mb/s</text>
+<text x="478.8" y="157" font-size="16" fill="#172A3B" font-weight="700" text-anchor="middle">T4-only input</text>
+<text x="478.8" y="180" font-size="13" fill="#465D72" font-weight="400" text-anchor="middle">T4 offered 8,000 Mb/s</text>
+<text x="780" y="157" font-size="16" fill="#172A3B" font-weight="700" text-anchor="middle">Isolation</text>
+<text x="780" y="180" font-size="13" fill="#465D72" font-weight="400" text-anchor="middle">T4 offered 0 Mb/s</text>
+<text x="1081.2" y="157" font-size="16" fill="#172A3B" font-weight="700" text-anchor="middle">Isolation</text>
+<text x="1081.2" y="180" font-size="13" fill="#465D72" font-weight="400" text-anchor="middle">T4 offered 5,000 Mb/s</text>
+<text x="1382.4" y="157" font-size="16" fill="#172A3B" font-weight="700" text-anchor="middle">Isolation</text>
+<text x="1382.4" y="180" font-size="13" fill="#465D72" font-weight="400" text-anchor="middle">T4 offered 8,000 Mb/s</text>
+<text x="35" y="218" font-size="16" fill="#172A3B" font-weight="700" text-anchor="start">Peak optical FIFO backlog (packets)</text>
+<rect x="34" y="230" width="287.2" height="162" rx="7" fill="#FBFDFF" stroke="#DFE8EF" stroke-width="1"/>
+<line x1="93" y1="360" x2="306.2" y2="360" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="364" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0</text>
+<line x1="93" y1="331.5" x2="306.2" y2="331.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="335.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">20,000</text>
+<line x1="93" y1="303" x2="306.2" y2="303" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="307" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">40,000</text>
+<line x1="93" y1="274.5" x2="306.2" y2="274.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="278.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">60,000</text>
+<line x1="93" y1="246" x2="306.2" y2="246" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="250" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">80,000</text>
+<text x="146.3" y="381" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">4</text>
+<text x="252.9" y="381" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">8</text>
+<line x1="141.3" y1="319.432" x2="247.9" y2="317.238" stroke="#11698A" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>giant-complete  · x=4 · mean 28469 · seed range 28442–28486</title>
+<line x1="141.3" y1="319.47" x2="141.3" y2="319.407" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="138.3" y1="319.47" x2="144.3" y2="319.47" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="138.3" y1="319.407" x2="144.3" y2="319.407" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="141.3" cy="319.432" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<g><title>giant-complete  · x=8 · mean 30008.7 · seed range 29824–30190</title>
+<line x1="247.9" y1="317.501" x2="247.9" y2="316.979" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="244.9" y1="317.501" x2="250.9" y2="317.501" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="244.9" y1="316.979" x2="250.9" y2="316.979" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="247.9" cy="317.238" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<line x1="151.3" y1="321.579" x2="257.9" y2="321.651" stroke="#B95225" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>rr-multi  · x=4 · mean 26962.3 · seed range 26940–26978</title>
+<line x1="151.3" y1="321.611" x2="151.3" y2="321.556" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="148.3" y1="321.611" x2="154.3" y2="321.611" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="148.3" y1="321.556" x2="154.3" y2="321.556" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="146.6" y="316.879" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<g><title>rr-multi  · x=8 · mean 26911.3 · seed range 26723–27104</title>
+<line x1="257.9" y1="321.92" x2="257.9" y2="321.377" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="254.9" y1="321.92" x2="260.9" y2="321.92" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="254.9" y1="321.377" x2="260.9" y2="321.377" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="253.2" y="316.951" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<rect x="335.2" y="230" width="287.2" height="162" rx="7" fill="#FBFDFF" stroke="#DFE8EF" stroke-width="1"/>
+<line x1="394.2" y1="360" x2="607.4" y2="360" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="386.2" y="364" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0</text>
+<line x1="394.2" y1="331.5" x2="607.4" y2="331.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="386.2" y="335.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">20,000</text>
+<line x1="394.2" y1="303" x2="607.4" y2="303" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="386.2" y="307" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">40,000</text>
+<line x1="394.2" y1="274.5" x2="607.4" y2="274.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="386.2" y="278.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">60,000</text>
+<line x1="394.2" y1="246" x2="607.4" y2="246" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="386.2" y="250" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">80,000</text>
+<text x="447.5" y="381" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">4</text>
+<text x="554.1" y="381" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">8</text>
+<line x1="442.5" y1="275.054" x2="549.1" y2="272.845" stroke="#11698A" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>giant-complete  · x=4 · mean 59611 · seed range 59595–59625</title>
+<line x1="442.5" y1="275.077" x2="442.5" y2="275.034" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="439.5" y1="275.077" x2="445.5" y2="275.077" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="439.5" y1="275.034" x2="445.5" y2="275.034" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="442.5" cy="275.054" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<g><title>giant-complete  · x=8 · mean 61161.3 · seed range 60988–61441</title>
+<line x1="549.1" y1="273.092" x2="549.1" y2="272.447" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="546.1" y1="273.092" x2="552.1" y2="273.092" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="546.1" y1="272.447" x2="552.1" y2="272.447" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="549.1" cy="272.845" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<line x1="452.5" y1="277.18" x2="559.1" y2="277.266" stroke="#B95225" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>rr-multi  · x=4 · mean 58119 · seed range 58103–58133</title>
+<line x1="452.5" y1="277.203" x2="452.5" y2="277.16" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="449.5" y1="277.203" x2="455.5" y2="277.203" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="449.5" y1="277.16" x2="455.5" y2="277.16" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="447.8" y="272.48" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<g><title>rr-multi  · x=8 · mean 58059 · seed range 57893–58335</title>
+<line x1="559.1" y1="277.502" x2="559.1" y2="276.873" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="556.1" y1="277.502" x2="562.1" y2="277.502" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="556.1" y1="276.873" x2="562.1" y2="276.873" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="554.4" y="272.566" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<rect x="636.4" y="230" width="287.2" height="162" rx="7" fill="#FBFDFF" stroke="#DFE8EF" stroke-width="1"/>
+<line x1="695.4" y1="360" x2="908.6" y2="360" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="687.4" y="364" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0</text>
+<line x1="695.4" y1="331.5" x2="908.6" y2="331.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="687.4" y="335.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">20,000</text>
+<line x1="695.4" y1="303" x2="908.6" y2="303" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="687.4" y="307" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">40,000</text>
+<line x1="695.4" y1="274.5" x2="908.6" y2="274.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="687.4" y="278.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">60,000</text>
+<line x1="695.4" y1="246" x2="908.6" y2="246" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="687.4" y="250" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">80,000</text>
+<text x="748.7" y="381" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">4</text>
+<text x="855.3" y="381" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">8</text>
+<line x1="743.7" y1="359.941" x2="850.3" y2="359.918" stroke="#11698A" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>giant-complete  · x=4 · mean 41.3333 · seed range 36–47</title>
+<line x1="743.7" y1="359.949" x2="743.7" y2="359.933" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="740.7" y1="359.949" x2="746.7" y2="359.949" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="740.7" y1="359.933" x2="746.7" y2="359.933" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="743.7" cy="359.941" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<g><title>giant-complete  · x=8 · mean 57.6667 · seed range 53–63</title>
+<line x1="850.3" y1="359.924" x2="850.3" y2="359.91" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="847.3" y1="359.924" x2="853.3" y2="359.924" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="847.3" y1="359.91" x2="853.3" y2="359.91" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="850.3" cy="359.918" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<line x1="753.7" y1="359.939" x2="860.3" y2="359.903" stroke="#B95225" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>rr-multi  · x=4 · mean 42.6667 · seed range 40–46</title>
+<line x1="753.7" y1="359.943" x2="753.7" y2="359.934" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="750.7" y1="359.943" x2="756.7" y2="359.943" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="750.7" y1="359.934" x2="756.7" y2="359.934" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="749" y="355.239" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<g><title>rr-multi  · x=8 · mean 68 · seed range 66–70</title>
+<line x1="860.3" y1="359.906" x2="860.3" y2="359.9" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="857.3" y1="359.906" x2="863.3" y2="359.906" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="857.3" y1="359.9" x2="863.3" y2="359.9" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="855.6" y="355.203" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<rect x="937.6" y="230" width="287.2" height="162" rx="7" fill="#FBFDFF" stroke="#DFE8EF" stroke-width="1"/>
+<line x1="996.6" y1="360" x2="1209.8" y2="360" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="988.6" y="364" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0</text>
+<line x1="996.6" y1="331.5" x2="1209.8" y2="331.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="988.6" y="335.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">20,000</text>
+<line x1="996.6" y1="303" x2="1209.8" y2="303" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="988.6" y="307" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">40,000</text>
+<line x1="996.6" y1="274.5" x2="1209.8" y2="274.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="988.6" y="278.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">60,000</text>
+<line x1="996.6" y1="246" x2="1209.8" y2="246" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="988.6" y="250" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">80,000</text>
+<text x="1049.9" y="381" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">4</text>
+<text x="1156.5" y="381" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">8</text>
+<line x1="1044.9" y1="316.802" x2="1151.5" y2="314.59" stroke="#11698A" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>giant-complete  · x=4 · mean 30314.3 · seed range 30289–30334</title>
+<line x1="1044.9" y1="316.838" x2="1044.9" y2="316.774" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1041.9" y1="316.838" x2="1047.9" y2="316.838" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1041.9" y1="316.774" x2="1047.9" y2="316.774" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="1044.9" cy="316.802" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<g><title>giant-complete  · x=8 · mean 31866.7 · seed range 31647–32095</title>
+<line x1="1151.5" y1="314.903" x2="1151.5" y2="314.265" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1148.5" y1="314.903" x2="1154.5" y2="314.903" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1148.5" y1="314.265" x2="1154.5" y2="314.265" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="1151.5" cy="314.59" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<line x1="1054.9" y1="318.049" x2="1161.5" y2="318.095" stroke="#B95225" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>rr-multi  · x=4 · mean 29439 · seed range 29417–29466</title>
+<line x1="1054.9" y1="318.081" x2="1054.9" y2="318.011" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1051.9" y1="318.081" x2="1057.9" y2="318.081" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1051.9" y1="318.011" x2="1057.9" y2="318.011" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="1050.2" y="313.349" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<g><title>rr-multi  · x=8 · mean 29407 · seed range 29188–29642</title>
+<line x1="1161.5" y1="318.407" x2="1161.5" y2="317.76" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1158.5" y1="318.407" x2="1164.5" y2="318.407" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1158.5" y1="317.76" x2="1164.5" y2="317.76" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="1156.8" y="313.395" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<rect x="1238.8" y="230" width="287.2" height="162" rx="7" fill="#FBFDFF" stroke="#DFE8EF" stroke-width="1"/>
+<line x1="1297.8" y1="360" x2="1511" y2="360" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="1289.8" y="364" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0</text>
+<line x1="1297.8" y1="331.5" x2="1511" y2="331.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="1289.8" y="335.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">20,000</text>
+<line x1="1297.8" y1="303" x2="1511" y2="303" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="1289.8" y="307" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">40,000</text>
+<line x1="1297.8" y1="274.5" x2="1511" y2="274.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="1289.8" y="278.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">60,000</text>
+<line x1="1297.8" y1="246" x2="1511" y2="246" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="1289.8" y="250" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">80,000</text>
+<text x="1351.1" y="381" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">4</text>
+<text x="1457.7" y="381" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">8</text>
+<line x1="1346.1" y1="272.421" x2="1452.7" y2="270.195" stroke="#11698A" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>giant-complete  · x=4 · mean 61459 · seed range 61439–61473</title>
+<line x1="1346.1" y1="272.449" x2="1346.1" y2="272.401" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1343.1" y1="272.449" x2="1349.1" y2="272.449" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1343.1" y1="272.401" x2="1349.1" y2="272.401" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="1346.1" cy="272.421" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<g><title>giant-complete  · x=8 · mean 63021.3 · seed range 62813–63347</title>
+<line x1="1452.7" y1="270.491" x2="1452.7" y2="269.731" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1449.7" y1="270.491" x2="1455.7" y2="270.491" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1449.7" y1="269.731" x2="1455.7" y2="269.731" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="1452.7" cy="270.195" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<line x1="1356.1" y1="273.651" x2="1462.7" y2="273.699" stroke="#B95225" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>rr-multi  · x=4 · mean 60595.7 · seed range 60551–60627</title>
+<line x1="1356.1" y1="273.715" x2="1356.1" y2="273.607" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1353.1" y1="273.715" x2="1359.1" y2="273.715" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1353.1" y1="273.607" x2="1359.1" y2="273.607" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="1351.4" y="268.951" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<g><title>rr-multi  · x=8 · mean 60562 · seed range 60366–60885</title>
+<line x1="1462.7" y1="273.978" x2="1462.7" y2="273.239" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1459.7" y1="273.978" x2="1465.7" y2="273.978" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1459.7" y1="273.239" x2="1465.7" y2="273.239" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="1458" y="268.999" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<text x="35" y="426" font-size="16" fill="#172A3B" font-weight="700" text-anchor="start">Optical FIFO backlog at 100 ms (packets)</text>
+<rect x="34" y="438" width="287.2" height="162" rx="7" fill="#FBFDFF" stroke="#DFE8EF" stroke-width="1"/>
+<line x1="93" y1="568" x2="306.2" y2="568" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="572" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0</text>
+<line x1="93" y1="539.5" x2="306.2" y2="539.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="543.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">20,000</text>
+<line x1="93" y1="511" x2="306.2" y2="511" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="515" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">40,000</text>
+<line x1="93" y1="482.5" x2="306.2" y2="482.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="486.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">60,000</text>
+<line x1="93" y1="454" x2="306.2" y2="454" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="85" y="458" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">80,000</text>
+<text x="146.3" y="589" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">4</text>
+<text x="252.9" y="589" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">8</text>
+<line x1="141.3" y1="527.432" x2="247.9" y2="525.238" stroke="#11698A" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>giant-complete  · x=4 · mean 28469 · seed range 28442–28486</title>
+<line x1="141.3" y1="527.47" x2="141.3" y2="527.407" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="138.3" y1="527.47" x2="144.3" y2="527.47" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="138.3" y1="527.407" x2="144.3" y2="527.407" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="141.3" cy="527.432" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<g><title>giant-complete  · x=8 · mean 30008.7 · seed range 29824–30190</title>
+<line x1="247.9" y1="525.501" x2="247.9" y2="524.979" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="244.9" y1="525.501" x2="250.9" y2="525.501" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="244.9" y1="524.979" x2="250.9" y2="524.979" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="247.9" cy="525.238" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<line x1="151.3" y1="529.579" x2="257.9" y2="529.651" stroke="#B95225" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>rr-multi  · x=4 · mean 26962.3 · seed range 26940–26978</title>
+<line x1="151.3" y1="529.611" x2="151.3" y2="529.556" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="148.3" y1="529.611" x2="154.3" y2="529.611" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="148.3" y1="529.556" x2="154.3" y2="529.556" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="146.6" y="524.879" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<g><title>rr-multi  · x=8 · mean 26911.3 · seed range 26723–27104</title>
+<line x1="257.9" y1="529.92" x2="257.9" y2="529.377" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="254.9" y1="529.92" x2="260.9" y2="529.92" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="254.9" y1="529.377" x2="260.9" y2="529.377" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="253.2" y="524.951" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<rect x="335.2" y="438" width="287.2" height="162" rx="7" fill="#FBFDFF" stroke="#DFE8EF" stroke-width="1"/>
+<line x1="394.2" y1="568" x2="607.4" y2="568" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="386.2" y="572" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0</text>
+<line x1="394.2" y1="539.5" x2="607.4" y2="539.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="386.2" y="543.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">20,000</text>
+<line x1="394.2" y1="511" x2="607.4" y2="511" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="386.2" y="515" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">40,000</text>
+<line x1="394.2" y1="482.5" x2="607.4" y2="482.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="386.2" y="486.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">60,000</text>
+<line x1="394.2" y1="454" x2="607.4" y2="454" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="386.2" y="458" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">80,000</text>
+<text x="447.5" y="589" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">4</text>
+<text x="554.1" y="589" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">8</text>
+<line x1="442.5" y1="483.054" x2="549.1" y2="480.845" stroke="#11698A" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>giant-complete  · x=4 · mean 59611 · seed range 59595–59625</title>
+<line x1="442.5" y1="483.077" x2="442.5" y2="483.034" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="439.5" y1="483.077" x2="445.5" y2="483.077" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="439.5" y1="483.034" x2="445.5" y2="483.034" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="442.5" cy="483.054" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<g><title>giant-complete  · x=8 · mean 61161.3 · seed range 60988–61441</title>
+<line x1="549.1" y1="481.092" x2="549.1" y2="480.447" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="546.1" y1="481.092" x2="552.1" y2="481.092" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="546.1" y1="480.447" x2="552.1" y2="480.447" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="549.1" cy="480.845" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<line x1="452.5" y1="485.18" x2="559.1" y2="485.266" stroke="#B95225" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>rr-multi  · x=4 · mean 58119 · seed range 58103–58133</title>
+<line x1="452.5" y1="485.203" x2="452.5" y2="485.16" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="449.5" y1="485.203" x2="455.5" y2="485.203" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="449.5" y1="485.16" x2="455.5" y2="485.16" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="447.8" y="480.48" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<g><title>rr-multi  · x=8 · mean 58059 · seed range 57893–58335</title>
+<line x1="559.1" y1="485.502" x2="559.1" y2="484.873" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="556.1" y1="485.502" x2="562.1" y2="485.502" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="556.1" y1="484.873" x2="562.1" y2="484.873" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="554.4" y="480.566" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<rect x="636.4" y="438" width="287.2" height="162" rx="7" fill="#FBFDFF" stroke="#DFE8EF" stroke-width="1"/>
+<line x1="695.4" y1="568" x2="908.6" y2="568" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="687.4" y="572" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0</text>
+<line x1="695.4" y1="539.5" x2="908.6" y2="539.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="687.4" y="543.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">20,000</text>
+<line x1="695.4" y1="511" x2="908.6" y2="511" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="687.4" y="515" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">40,000</text>
+<line x1="695.4" y1="482.5" x2="908.6" y2="482.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="687.4" y="486.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">60,000</text>
+<line x1="695.4" y1="454" x2="908.6" y2="454" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="687.4" y="458" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">80,000</text>
+<text x="748.7" y="589" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">4</text>
+<text x="855.3" y="589" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">8</text>
+<line x1="743.7" y1="567.972" x2="850.3" y2="567.957" stroke="#11698A" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>giant-complete  · x=4 · mean 19.3333 · seed range 15–24</title>
+<line x1="743.7" y1="567.979" x2="743.7" y2="567.966" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="740.7" y1="567.979" x2="746.7" y2="567.979" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="740.7" y1="567.966" x2="746.7" y2="567.966" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="743.7" cy="567.972" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<g><title>giant-complete  · x=8 · mean 30.3333 · seed range 28–33</title>
+<line x1="850.3" y1="567.96" x2="850.3" y2="567.953" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="847.3" y1="567.96" x2="853.3" y2="567.96" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="847.3" y1="567.953" x2="853.3" y2="567.953" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="850.3" cy="567.957" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<line x1="753.7" y1="567.968" x2="860.3" y2="567.936" stroke="#B95225" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>rr-multi  · x=4 · mean 22.6667 · seed range 21–24</title>
+<line x1="753.7" y1="567.97" x2="753.7" y2="567.966" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="750.7" y1="567.97" x2="756.7" y2="567.97" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="750.7" y1="567.966" x2="756.7" y2="567.966" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="749" y="563.268" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<g><title>rr-multi  · x=8 · mean 44.6667 · seed range 41–50</title>
+<line x1="860.3" y1="567.942" x2="860.3" y2="567.929" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="857.3" y1="567.942" x2="863.3" y2="567.942" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="857.3" y1="567.929" x2="863.3" y2="567.929" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="855.6" y="563.236" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<rect x="937.6" y="438" width="287.2" height="162" rx="7" fill="#FBFDFF" stroke="#DFE8EF" stroke-width="1"/>
+<line x1="996.6" y1="568" x2="1209.8" y2="568" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="988.6" y="572" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0</text>
+<line x1="996.6" y1="539.5" x2="1209.8" y2="539.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="988.6" y="543.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">20,000</text>
+<line x1="996.6" y1="511" x2="1209.8" y2="511" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="988.6" y="515" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">40,000</text>
+<line x1="996.6" y1="482.5" x2="1209.8" y2="482.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="988.6" y="486.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">60,000</text>
+<line x1="996.6" y1="454" x2="1209.8" y2="454" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="988.6" y="458" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">80,000</text>
+<text x="1049.9" y="589" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">4</text>
+<text x="1156.5" y="589" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">8</text>
+<line x1="1044.9" y1="524.802" x2="1151.5" y2="522.59" stroke="#11698A" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>giant-complete  · x=4 · mean 30314.3 · seed range 30289–30334</title>
+<line x1="1044.9" y1="524.838" x2="1044.9" y2="524.774" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1041.9" y1="524.838" x2="1047.9" y2="524.838" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1041.9" y1="524.774" x2="1047.9" y2="524.774" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="1044.9" cy="524.802" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<g><title>giant-complete  · x=8 · mean 31866.7 · seed range 31647–32095</title>
+<line x1="1151.5" y1="522.903" x2="1151.5" y2="522.265" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1148.5" y1="522.903" x2="1154.5" y2="522.903" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1148.5" y1="522.265" x2="1154.5" y2="522.265" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="1151.5" cy="522.59" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<line x1="1054.9" y1="526.049" x2="1161.5" y2="526.095" stroke="#B95225" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>rr-multi  · x=4 · mean 29439 · seed range 29417–29466</title>
+<line x1="1054.9" y1="526.081" x2="1054.9" y2="526.011" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1051.9" y1="526.081" x2="1057.9" y2="526.081" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1051.9" y1="526.011" x2="1057.9" y2="526.011" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="1050.2" y="521.349" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<g><title>rr-multi  · x=8 · mean 29407 · seed range 29188–29642</title>
+<line x1="1161.5" y1="526.407" x2="1161.5" y2="525.76" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1158.5" y1="526.407" x2="1164.5" y2="526.407" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1158.5" y1="525.76" x2="1164.5" y2="525.76" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="1156.8" y="521.395" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<rect x="1238.8" y="438" width="287.2" height="162" rx="7" fill="#FBFDFF" stroke="#DFE8EF" stroke-width="1"/>
+<line x1="1297.8" y1="568" x2="1511" y2="568" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="1289.8" y="572" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">0</text>
+<line x1="1297.8" y1="539.5" x2="1511" y2="539.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="1289.8" y="543.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">20,000</text>
+<line x1="1297.8" y1="511" x2="1511" y2="511" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="1289.8" y="515" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">40,000</text>
+<line x1="1297.8" y1="482.5" x2="1511" y2="482.5" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="1289.8" y="486.5" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">60,000</text>
+<line x1="1297.8" y1="454" x2="1511" y2="454" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="1289.8" y="458" font-size="11" fill="#465D72" font-weight="400" text-anchor="end">80,000</text>
+<text x="1351.1" y="589" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">4</text>
+<text x="1457.7" y="589" font-size="12" fill="#465D72" font-weight="400" text-anchor="middle">8</text>
+<line x1="1346.1" y1="480.421" x2="1452.7" y2="478.195" stroke="#11698A" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>giant-complete  · x=4 · mean 61459 · seed range 61439–61473</title>
+<line x1="1346.1" y1="480.449" x2="1346.1" y2="480.401" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1343.1" y1="480.449" x2="1349.1" y2="480.449" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1343.1" y1="480.401" x2="1349.1" y2="480.401" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="1346.1" cy="480.421" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<g><title>giant-complete  · x=8 · mean 63021.3 · seed range 62813–63347</title>
+<line x1="1452.7" y1="478.491" x2="1452.7" y2="477.731" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1449.7" y1="478.491" x2="1455.7" y2="478.491" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1449.7" y1="477.731" x2="1455.7" y2="477.731" stroke="#11698A" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<circle cx="1452.7" cy="478.195" r="3.5" fill="#11698A" stroke="white" stroke-width="0.8" stroke-dasharray="none"/>
+</g>
+<line x1="1356.1" y1="481.651" x2="1462.7" y2="481.699" stroke="#B95225" stroke-width="1.7" stroke-dasharray="none" opacity="0.8"/>
+<g><title>rr-multi  · x=4 · mean 60595.7 · seed range 60551–60627</title>
+<line x1="1356.1" y1="481.715" x2="1356.1" y2="481.607" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1353.1" y1="481.715" x2="1359.1" y2="481.715" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1353.1" y1="481.607" x2="1359.1" y2="481.607" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="1351.4" y="476.951" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<g><title>rr-multi  · x=8 · mean 60562 · seed range 60366–60885</title>
+<line x1="1462.7" y1="481.978" x2="1462.7" y2="481.239" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1459.7" y1="481.978" x2="1465.7" y2="481.978" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<line x1="1459.7" y1="481.239" x2="1465.7" y2="481.239" stroke="#B95225" stroke-width="1.5" stroke-dasharray="none" opacity="1"/>
+<rect x="1458" y="476.999" width="9.4" height="9.4" rx="0" fill="none" stroke="#B95225" stroke-width="1.8"/>
+</g>
+<text x="780" y="634" font-size="13" fill="#172A3B" font-weight="700" text-anchor="middle">Number of SFUs</text>
+<line x1="34" y1="646" x2="1526" y2="646" stroke="#DFE8EF" stroke-width="1" stroke-dasharray="none" opacity="1"/>
+<text x="35" y="667" font-size="12" fill="#465D72" font-weight="400" text-anchor="start">Backlog counts packets waiting in the optical FIFO. The cutoff excludes later drain events.</text>
+</g>
+</svg>

@@ -1,9 +1,18 @@
 package edu.suda.fttr.simulator;
 
 import edu.suda.fttr.entity.AccessCategory;
+import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.entity.PonDemandLedger;
+import edu.suda.fttr.entity.PonDbaShadowPlanner;
 import edu.suda.fttr.entity.Sfu;
 import edu.suda.fttr.entity.Sta;
+import edu.suda.fttr.link.PonUplinkReport;
+import edu.suda.fttr.link.PonReportPoll;
+import edu.suda.fttr.link.PonDbaGrant;
+import edu.suda.fttr.dba.DbaPlan;
+import edu.suda.fttr.dba.DbaContext;
+import edu.suda.fttr.dba.GiantDbaPolicy;
 import edu.suda.fttr.trace.TraceLogger;
 
 import java.util.EnumMap;
@@ -18,6 +27,7 @@ public final class SimulationContext {
     private final boolean multiPacket;
     private final boolean nanosecondClock;
     private final boolean wifiRetryEnabled;
+    private final Mfu demandObserver;
     private final EnumMap<AccessCategory, DelayStats> byClass = new EnumMap<>(AccessCategory.class);
     private final DelayStats overallDelay = new DelayStats();
     private final Map<Integer, UplinkStats> uplinkByStation = new HashMap<>();
@@ -43,10 +53,16 @@ public final class SimulationContext {
     }
 
     SimulationContext(TraceLogger trace, boolean multiPacket, boolean nanosecondClock, boolean wifiRetryEnabled) {
+        this(trace, multiPacket, nanosecondClock, wifiRetryEnabled, null);
+    }
+
+    SimulationContext(TraceLogger trace, boolean multiPacket, boolean nanosecondClock, boolean wifiRetryEnabled,
+                      Mfu demandObserver) {
         this.trace = trace.withNanosecondClock(nanosecondClock);
         this.multiPacket = multiPacket;
         this.nanosecondClock = nanosecondClock;
         this.wifiRetryEnabled = wifiRetryEnabled;
+        this.demandObserver = demandObserver;
         for (AccessCategory type : AccessCategory.values()) {
             byClass.put(type, new DelayStats());
         }
@@ -87,7 +103,7 @@ public final class SimulationContext {
         return scheduleAfterTicks(microsecondsToTicks(delayUs), type, packet, sfuId);
     }
 
-    /** HE PPDU 的时间直接使用纳秒刻度，保留小数微秒部分。 */
+    /** HE PPDU 和 PON 共享链路的时间直接使用纳秒刻度，保留小数微秒部分。 */
     public void scheduleAfterNanoseconds(long delayNs, EventType type, Packet packet, int sfuId) {
         if (!nanosecondClock) {
             throw new IllegalStateException("Nanosecond delays require a nanosecond clock");
@@ -97,14 +113,53 @@ public final class SimulationContext {
 
     /** 使用当前仿真时钟的原始刻度安排事件。 */
     public Event scheduleAfterTicks(long delayTicks, EventType type, Packet packet, int sfuId) {
+        Event event = Event.atTicks(eventTimeAfter(delayTicks, type), nanosecondClock, type, packet, sfuId);
+        events.add(event);
+        return event;
+    }
+
+    public void schedulePonUplinkReportReception(long propagationNs, Packet carrier, PonUplinkReport report) {
+        if (!nanosecondClock) {
+            throw new IllegalStateException("REPORT reception requires a nanosecond clock");
+        }
+        long timeNs = eventTimeAfter(propagationNs, EventType.PON_UPLINK_REPORT_RX);
+        events.add(Event.uplinkReportReception(timeNs, carrier, report));
+    }
+
+    public void schedulePollEvent(long delayNs, EventType type, PonReportPoll poll) {
+        if (!nanosecondClock) {
+            throw new IllegalStateException("REPORT_ONLY requires a nanosecond clock");
+        }
+        events.add(Event.pollEvent(eventTimeAfter(delayNs, type), type, poll));
+    }
+
+    public void recordPollEvent(PonReportPoll poll, String action) {
+        trace.recordPollEvent(poll, action, nowTicks);
+    }
+
+    public void recordPollSnapshot(PonReportPoll poll) {
+        trace.recordPollSnapshot(poll);
+    }
+
+    public void recordPollReception(PonReportPoll poll, boolean applied) {
+        trace.recordPollReception(poll, nowTicks, applied);
+    }
+
+    public void recordPollFrame(long frameId, long startNs, long endNs, long dataNs, long reportNs) {
+        trace.recordPollFrame(frameId, startNs, endNs, dataNs, reportNs);
+    }
+
+    public void recordPollingSummary(long polls, long dataNs, long reportNs) {
+        trace.recordPollingSummary(polls, dataNs, reportNs);
+    }
+
+    private long eventTimeAfter(long delayTicks, EventType type) {
         if (delayTicks < 0) {
             throw new IllegalArgumentException("Event delay must be non-negative");
         }
         // 以当前事件发生的时刻为基准安排下一跳。零时延允许，但时钟不能倒退。
         try {
-            Event event = Event.atTicks(Math.addExact(nowTicks, delayTicks), nanosecondClock, type, packet, sfuId);
-            events.add(event);
-            return event;
+            return Math.addExact(nowTicks, delayTicks);
         } catch (ArithmeticException ex) {
             throw new IllegalArgumentException("Event time exceeds the clock range: " + type, ex);
         }
@@ -145,6 +200,136 @@ public final class SimulationContext {
         deliveredPackets++;
         deliveredBytes += packet.bytes();
         lastDeliveryDelayTicks = elapsedSinceGenerationTicks(packet);
+    }
+
+    public void recordPonDownlinkEnqueue(Packet packet, int sfuId) {
+        trace.recordPonDownlinkEnqueue(packet, sfuId, nowTicks);
+    }
+
+    public void recordPonUplinkEnqueue(Packet packet, int sfuId) {
+        trace.recordPonUplinkEnqueue(packet, sfuId, nowTicks);
+    }
+
+    public void recordTcontEnqueue(Packet packet, long allocationId, int sfuId) {
+        trace.recordTcontEnqueue(packet, allocationId, sfuId, nowTicks);
+    }
+
+    public void recordTcontDemandState(long allocationId, int sfuId, String trigger,
+                                       PonDemandLedger.Estimate estimate) {
+        trace.recordTcontDemandState(allocationId, sfuId, nowTicks, trigger, estimate);
+    }
+
+    public void recordTcontReportReceived(PonUplinkReport report, boolean applied, String kind) {
+        trace.recordTcontReportReceived(report, nowTicks, applied, kind);
+    }
+
+    public void recordPonUplinkReport(PonUplinkReport report) {
+        trace.recordPonUplinkReport(report);
+    }
+
+    public void recordPonUplinkReportReception(PonUplinkReport report, int carrierPacketId, boolean applied) {
+        trace.recordPonUplinkReportReception(report, carrierPacketId, nowTicks, applied);
+    }
+
+    public void recordMfuReportState(long frameId, int sfuId, Mfu.ReceivedUplinkReport latest) {
+        trace.recordMfuReportState(frameId, sfuId, nowTicks, latest);
+    }
+
+    public void recordPonUplinkReportSummary(long generated, long received, long withoutGrant) {
+        trace.recordPonUplinkReportSummary(generated, received, withoutGrant);
+    }
+
+    public void recordPonUplinkGrant(Packet packet, int sfuId, long frameId, long enqueueNs, long startNs, long endNs) {
+        trace.recordPonUplinkGrant(packet, sfuId, frameId, enqueueNs, nowTicks, startNs, endNs);
+        if (demandObserver != null) {
+            // 只观察预约创建。BWmap 接收、DATA 起发和交付均无需再次修改账本。
+            demandObserver.recordUplinkGrantCreated(sfuId, packet, this);
+        }
+    }
+
+    public void recordDemandLedgerGrant(int sfuId, int grantId, int grantBytes) {
+        trace.recordDemandLedgerGrant(sfuId, grantId, nowTicks, grantBytes);
+    }
+
+    public void recordDemandLedgerState(int sfuId, String trigger, PonDemandLedger.Estimate estimate) {
+        trace.recordDemandLedgerState(sfuId, nowTicks, trigger, estimate);
+    }
+
+    public void planDbaShadow(long targetFrameId, long controlReservedNs) {
+        if (demandObserver != null) {
+            demandObserver.planUplinkBudget(targetFrameId, controlReservedNs, this);
+        }
+    }
+
+    public void recordDbaShadow(PonDbaShadowPlanner.Decision decision) {
+        trace.recordDbaShadow(decision);
+    }
+
+    public void scheduleDbaEvent(long delayNs, EventType type, PonDbaGrant grant) {
+        if (!nanosecondClock) {
+            throw new IllegalStateException("Real DBA events require a nanosecond clock");
+        }
+        events.add(Event.dbaEvent(eventTimeAfter(delayNs, type), type, grant));
+    }
+
+    public void recordDbaDecision(DbaPlan plan, long controlNs) {
+        trace.recordDbaDecision(plan, controlNs);
+    }
+
+    public void recordDbaMultiPlan(DbaPlan plan, long controlNs) {
+        trace.recordDbaMultiPlan(plan, controlNs);
+    }
+
+    public void recordDbaObjectState(DbaContext input, DbaContext.Allocation allocation) {
+        trace.recordDbaObjectState(input, allocation);
+    }
+
+    public void recordGiantDecision(DbaContext input, GiantDbaPolicy.Decision decision) {
+        trace.recordGiantDecision(input, decision);
+    }
+
+    public void scheduleDbaDataEnd(long delayNs, Packet packet, PonDbaGrant grant) {
+        if (!nanosecondClock) {
+            throw new IllegalStateException("Real DBA DATA completion requires a nanosecond clock");
+        }
+        events.add(Event.dbaDataEnd(eventTimeAfter(delayNs, EventType.FIBER_TX_END), packet, grant));
+    }
+
+    public void recordDbaExecution(String action, PonDbaGrant grant, String details) {
+        trace.recordDbaExecution(action, grant, nowTicks, details);
+    }
+
+    public void recordDbaSummary(long budgets, long grantedBytes, long actualBytes, long unusedBytes,
+                                 long reservedNs, long actualNs, long pendingPackets) {
+        trace.recordDbaSummary(budgets, grantedBytes, actualBytes, unusedBytes, reservedNs, actualNs, pendingPackets);
+    }
+
+    public void recordPonBwmap(Packet packet, int sfuId, long grantFrameId, long targetFrameId,
+                               long grantTxNs, long startNs, long endNs, boolean received) {
+        trace.recordPonBwmap(packet, sfuId, grantFrameId, targetFrameId, grantTxNs, startNs, endNs, nowTicks, received);
+    }
+
+    public void recordPonBwmapSummary(long packets, double ungrantedWaitUs, double reservedWaitUs,
+                                      double serializationUs) {
+        trace.recordPonBwmapSummary(packets, ungrantedWaitUs, reservedWaitUs, serializationUs);
+    }
+
+    public void recordPonUplinkFrame(long frameId, long frameStartNs, long frameEndNs, int packets, long busyNs) {
+        trace.recordPonUplinkFrame(frameId, frameStartNs, frameEndNs, packets, busyNs);
+    }
+
+    public void recordPonUplinkFrames(long frames, long periodNs, long packets, long busyNs, double grantWaitUs) {
+        trace.recordPonUplinkFrames(frames, periodNs, packets, busyNs, grantWaitUs);
+    }
+
+    public void recordPonSummary(Packet.Direction direction, long sentPackets, double totalQueueWaitTicks,
+                                 long busyTicks) {
+        // 分母沿用其他全局统计，以仿真起点到最后一个事件为窗口。
+        double averageWaitUs = sentPackets == 0 ? 0.0 : totalQueueWaitTicks / sentPackets / 1_000.0;
+        double averageSerializationUs = sentPackets == 0 ? 0.0 : ticksToMicroseconds(busyTicks) / sentPackets;
+        double utilization = nowTicks == 0 ? 0.0 : (double) busyTicks / nowTicks;
+        trace.recordPonSummary(direction, sentPackets, averageWaitUs, averageSerializationUs, busyTicks, nowTicks,
+                utilization);
     }
 
     public void recordWifiStart() {
