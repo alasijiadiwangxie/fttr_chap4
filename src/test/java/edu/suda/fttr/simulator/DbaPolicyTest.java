@@ -13,16 +13,12 @@ import edu.suda.fttr.entity.PonDemandLedger;
 import edu.suda.fttr.link.PonUplinkReport;
 import edu.suda.fttr.trace.TraceLogger;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.io.PrintStream;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -150,11 +146,11 @@ class DbaPolicyTest {
     }
 
     @Test
-    void validatesEveryExecutableCsvScenarioAgainstItsActualOutcome() {
+    void validatesAllRepresentativePlansAgainstTheirExpectedOutcomes() {
         List<DbaPlanValidationCases.Outcome> outcomes = DbaPlanValidationCases.runCases();
         assertEquals(20, outcomes.size());
         for (DbaPlanValidationCases.Outcome outcome : outcomes) {
-            assertTrue(outcome.matchesExpectation(), outcome.id());
+            assertTrue(outcome.matchesExpectation(), outcome::diagnostic);
         }
     }
 
@@ -305,19 +301,6 @@ class DbaPolicyTest {
             assertFalse(mfu.estimateUplinkDemand(2, 200_000).known());
             assertNull(simulation.nextEvent());
         }
-    }
-
-    @Test
-    void executableValidationHarnessRegeneratesCsvFromRealValidatorCalls(@TempDir Path directory)
-            throws IOException {
-        Path csv = directory.resolve("plan-validation.csv");
-        DbaPlanValidationCases.main(new String[] {csv.toString()});
-        List<String> lines = Files.readAllLines(csv, StandardCharsets.UTF_8);
-        assertEquals(21, lines.size());
-        assertTrue(lines.get(0).startsWith("scenario_id,target_frame_id,proposed_bytes,"));
-        assertTrue(lines.stream().anyMatch(line -> line.startsWith("capacity_38998,2,38998,205,124794,124795,")));
-        assertTrue(lines.stream().anyMatch(line -> line.startsWith("explicit_overlapping_windows,")
-                && line.contains(",REJECTED,REJECTED,")));
     }
 
     private static DbaContext context(long controlNs, DbaContext.Allocation... allocations) {

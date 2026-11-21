@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import fields
 import gzip
 import hashlib
 import json
 from pathlib import Path
 
 from pon_qos_special_workload import experiments
-from run_pon_frame_test import ROOT, require, simulate, write_csv
+from pon_experiment_io import ROOT, require, simulate, write_csv
 
 
 DEFAULT_OUTPUT = ROOT / "results/pon-dba-qos-comparison"

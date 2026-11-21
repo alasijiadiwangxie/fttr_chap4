@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+import csv
 from dataclasses import dataclass
 import gzip
 from io import StringIO
@@ -12,8 +13,8 @@ from pathlib import Path
 
 from pon_giant_completion_workload import COMPLETE, RR, SEEDS
 from pon_qos_special_workload import SpecialExperiment, SWEEP_PERCENTAGES, _case
-from run_pon_dba_execution_test import fields
-from run_pon_frame_test import ROOT, require, write_csv
+from pon_execution_trace import fields
+from pon_experiment_io import ROOT, require, write_csv
 from run_pon_qos_special import capture, input_hash, sha
 
 
@@ -82,6 +83,21 @@ def record_csv(path: Path, columns: tuple, rows: list[dict]) -> None:
     write_csv(path, columns, [{key: row.get(key, "") for key in columns} for row in rows])
 
 
+def archived_log(output: Path, relative_path: Path, expected_sha: str) -> Path:
+    path = output / relative_path
+    shared = output.parent / "pon-t2-tail"
+    index = shared / "raw-index.csv"
+    if path.is_file() or not index.is_file():
+        return path
+    # The SI1/RR follow-up used the same Java event streams. Reuse the one retained copy.
+    with index.open(encoding="utf-8", newline="") as source:
+        for entry in csv.DictReader(source):
+            candidate = shared / entry["raw_log"]
+            if entry["raw_log_utf8_sha256"] == expected_sha and candidate.is_file():
+                return candidate
+    return path
+
+
 def summarize_windows(frames: list[dict]) -> list[dict]:
     windows = defaultdict(list)
     for row in frames:
@@ -133,7 +149,7 @@ def analyze(out: Path, cases: list[T2Experiment]) -> None:
         saved = (out / config_path).read_bytes()
         require(saved == case.properties().encode("utf-8") and sha(saved) == receipt["config_sha256"],
                 f"{prefix}: incorrect saved configuration")
-        log_bytes = gzip.decompress((out / log_path).read_bytes())
+        log_bytes = gzip.decompress(archived_log(out, log_path, receipt["raw_log_utf8_sha256"]).read_bytes())
         require(sha(log_bytes) == receipt["raw_log_utf8_sha256"], f"{prefix}: incorrect raw log")
         log = log_bytes.decode("utf-8")
         del log_bytes

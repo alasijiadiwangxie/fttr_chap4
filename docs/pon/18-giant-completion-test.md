@@ -104,4 +104,4 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar results/pon-giant-completion/conf
 | `Mfu`、`PonDemandLedger`、`TraceLogger` | 基于 REPORT 的流水预约、结算和每阶段证据 |
 | `GiantCompletionTest`、`GiantPipelinedLedgerTest` | 服务、准入、流水账本和实际 SFU 装载回归 |
 | `tools/run_pon_giant_completion.py`、`tools/pon_giant_completion_workload.py` | 过载、可行性、资源复用、突发和输出验证 |
-| `tools/run_pon_giant_test.py`、`tools/pon_dba_comparison_metrics.py` | 复用结果校验，支持完整模式的流水和未交付报文导出 |
+| `tools/pon_execution_trace.py`、`tools/pon_dba_comparison_metrics.py` | 复用结果校验，支持完整模式的流水和未交付报文导出 |

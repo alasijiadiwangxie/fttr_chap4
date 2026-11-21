@@ -4,7 +4,7 @@
 
 ## 模型范围与假设
 
-- 时间配置与日志以微秒为单位。HE SU 或 PON 共享模式使用整数纳秒事件时钟。光侧和无线侧都使用固定时延的场景采用整数微秒。报文按手动配置或泊松生成的时刻注入源节点，事件处理完毕后结束。
+- 时间配置与日志以微秒为单位。HE SU 或 PON 串行化、分帧模式使用整数纳秒事件时钟。光侧和无线侧都使用固定时延的场景采用整数微秒。报文按手动配置或泊松生成的时刻注入源节点，事件处理完毕后结束。
 - 每台 STA 在一次仿真中固定关联一台 SFU。光侧默认采用双向固定时延。PON 下行共享模式使用 MFU 的一个 FIFO 和发送器。PON 上行共享模式使用每台 SFU 的上行 FIFO 和集中调度器。两个方向独立占用各自的光侧资源。
 - 每台 SFU 与关联 STA 共用一份无线资源。默认按 VO、VI、BE、BK 固定优先级选队。启用 `edca-multi-ac` 后，SFU 和 STA 各自按四类 FIFO 队列竞争信道，同一信道的多个设备同刻发送会发生碰撞。不同 SFU 可以并行收发。
 - 等待队列不设容量上限。HE SU 模式根据包长、开销和 PHY 参数计算数据 PPDU 时长，可启用 DATA–SIFS–ACK 交换。固定时延模式可用于回归对照。
@@ -12,15 +12,21 @@
 
 光侧提供分帧 FCFS、REPORT/BWmap、多 Alloc-ID 逻辑队列及可选的 RR、GIANT DBA 策略。信道干扰、OFDMA 和 AP 节能机制可作为后续独立扩展。
 
-### 可选的 T-CONT 逻辑队列
+### 光侧 PON 与 DBA 冻结基线
 
 `fiber.uplink.tcont.enabled=true` 可在 `rr`、`rr-multi`、`giant` 和 `giant-complete` 模式下为同一 SFU 配置多个 Alloc-ID。各对象按 VO/VI/BE/BK 映射维护独立的光侧 FIFO、REPORT、需求账本、预算和结算，并共享上行发送资源。默认使用每 SFU 一个 FIFO 和 `allocationId = 2 × sfuId`。
 
-Type 2/3/4 的 SI 参数以帧数配置，AB 参数以字节配置。配置方法与参数范围见 [T-CONT 验收报告](docs/pon/15-tcont-bandwidth-test.md)。
+下行可采用 `fixed` 或 `pon-shared`，上行可采用 `fixed`、`pon-shared` 或 `pon-framed`。分帧模式可以选用 FCFS、旁路影子 RR、单授权 RR、多授权 RR 和 GIANT。基础 `giant` 执行 Type 2–4 的保障与剩余带宽，`giant-complete` 扩展到 Type 1 固定服务和 Type 5 组合服务，并执行同帧最坏固定/保障额度的准入校验。
 
-设置 `fiber.uplink.dba.mode=giant` 启用基础 GIANT。该模式需要 T-CONT、`pon-framed`、REPORT、BWmap、需求账本和有限的 REPORT-only 轮询。GIANT 根据 SI 到期状态先分配 Type 2/3 的保障带宽，再分配 Type 3/4 的剩余带宽。可将模式设为 `rr-multi` 复用同一组业务进行对照。计数规则和复现命令见 [GIANT 验收报告](docs/pon/16-giant-dba-test.md)。
+完整参数表、逻辑控制事件、统计口径和性能结论见 [光侧建模报告](docs/pon/PON_DBA_Model.md) 与 [最终验收记录](docs/pon/PON_DBA_Final_Review.md)。
 
-`fiber.uplink.dba.mode=giant-complete` 支持 Type 1 固定服务和 Type 5 组合服务，依次分配固定、保障、非保证和尽力而为带宽。启动时检查最坏同帧固定与保障额度能否满足。参数、流水授权与 QoS 对照见 [完整 GIANT 验收报告](docs/pon/18-giant-completion-test.md)。
+构建后的代表性 [双向 DBA 配置](configs/pon-final-dba.properties) 包含两个 SFU、四台 STA 和 Type 1–5，配套命令检查各上行策略及共享光链路的事件输出。
+
+```powershell
+mvn clean verify
+java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/pon-final-dba.properties
+python -B tools/verify_pon_final.py
+```
 
 ## 构建与运行
 
@@ -107,7 +113,7 @@ java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/pon-shared-downlink.prope
 | `fiber.downlink.rate.mbps` | 共享发送器速率，使用正数 Mb/s | 10000 |
 | `fiber.downlink.propagation.us` | 串行化完成后的传播时延，使用非负数 μs，精度至 0.001 μs | 0 |
 
-两项共享模式专用参数仅用于 `pon-shared`。共享下行的传播时延由 `fiber.downlink.propagation.us` 独立指定。原有 `fiber.delay.us` 用于仍以固定时延模式运行的有业务方向。
+下行共享模式使用独立速率和传播时延。原有 `fiber.delay.us` 用于有业务的固定时延方向。启用 BWmap 时，`fiber.downlink.propagation.us` 也提供控制消息的下行传播时延，即使 DATA 下行使用固定时延。
 
 MFU 按入队顺序选取下行报文，手动配置中同刻到达的报文按列表顺序入队。发送器占用时间为 `packetBytes × 8 ÷ rateMbps` μs，直接按报文字节数计算。时长恰好落在纳秒刻度时保留原值，其余向上取到下一个纳秒。例如 10 Gbps 下，1 B 的理论发送时间为 0.8 ns，仿真中占用 1 ns。发送完毕即释放发送器，随后报文经过传播时延到达目标 SFU。目标 SFU 收齐报文后按所选无线接入模式调度。
 

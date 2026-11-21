@@ -1,7 +1,0 @@
-decision_time_ns,target_frame_id,policy_name,allocation_id,sfu_id,known_demand_bytes,planned_bytes,planned_duration_ns,decision_reason,preview_start_ns,preview_end_ns
-125000,2,shadow-rr,0,0,0,0,0,ALL_UNKNOWN,-1,-1
-250000,3,shadow-rr,0,0,0,0,0,ALL_UNKNOWN,-1,-1
-375000,4,shadow-rr,2,1,39062,38998,124794,FRAME_CAPACITY_LIMIT,500205,624999
-500000,5,shadow-rr,2,1,39062,38998,124794,FRAME_CAPACITY_LIMIT,625205,749999
-625000,6,shadow-rr,2,1,39062,39062,124999,KNOWN_DEMAND,750000,874999
-750000,7,shadow-rr,0,0,0,0,0,NO_KNOWN_POSITIVE_DEMAND,-1,-1

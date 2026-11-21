@@ -10,8 +10,8 @@ from statistics import mean, stdev
 
 from pon_dba_comparison_metrics import analyze_run
 from pon_giant_completion_workload import COMPLETE, Experiment
-from run_pon_dba_execution_test import events, parse
-from run_pon_frame_test import require
+from pon_execution_trace import events, parse
+from pon_experiment_io import require
 
 
 KEY_COLUMNS = (

@@ -4,49 +4,16 @@ import edu.suda.fttr.dba.DbaContext;
 import edu.suda.fttr.dba.DbaPlan;
 import edu.suda.fttr.dba.DbaPlanValidator;
 
-import java.io.IOException;
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * 第 10 步专项复核入口。每一行都实际调用生产计划校验器，CSV 不预填实际结果。
- * 此类只存在于 test-classes，不参与仿真器的协议执行。
- */
-public final class DbaPlanValidationCases {
+/** 通过生产计划校验器验证合法预算和拒绝边界的测试数据。 */
+final class DbaPlanValidationCases {
     private static final long FRAME_NS = 125_000;
 
     private DbaPlanValidationCases() { }
 
-    /** 参数是输出 CSV 的完整路径；有任何预期不一致时，进程以异常结束。 */
-    public static void main(String[] args) throws IOException {
-        if (args.length != 1) {
-            throw new IllegalArgumentException("Usage: DbaPlanValidationCases <output-csv-path>");
-        }
-        Path output = Path.of(args[0]).toAbsolutePath();
-        if (output.getParent() != null) {
-            Files.createDirectories(output.getParent());
-        }
-        List<String> lines = new ArrayList<>();
-        lines.add("scenario_id,target_frame_id,proposed_bytes,control_reserved_ns,planned_data_ns,"
-                + "available_ns,expected_result,actual_result,validation_reason");
-        List<Outcome> outcomes = runCases();
-        for (Outcome outcome : outcomes) {
-            lines.add(outcome.csv());
-        }
-        Files.write(output, lines, StandardCharsets.UTF_8);
-        long failures = outcomes.stream().filter(outcome -> !outcome.matchesExpectation()).count();
-        System.out.println("DBA validation scenarios=" + outcomes.size() + ", mismatches=" + failures
-                + ", csv=" + output);
-        if (failures != 0) {
-            throw new IllegalStateException("DBA validation CSV contains " + failures + " unexpected outcomes");
-        }
-    }
-
-    /** 与单元测试复用同一组实际执行的边界及错误用例。 */
     static List<Outcome> runCases() {
         List<Outcome> results = new ArrayList<>();
         DbaContext ordinary = context(205, allocation(2, 1, 6_000));
@@ -102,14 +69,7 @@ public final class DbaPlanValidationCases {
             actual = "REJECTED";
             reason = exception.getClass().getSimpleName() + ": " + exception.getMessage();
         }
-        long proposedBytes = 0;
-        long duration = 0;
-        for (DbaPlan.Grant grant : plan.grants()) {
-            proposedBytes += grant.plannedBytes();
-            duration += grant.plannedDurationNs();
-        }
-        results.add(new Outcome(id, plan.targetFrameId(), proposedBytes, context.controlReservedNs(),
-                duration, context.availableNs(), expected, actual, reason));
+        results.add(new Outcome(id, expected, actual, reason));
     }
 
     private static DbaContext context(long controlNs, DbaContext.Allocation... allocations) {
@@ -131,23 +91,12 @@ public final class DbaPlanValidationCases {
 
     static final class Outcome {
         private final String id;
-        private final long targetFrame;
-        private final long bytes;
-        private final long controlNs;
-        private final long dataNs;
-        private final long availableNs;
         private final String expected;
         private final String actual;
         private final String reason;
 
-        private Outcome(String id, long targetFrame, long bytes, long controlNs, long dataNs,
-                        long availableNs, String expected, String actual, String reason) {
+        private Outcome(String id, String expected, String actual, String reason) {
             this.id = id;
-            this.targetFrame = targetFrame;
-            this.bytes = bytes;
-            this.controlNs = controlNs;
-            this.dataNs = dataNs;
-            this.availableNs = availableNs;
             this.expected = expected;
             this.actual = actual;
             this.reason = reason;
@@ -157,18 +106,8 @@ public final class DbaPlanValidationCases {
             return expected.equals(actual);
         }
 
-        String id() {
-            return id;
-        }
-
-        private String csv() {
-            return String.join(",", id, Long.toString(targetFrame), Long.toString(bytes),
-                    Long.toString(controlNs), Long.toString(dataNs), Long.toString(availableNs),
-                    expected, actual, quote(reason));
-        }
-
-        private static String quote(String text) {
-            return "\"" + text.replace("\"", "\"\"").replace('\n', ' ').replace('\r', ' ') + "\"";
+        String diagnostic() {
+            return id + ": expected " + expected + ", got " + actual + " (" + reason + ")";
         }
     }
 }

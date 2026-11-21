@@ -100,4 +100,4 @@ python -B tools/plot_pon_t2_delay.py
 
 12 次 Java 运行使用同一构建，三个种子的生成流各自在四组间逐包相同。种子 101、202、303 的每组输入分别为 **31885、31758、31643 包**。校验还包括 FIFO 顺序、授权守恒（授权 = 实发 + 未用）、逐包交付守恒、T2 有效已知需求复算，以及逐帧授权合计与指标表一致。Maven 打包通过，本轮执行专项仿真，未运行完整 Maven 回归。
 
-结果写到 `results/pon-t2-delay/`。实际配置、压缩事件日志和输入校验值由 `raw-index.csv` 对应。仅重算本次已归档事件时用 `python -B tools/run_pon_t2_delay.py --reuse-raw`。原始日志和运行回执留在本地 `raw/`，也可用上面的完整命令重新生成。此次修改限于实验、统计、绘图和交付材料。
+结果写到 `results/pon-t2-delay/`。实际配置、压缩事件日志和输入校验值由 `raw-index.csv` 对应。仅重算已归档事件时用 `python -B tools/run_pon_t2_delay.py --reuse-raw`。与 [T2 尾时延诊断](t2-tail-delay-diagnosis.md) 相同的六份原始日志只在后者的 `raw/` 保存一份，分析脚本按内容哈希定位并校验。原始日志也可用上面的完整命令重新生成。

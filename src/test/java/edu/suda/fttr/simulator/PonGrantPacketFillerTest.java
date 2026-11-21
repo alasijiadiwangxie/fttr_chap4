@@ -6,6 +6,7 @@ import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.PonDemandLedger;
 import edu.suda.fttr.link.PonGrantPacketFiller;
 import edu.suda.fttr.link.PonGrantPacketFiller.FillReason;
+import edu.suda.fttr.link.PonGrantPacketFiller.PacketCheck;
 import edu.suda.fttr.link.PonGrantPacketFiller.PacketView;
 import edu.suda.fttr.link.PonGrantPacketFiller.QueueView;
 import edu.suda.fttr.link.PonGrantPacketFiller.Result;
@@ -117,6 +118,10 @@ class PonGrantPacketFillerTest {
         Result exhausted = fill(1200, 3840, queue(1200));
         assertEquals(FillReason.BUDGET_EXHAUSTED, exhausted.fillReason());
         assertTotals(exhausted, 1200, 3840, 0, 0, 0);
+        Result zeroBudget = fill(0, 0, queue(1200));
+        assertEquals(FillReason.BUDGET_EXHAUSTED, zeroBudget.fillReason());
+        assertTrue(zeroBudget.selectedPacketIds().isEmpty());
+        assertTotals(zeroBudget, 0, 0, 0, 0, 1);
     }
 
     @Test
@@ -162,9 +167,23 @@ class PonGrantPacketFillerTest {
         Result repeated = fill(1500, 4800, view);
         assertEquals(List.of(1, 2), ids(view));
         assertEquals(first.selectedPacketIds(), repeated.selectedPacketIds());
+        assertEquals(first.selectedBytes(), repeated.selectedBytes());
         assertEquals(first.selectedDurationNs(), repeated.selectedDurationNs());
         assertEquals(first.unusedBytes(), repeated.unusedBytes());
+        assertEquals(first.unusedDurationNs(), repeated.unusedDurationNs());
+        assertEquals(first.remainingPacketCount(), repeated.remainingPacketCount());
         assertEquals(first.fillReason(), repeated.fillReason());
+        assertEquals(first.packetChecks().size(), repeated.packetChecks().size());
+        for (int index = 0; index < first.packetChecks().size(); index++) {
+            PacketCheck expected = first.packetChecks().get(index);
+            PacketCheck actual = repeated.packetChecks().get(index);
+            assertEquals(expected.packetId(), actual.packetId());
+            assertEquals(expected.packetBytes(), actual.packetBytes());
+            assertEquals(expected.packetDurationNs(), actual.packetDurationNs());
+            assertEquals(expected.fifoPosition(), actual.fifoPosition());
+            assertEquals(expected.selected(), actual.selected());
+            assertEquals(expected.rejectReason(), actual.rejectReason());
+        }
         assertThrows(UnsupportedOperationException.class, () -> view.packets().clear());
         assertThrows(UnsupportedOperationException.class, () -> first.selectedPacketIds().clear());
         assertThrows(UnsupportedOperationException.class, () -> first.packetChecks().clear());
@@ -209,12 +228,18 @@ class PonGrantPacketFillerTest {
                     .selectedPacketIds());
             assertEquals(List.of(1, 2), ids(first.ungrantedPacketView(context)));
 
+            // 同一共享帧只能预约前 32 包，本地预演只能看到最后一包。
+            for (int id = 4; id <= 33; id++) {
+                first.enqueue(packet(id, 1200, 1), context);
+            }
             assertEquals(EventType.PON_UPLINK_FRAME, context.nextEvent().type());
             uplink.scheduleFrame(context);
-            assertTrue(first.ungrantedPacketView(context).packets().isEmpty());
+            assertEquals(List.of(33), ids(first.ungrantedPacketView(context)));
+            assertEquals(List.of(33), first.previewGrant(filler(), 2, 1200, 3840, 375_000, context)
+                    .selectedPacketIds());
             assertTrue(second.ungrantedPacketView(context).packets().isEmpty());
             assertEquals(FillReason.QUEUE_EMPTY,
-                    first.previewGrant(filler(), 2, 1200, 3840, SLOT_START, context).fillReason());
+                    second.previewGrant(filler(), 4, 1200, 3840, SLOT_START, context).fillReason());
             // 旧视图只是历史材料，不被真实预约或后续出队反向修改。
             assertEquals(List.of(1, 2), ids(original));
         }

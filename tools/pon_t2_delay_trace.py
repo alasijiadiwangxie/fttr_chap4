@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from pon_giant_completion_workload import COMPLETE, Experiment
-from run_pon_frame_test import require
+from pon_experiment_io import require
 
 
 T2_EVENTS = frozenset((

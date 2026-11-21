@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 第15步只验收逻辑队列与参数模型。SI/AB 是未来策略的输入元数据，
  * 本阶段 RR 不执行保证/剩余带宽算法；因此不能把这些测试称为 GIANT 验证。
  */
-public class TcontBandwidthTest {
+class TcontBandwidthTest {
     private static final BigDecimal RATE = BigDecimal.valueOf(2500);
     private static final long PERIOD_NS = 125000;
 
@@ -513,32 +513,6 @@ public class TcontBandwidthTest {
             this.bytes = bytes;
             this.timeUs = timeUs;
             this.type = type;
-        }
-    }
-
-    /**
-     * CSV生成脚本调用此测试辅助入口：实际经 Java ConfigLoader 加载每份配置，
-     * 打印成功的参数值或真实拒绝原因。脚本不能把Python配置字典当作Java实测结果。
-     */
-    public static void main(String[] args) throws IOException {
-        for (String argument : args) {
-            Path path = Path.of(argument);
-            String scenario = path.getFileName().toString().replace(".properties", "");
-            try {
-                SimulationConfig config = ConfigLoader.load(path);
-                for (TcontProfile profile : config.tcontTopology().profiles()) {
-                    String classes = profile.classes().stream().sorted().map(Enum::name).collect(Collectors.joining(";"));
-                    System.out.println("event=TCONT_PROFILE scenario_id=" + scenario + " allocation_id=" + profile.allocationId()
-                            + " sfu_id=" + profile.sfuId() + " type=" + profile.type() + " classes=" + classes
-                            + " si_max_frames=" + profile.siMaxFrames() + " si_min_frames=" + profile.siMinFrames()
-                            + " ab_min_bytes=" + profile.abMinBytes() + " ab_sur_bytes=" + profile.abSurBytes()
-                            + " actual_result=ACCEPTED validation_reason=VALID_PROFILE");
-                }
-                System.out.println("event=TCONT_CONFIG_VALIDATION scenario_id=" + scenario + " actual_result=ACCEPTED validation_reason=VALID_CONFIG");
-            } catch (IllegalArgumentException error) {
-                System.out.println("event=TCONT_CONFIG_VALIDATION scenario_id=" + scenario + " actual_result=REJECTED validation_reason="
-                        + error.getMessage().replace(' ', '_').replace('\n', '_').replace('\r', '_'));
-            }
         }
     }
 }
