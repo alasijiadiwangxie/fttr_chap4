@@ -11,6 +11,7 @@ import edu.suda.fttr.mac.EdcaParameters;
 import edu.suda.fttr.mac.EdcaParameters.AcParameters;
 import edu.suda.fttr.mac.WifiAccessMode;
 import edu.suda.fttr.mac.WifiRetryPolicy;
+import edu.suda.fttr.phy.ApCapabilityMode;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 import edu.suda.fttr.traffic.TrafficGenerator;
@@ -64,6 +65,8 @@ public final class ConfigLoader {
     private static final String MAC_ACK_TIMEOUT_US = "wifi.mac.ack.timeout.us";
     private static final String MAC_MAX_RETRIES = "wifi.mac.retry.max";
     private static final String EDCA_SEED = "wifi.mac.edca.seed";
+    private static final String AP_ACTIVITY_ENABLED = "wifi.ap.activity.enabled";
+    private static final String AP_ACTIVITY_WINDOW_US = "wifi.ap.activity.window.us";
     private static final Set<String> KEYS = Set.of(
             FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", DOWNLINK_PROPAGATION_US,
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
@@ -72,13 +75,15 @@ public final class ConfigLoader {
             UPLINK_DBA_MODE, TCONT_ENABLED, TCONT_ALLOC_IDS,
             "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
             MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
-            MAC_MAX_RETRIES, EDCA_SEED);
+            MAC_MAX_RETRIES, EDCA_SEED, AP_ACTIVITY_ENABLED, AP_ACTIVITY_WINDOW_US);
     private static final Set<String> PHY_KEYS = Set.of(
             "wifi.phy.bandwidth.mhz", "wifi.phy.mcs", "wifi.phy.nss", "wifi.phy.gi.us",
             "wifi.phy.mac.overhead.bytes", "wifi.phy.he-ltf.type", "wifi.phy.nominal.packet.padding.us");
     private static final Set<String> MANUAL_KEYS = Set.of("packet.bytes", "packet.arrival.us");
     private static final Pattern PACKET_OVERRIDE = Pattern.compile("packet\\.([1-9][0-9]*)\\.(bytes|type|sta\\.id|direction)");
-    private static final Pattern STA_ASSOCIATION = Pattern.compile("sta\\.([1-9][0-9]*)\\.sfu\\.id");
+    private static final Pattern STA_KEY = Pattern.compile(
+            "sta\\.([1-9][0-9]*)\\.(?:sfu\\.id|wifi\\.max\\.(?:bandwidth\\.mhz|nss))");
+    private static final Pattern SFU_AP_MODE_KEY = Pattern.compile("sfu\\.([1-9][0-9]*)\\.wifi\\.ap\\.mode");
     private static final Pattern EDCA_AC_KEY = Pattern.compile(
             "wifi\\.mac\\.edca\\.(VO|VI|BE|BK)\\.(aifsn|cwmin|cwmax|txop\\.limit\\.us)");
     private static final Pattern POISSON_SOURCE = Pattern.compile(
@@ -167,6 +172,11 @@ public final class ConfigLoader {
         long fiberUs = hasFixedDelay || (ponDownlink == null && ponUplink == null)
                 ? readNonNegativeLong(properties, FIBER_DELAY_US) : 0;
         WirelessPhy wirelessPhy = readWirelessPhy(properties);
+        Map<Integer, ApCapabilityMode> apCapabilityModes = readApCapabilityModes(properties, sfuCount, wirelessPhy);
+        Map<Integer, WirelessPhy> stationPhys = readStationPhys(properties, staSfuIds, apCapabilityModes);
+        boolean apActivityEnabled = readApActivityEnabled(properties);
+        long apActivityWindowNs = properties.containsKey(AP_ACTIVITY_WINDOW_US)
+                ? readDurationNs(properties, AP_ACTIVITY_WINDOW_US, "0", true) : -1;
         EdcaParameters edcaParameters = readEdcaParameters(properties);
         WifiAccessMode accessMode = readWifiAccessMode(properties);
         WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy, edcaParameters.sifsUs());
@@ -192,9 +202,11 @@ public final class ConfigLoader {
         List<Event> inputEvents = poisson ? TrafficGenerator.generate(sources) : manualEvents;
 
         validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
-                frameExchange);
+                stationPhys, frameExchange, apActivityEnabled);
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
-                frameExchange, edcaParameters, accessMode, retryPolicy, downlink.windowsUs, uplink.windowsUs,
+                apCapabilityModes, stationPhys, apActivityEnabled, apActivityWindowNs,
+                frameExchange, edcaParameters, accessMode, retryPolicy,
+                downlink.windowsUs, uplink.windowsUs,
                 directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled,
                 dbaMultiGrantEnabled, dbaGiantEnabled, dbaGiantCompleteEnabled, tcontTopology);
     }
@@ -335,7 +347,7 @@ public final class ConfigLoader {
         if (!enabled.equals("true") && !enabled.equals("false")) {
             throw new IllegalArgumentException(UPLINK_BWMAP_ENABLED + " must be true or false");
         }
-        return enabled.equals("true") ? readPonDurationNs(properties, DOWNLINK_PROPAGATION_US, "0", false) : -1;
+        return enabled.equals("true") ? readDurationNs(properties, DOWNLINK_PROPAGATION_US, "0", false) : -1;
     }
 
     private static SimulationConfig.PonLink readPonLink(Properties properties, String prefix, String defaultRateMbps,
@@ -385,8 +397,8 @@ public final class ConfigLoader {
         if (rateMbps.signum() <= 0) {
             throw new IllegalArgumentException(rateKey + " must be a positive decimal number");
         }
-        long propagationNs = bwmapDownlink ? bwmapPropagationNs : readPonDurationNs(properties, propagationKey, "0", false);
-        long framePeriodNs = framed ? readPonDurationNs(properties, UPLINK_FRAME_PERIOD_US, "125", true) : 0;
+        long propagationNs = bwmapDownlink ? bwmapPropagationNs : readDurationNs(properties, propagationKey, "0", false);
+        long framePeriodNs = framed ? readDurationNs(properties, UPLINK_FRAME_PERIOD_US, "125", true) : 0;
         long linkBwmapPropagationNs = framed ? bwmapPropagationNs : -1;
         if (linkBwmapPropagationNs >= framePeriodNs) {
             throw new IllegalArgumentException(DOWNLINK_PROPAGATION_US + " must be less than "
@@ -430,7 +442,7 @@ public final class ConfigLoader {
         if (!properties.containsKey(UPLINK_POLL_END_US)) {
             throw new IllegalArgumentException("Missing property: " + UPLINK_POLL_END_US);
         }
-        long endNs = readPonDurationNs(properties, UPLINK_POLL_END_US, "0", true);
+        long endNs = readDurationNs(properties, UPLINK_POLL_END_US, "0", true);
         if (endNs <= framePeriodNs) {
             throw new IllegalArgumentException(UPLINK_POLL_END_US + " must be greater than the frame period");
         }
@@ -452,7 +464,7 @@ public final class ConfigLoader {
         return new SimulationConfig.PonPolling(bytes, intervalFrames, endNs);
     }
 
-    private static long readPonDurationNs(Properties properties, String key, String defaultUs, boolean positive) {
+    private static long readDurationNs(Properties properties, String key, String defaultUs, boolean positive) {
         String constraint = positive ? "positive" : "non-negative";
         long durationNs;
         try {
@@ -559,12 +571,78 @@ public final class ConfigLoader {
         } catch (NumberFormatException | ArithmeticException e) {
             throw new IllegalArgumentException("wifi.phy.gi.us must be 0.8, 1.6 or 3.2", e);
         }
-        return new WirelessPhy(readOptionalNonNegativeInt(properties, "wifi.phy.bandwidth.mhz", 160),
+        return buildWirelessPhy(properties, readOptionalNonNegativeInt(properties, "wifi.phy.bandwidth.mhz", 160),
                 readOptionalNonNegativeInt(properties, "wifi.phy.mcs", 11),
-                readOptionalNonNegativeInt(properties, "wifi.phy.nss", 2), giNs,
+                readOptionalNonNegativeInt(properties, "wifi.phy.nss", 2), giNs);
+    }
+
+    private static WirelessPhy buildWirelessPhy(Properties properties, int bandwidthMhz, int mcs, int nss, int giNs) {
+        return new WirelessPhy(bandwidthMhz, mcs, nss, giNs,
                 readOptionalNonNegativeInt(properties, "wifi.phy.mac.overhead.bytes", 34),
                 readOptionalNonNegativeInt(properties, "wifi.phy.he-ltf.type", WirelessPhy.defaultHeLtfType(giNs)),
                 readOptionalNonNegativeInt(properties, "wifi.phy.nominal.packet.padding.us", 0));
+    }
+
+    private static Map<Integer, ApCapabilityMode> readApCapabilityModes(Properties properties, int sfuCount,
+                                                                      WirelessPhy wirelessPhy) {
+        Map<Integer, ApCapabilityMode> modes = new HashMap<>();
+        for (int sfuId = 1; sfuId <= sfuCount; sfuId++) {
+            String key = "sfu." + sfuId + ".wifi.ap.mode";
+            if (!properties.containsKey(key)) {
+                continue;
+            }
+            if (wirelessPhy == null) {
+                throw new IllegalArgumentException(key + " requires wifi.model=he-su");
+            }
+            try {
+                modes.put(sfuId, ApCapabilityMode.valueOf(properties.getProperty(key).strip()));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException(key + " must be LCM or HCM", e);
+            }
+        }
+        return modes;
+    }
+
+    private static boolean readApActivityEnabled(Properties properties) {
+        String value = properties.getProperty(AP_ACTIVITY_ENABLED, "false").strip();
+        if (!value.equals("true") && !value.equals("false")) {
+            throw new IllegalArgumentException(AP_ACTIVITY_ENABLED + " must be true or false");
+        }
+        if (value.equals("false") && properties.containsKey(AP_ACTIVITY_WINDOW_US)) {
+            throw new IllegalArgumentException(AP_ACTIVITY_WINDOW_US + " requires " + AP_ACTIVITY_ENABLED + "=true");
+        }
+        return value.equals("true");
+    }
+
+    private static Map<Integer, WirelessPhy> readStationPhys(Properties properties, List<Integer> staSfuIds,
+                                                            Map<Integer, ApCapabilityMode> apModes) {
+        Map<Integer, WirelessPhy> stationPhys = new HashMap<>();
+        for (int staIndex = 0; staIndex < staSfuIds.size(); staIndex++) {
+            int staId = staIndex + 1;
+            int sfuId = staSfuIds.get(staIndex);
+            ApCapabilityMode mode = apModes.get(sfuId);
+            String prefix = "sta." + staId + ".wifi.max.";
+            String bandwidthKey = prefix + "bandwidth.mhz";
+            String nssKey = prefix + "nss";
+            if (mode == null) {
+                if (properties.containsKey(bandwidthKey) || properties.containsKey(nssKey)) {
+                    throw new IllegalArgumentException(prefix + "* requires sfu." + sfuId + ".wifi.ap.mode");
+                }
+                continue;
+            }
+            int maxBandwidthMhz = readOptionalNonNegativeInt(properties, bandwidthKey, 80);
+            if (maxBandwidthMhz != 20 && maxBandwidthMhz != 40 && maxBandwidthMhz != 80 && maxBandwidthMhz != 160) {
+                throw new IllegalArgumentException(bandwidthKey + " must be 20, 40, 80 or 160");
+            }
+            int maxNss = readOptionalNonNegativeInt(properties, nssKey, 2);
+            if (maxNss < 1 || maxNss > 8) {
+                throw new IllegalArgumentException(nssKey + " must be in 1..8");
+            }
+            // 带宽和空间流数分别取两端的能力交集；同一模型用于 STA 的两个 DATA 方向。
+            stationPhys.put(staId, buildWirelessPhy(properties, Math.min(mode.bandwidthMhz(), maxBandwidthMhz),
+                    ApCapabilityMode.MCS, Math.min(mode.nss(), maxNss), ApCapabilityMode.GI_NS));
+        }
+        return stationPhys;
     }
 
     private static int readOptionalNonNegativeInt(Properties properties, String key, int defaultValue) {
@@ -590,14 +668,15 @@ public final class ConfigLoader {
     private static void validateCompletionClock(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds,
                                                 long fiberUs, SimulationConfig.PonLink ponDownlink,
                                                 SimulationConfig.PonLink ponUplink, long wifiUs, WirelessPhy wirelessPhy,
-                                                WifiFrameExchange frameExchange) {
+                                                Map<Integer, WirelessPhy> stationPhys, WifiFrameExchange frameExchange,
+                                                boolean apActivityEnabled) {
         // 同一 SFU 按到达时刻累计无线工作量即可计算忙闲边界，优先级只改变其中的发送顺序。
         boolean hasUplink = inputEvents.stream().anyMatch(event -> event.packet().isUplink());
         boolean hasDownlink = inputEvents.stream().anyMatch(event -> !event.packet().isUplink());
         boolean mixed = hasUplink && hasDownlink;
         long[] completion = new long[sfuCount];
         boolean bothFixed = ponDownlink == null && ponUplink == null;
-        long ticksPerUs = wirelessPhy == null && bothFixed ? 1 : 1_000;
+        long ticksPerUs = wirelessPhy == null && bothFixed && !apActivityEnabled ? 1 : 1_000;
         long responseTicks = frameExchange == null ? 0 : frameExchange.responseDurationNs();
         try {
             boolean usesFixedFiber = bothFixed || (ponDownlink == null && hasDownlink) || (ponUplink == null && hasUplink);
@@ -618,7 +697,8 @@ public final class ConfigLoader {
                         ? validateUplinkSerialization(packet, ponUplink) : 0;
                 long arrival = arrivalTicks.applyAsLong(event);
                 int sfuIndex = staSfuIds.get(packet.staId() - 1) - 1;
-                long dataTicks = wirelessPhy == null ? fixedWifiTicks : wirelessPhy.ppduDurationNs(packet.bytes());
+                WirelessPhy packetPhy = stationPhys.getOrDefault(packet.staId(), wirelessPhy);
+                long dataTicks = packetPhy == null ? fixedWifiTicks : packetPhy.ppduDurationNs(packet.bytes());
                 long exchangeTicks = Math.addExact(dataTicks, responseTicks);
                 completion[sfuIndex] = Math.addExact(Math.max(arrival, completion[sfuIndex]), exchangeTicks);
                 if (packet.isUplink()) {
@@ -704,10 +784,17 @@ public final class ConfigLoader {
                 }
                 continue;
             }
-            Matcher station = STA_ASSOCIATION.matcher(key);
+            Matcher station = STA_KEY.matcher(key);
             if (station.matches()) {
                 if (parseNonNegativeLong(station.group(1), key) > staCount) {
                     throw new IllegalArgumentException("STA index out of range: " + key);
+                }
+                continue;
+            }
+            Matcher apMode = SFU_AP_MODE_KEY.matcher(key);
+            if (apMode.matches()) {
+                if (parseNonNegativeLong(apMode.group(1), key) > sfuCount) {
+                    throw new IllegalArgumentException("SFU index out of range: " + key);
                 }
                 continue;
             }

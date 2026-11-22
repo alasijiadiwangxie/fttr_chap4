@@ -5,6 +5,7 @@ import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
 
+import java.util.Map;
 import java.util.Objects;
 
 /** SFU 和关联 STA 之间的无线链路。上下行使用相同的传输时间模型。 */
@@ -12,11 +13,13 @@ public final class WifiLink {
     private final LinkDelayModel delayModel;
     private final WirelessPhy wirelessPhy;
     private final WifiFrameExchange frameExchange;
+    private final Map<Integer, WirelessPhy> stationPhys;
 
     public WifiLink(LinkDelayModel delayModel) {
         this.delayModel = Objects.requireNonNull(delayModel);
         this.wirelessPhy = null;
         this.frameExchange = null;
+        this.stationPhys = Map.of();
     }
 
     public WifiLink(WirelessPhy wirelessPhy) {
@@ -24,9 +27,15 @@ public final class WifiLink {
     }
 
     public WifiLink(WirelessPhy wirelessPhy, WifiFrameExchange frameExchange) {
+        this(wirelessPhy, frameExchange, Map.of());
+    }
+
+    /** 有静态 AP 模式时，每个关联 STA 使用已经校验的实际 DATA PHY。 */
+    public WifiLink(WirelessPhy wirelessPhy, WifiFrameExchange frameExchange, Map<Integer, WirelessPhy> stationPhys) {
         this.delayModel = null;
         this.wirelessPhy = Objects.requireNonNull(wirelessPhy);
         this.frameExchange = frameExchange;
+        this.stationPhys = Map.copyOf(stationPhys);
     }
 
     public boolean hasAckExchange() {
@@ -68,7 +77,9 @@ public final class WifiLink {
     }
 
     private long dataDurationNs(Packet packet) {
-        return wirelessPhy.ppduDurationNs(packet.bytes());
+        // 上行取源 STA，下行取目的 STA。正常 DATA、碰撞 DATA 和 TXOP 都复用这一次选取规则。
+        WirelessPhy dataPhy = stationPhys.getOrDefault(packet.staId(), wirelessPhy);
+        return dataPhy.ppduDurationNs(packet.bytes());
     }
 
     private WifiFrameExchange requireAckExchange() {

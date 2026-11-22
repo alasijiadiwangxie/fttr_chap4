@@ -1,0 +1,7 @@
+scenario,configuration,sfu_id,ap_mode,simulation_end_ns,observation_start_ns,observation_end_ns,idle_ns,tx_ns,rx_ns,manual_idle_ns,manual_tx_ns,manual_rx_ns,matches_manual
+lcm-natural,configs/b2-ap-activity-lcm-natural.properties,1,LCM,505200,0,505200,118000,331200,56000,118000,331200,56000,true
+lcm-1000us,configs/b2-ap-activity-lcm-1000us.properties,1,LCM,505200,0,1000000,612800,331200,56000,612800,331200,56000,true
+hcm-natural,configs/b2-ap-activity-hcm-natural.properties,1,HCM,329200,0,329200,118000,155200,56000,118000,155200,56000,true
+hcm-1000us,configs/b2-ap-activity-hcm-1000us.properties,1,HCM,329200,0,1000000,788800,155200,56000,788800,155200,56000,true
+mixed,configs/b2-ap-activity-mixed.properties,1,LCM,243600,0,1000000,806400,165600,28000,806400,165600,28000,true
+mixed,configs/b2-ap-activity-mixed.properties,2,HCM,243600,0,1000000,894400,28000,77600,894400,28000,77600,true

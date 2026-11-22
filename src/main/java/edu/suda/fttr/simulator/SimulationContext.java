@@ -1,6 +1,7 @@
 package edu.suda.fttr.simulator;
 
 import edu.suda.fttr.entity.AccessCategory;
+import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.PonDemandLedger;
@@ -13,6 +14,7 @@ import edu.suda.fttr.link.PonDbaGrant;
 import edu.suda.fttr.dba.DbaPlan;
 import edu.suda.fttr.dba.DbaContext;
 import edu.suda.fttr.dba.GiantDbaPolicy;
+import edu.suda.fttr.phy.ApCapabilityMode;
 import edu.suda.fttr.trace.TraceLogger;
 
 import java.util.EnumMap;
@@ -31,6 +33,7 @@ public final class SimulationContext {
     private final EnumMap<AccessCategory, DelayStats> byClass = new EnumMap<>(AccessCategory.class);
     private final DelayStats overallDelay = new DelayStats();
     private final Map<Integer, UplinkStats> uplinkByStation = new HashMap<>();
+    private final Map<Integer, ApActivity> apActivities = new HashMap<>();
     private long nowTicks;
     private int deliveredPackets;
     private long deliveredBytes;
@@ -338,6 +341,41 @@ public final class SimulationContext {
         }
     }
 
+    void trackApActivity(int sfuId, ApCapabilityMode mode, long windowNs) {
+        apActivities.put(sfuId, new ApActivity(mode, windowNs));
+    }
+
+    /** DATA 的实际发送端和接收端决定 AP 活动。接入和帧间等待没有活动边界。 */
+    public void recordApDataBoundary(Packet packet, int sfuId, boolean start) {
+        recordApFrameBoundary(packet, sfuId, !packet.isUplink(), start, start ? "DATA_START" : "DATA_END");
+    }
+
+    /** ACK 沿 DATA 的反方向发送，等待 ACK 到达期间只统计实际收发。 */
+    public void recordApAckBoundary(Packet packet, int sfuId, boolean start) {
+        recordApFrameBoundary(packet, sfuId, packet.isUplink(), start, start ? "ACK_START" : "ACK_END");
+    }
+
+    public void recordApCollisionDataEnd(Packet packet, int sfuId) {
+        recordApFrameBoundary(packet, sfuId, !packet.isUplink(), false, "COLLISION_DATA_END");
+    }
+
+    private void recordApFrameBoundary(Packet packet, int sfuId, boolean apTransmits, boolean start, String reason) {
+        ApActivity activity = apActivities.get(sfuId);
+        if (activity != null) {
+            ApActivity.State frameState = apTransmits ? ApActivity.State.TX : ApActivity.State.RX;
+            ApActivity.Transition transition = start ? activity.begin(nowTicks, frameState)
+                    : activity.end(nowTicks, frameState);
+            logApActivity(sfuId, activity, transition, packet, reason);
+        }
+    }
+
+    private void logApActivity(int sfuId, ApActivity activity, ApActivity.Transition transition, Packet packet,
+                               String reason) {
+        if (transition != null) {
+            trace.recordApActivityChange(sfuId, activity.mode(), nowTicks, transition, packet, reason);
+        }
+    }
+
     public void recordWifiDataEnd(Packet packet, int sfuId) {
         trace.recordWifiDataEnd(packet, sfuId, nowTicks);
     }
@@ -380,6 +418,20 @@ public final class SimulationContext {
         wifiCollisionEvents++;
         for (Packet packet : packets) {
             trace.recordCollisionPacket(packet, sfuId, nowTicks, "WIFI_COLLISION_START");
+        }
+        ApActivity activity = apActivities.get(sfuId);
+        if (activity != null) {
+            // 所有碰撞 DATA 同时开始。批量更新避免因候选顺序产生零时长的中间 RX 状态。
+            int txFrames = 0;
+            Packet representative = packets.get(0);
+            for (Packet packet : packets) {
+                if (!packet.isUplink()) {
+                    txFrames++;
+                    representative = packet;
+                }
+            }
+            ApActivity.Transition transition = activity.beginCollision(nowTicks, txFrames, packets.size() - txFrames);
+            logApActivity(sfuId, activity, transition, representative, "COLLISION_START");
         }
     }
 
@@ -453,6 +505,10 @@ public final class SimulationContext {
         trace.recordGlobalDelay(overallDelay.count, overallDelay.averageWaitUs(), overallDelay.averageDelayUs());
         for (Sfu sfu : sfus) {
             trace.recordSfuSummary(sfu, throughputMbps(sfu.sentBytes()));
+            ApActivity activity = apActivities.get(sfu.id());
+            if (activity != null) {
+                trace.recordApActivityTotals(sfu.id(), activity.mode(), activity.finish(nowTicks));
+            }
         }
         for (Sta sta : stations) {
             trace.recordStaSummary(sta, throughputMbps(sta.receivedBytes()));

@@ -18,6 +18,8 @@ public final class WirelessPhy {
     private static final int MAX_APEP_BYTES = 11_454 + 4; // 单 MPDU 最大长度和它的 4 B delimiter。
     private static final long MAX_PPDU_NS = 5_484_000;
 
+    private final int bandwidthMhz;
+    private final int nss;
     private final int macOverheadBytes;
     private final int codingNumerator;
     private final int codingDenominator;
@@ -60,6 +62,8 @@ public final class WirelessPhy {
             throw new IllegalArgumentException("HE SU nominal packet padding must be 0, 8 or 16 microseconds");
         }
 
+        this.bandwidthMhz = bandwidthMhz;
+        this.nss = nss;
         this.macOverheadBytes = macOverheadBytes;
         codingNumerator = CODING_NUMERATOR[mcs];
         codingDenominator = CODING_DENOMINATOR[mcs];
@@ -92,6 +96,14 @@ public final class WirelessPhy {
 
     public double phyRateMbps() {
         return (1_000.0 * dataBits) / symbolNs;
+    }
+
+    public int bandwidthMhz() {
+        return bandwidthMhz;
+    }
+
+    public int nss() {
+        return nss;
     }
 
     /** 每包视作一个数据 MPDU。无中间训练字段及 2.4 GHz 信号延长。 */

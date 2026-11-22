@@ -1,6 +1,7 @@
 package edu.suda.fttr.trace;
 
 import edu.suda.fttr.entity.AccessCategory;
+import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.PonDemandLedger;
@@ -14,6 +15,8 @@ import edu.suda.fttr.dba.DbaPlan;
 import edu.suda.fttr.dba.DbaContext;
 import edu.suda.fttr.dba.GiantDbaPolicy;
 import edu.suda.fttr.dba.TcontProfile;
+import edu.suda.fttr.phy.ApCapabilityMode;
+import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 
 import java.io.PrintStream;
@@ -575,6 +578,33 @@ public final class TraceLogger {
 
     public void recordWirelessPhyRate(double rateMbps) {
         output.printf(Locale.ROOT, "summary=WIFI_PHY model=HE_SU phy_rate_mbps=%.6f%n", rateMbps);
+    }
+
+    public void recordApCapability(int sfuId, ApCapabilityMode mode) {
+        output.printf(Locale.ROOT, "summary=WIFI_AP_CAPABILITY sfu_id=%d ap_mode=%s bandwidth_mhz=%d nss=%d "
+                        + "mcs=%d gi_us=%.1f%n", sfuId, mode, mode.bandwidthMhz(), mode.nss(),
+                ApCapabilityMode.MCS, ApCapabilityMode.GI_NS / 1_000.0);
+    }
+
+    public void recordStationPhy(Sta sta, ApCapabilityMode mode, WirelessPhy phy) {
+        output.printf(Locale.ROOT, "summary=WIFI_STA_PHY sfu_id=%d sta_id=%d ap_mode=%s bandwidth_mhz=%d nss=%d "
+                        + "phy_rate_mbps=%.6f%n", sta.sfuId(), sta.id(), mode, phy.bandwidthMhz(), phy.nss(),
+                phy.phyRateMbps());
+    }
+
+    public void recordApActivityChange(int sfuId, ApCapabilityMode mode, long timeNs, ApActivity.Transition change,
+                                       Packet packet, String reason) {
+        output.printf(Locale.ROOT, "t_us=%s t_ns=%d node=SFU event=WIFI_AP_ACTIVITY_CHANGE sfu_id=%d ap_mode=%s "
+                        + "from=%s to=%s reason=%s packet_id=%d direction=%s%n",
+                formatMicroseconds(timeNs), timeNs, sfuId, mode == null ? "LEGACY" : mode.name(),
+                change.from(), change.to(), reason, packet.id(), packet.direction());
+    }
+
+    public void recordApActivityTotals(int sfuId, ApCapabilityMode mode, ApActivity.Totals totals) {
+        output.printf(Locale.ROOT, "summary=WIFI_AP_ACTIVITY sfu_id=%d ap_mode=%s observation_start_ns=0 "
+                        + "observation_end_ns=%d idle_ns=%d tx_ns=%d rx_ns=%d%n",
+                sfuId, mode == null ? "LEGACY" : mode.name(), totals.observationEndNs(),
+                totals.idleNs(), totals.txNs(), totals.rxNs());
     }
 
     public void recordPonSummary(Packet.Direction direction, long sentPackets, double averageWaitUs,

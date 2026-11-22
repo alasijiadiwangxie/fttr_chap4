@@ -198,12 +198,14 @@ public final class Sfu {
         if (retryPolicy != null) {
             context.recordWifiMacAttempt(packet, id, active.retries);
         }
+        context.recordApDataBoundary(packet, id, true);
         wifi.transmit(packet, id, context);
     }
 
     public void receiveData(Packet packet, SimulationContext context) {
         checkActive(packet);
         dataEndTicks = context.nowTicks();
+        context.recordApDataBoundary(packet, id, false);
         boolean ackPending = wifi.scheduleAck(packet, id, context);
         if (ackPending && edcaAccess != null) {
             publishMacDuration(packet, false, announcedNavEndTicks - dataEndTicks, context);
@@ -228,11 +230,15 @@ public final class Sfu {
 
     public void transmitAck(Packet packet, SimulationContext context) {
         checkActive(packet);
+        context.recordApAckBoundary(packet, id, true);
         wifi.transmitAck(packet, id, context);
     }
 
     public void completeTransmission(Packet packet, SimulationContext context) {
         checkActive(packet);
+        if (wifi.hasAckExchange()) {
+            context.recordApAckBoundary(packet, id, false);
+        }
         if (announcedNavEndTicks > context.nowTicks()) {
             // 立即 ACK 沿用本次 DATA 宣布的预约，只报告完成 ACK 之后的剩余部分。
             publishMacDuration(packet, true, announcedNavEndTicks - context.nowTicks(), context);
@@ -374,6 +380,7 @@ public final class Sfu {
         if (!collidedData.remove(packet)) {
             throw new IllegalStateException("No collided DATA pending for packet " + packet.id());
         }
+        context.recordApCollisionDataEnd(packet, id);
         if (retryPolicy == null) {
             context.recordWifiCollisionDrop(packet, id);
             EdcaState.AcState ac = senderAc(packet);

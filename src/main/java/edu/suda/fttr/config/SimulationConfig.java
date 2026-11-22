@@ -6,11 +6,13 @@ import edu.suda.fttr.link.WifiFrameExchange;
 import edu.suda.fttr.mac.EdcaParameters;
 import edu.suda.fttr.mac.WifiAccessMode;
 import edu.suda.fttr.mac.WifiRetryPolicy;
+import edu.suda.fttr.phy.ApCapabilityMode;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /** 场景的已校验输入。入口时刻和原有固定链路时延使用整数微秒。 */
@@ -23,6 +25,10 @@ public final class SimulationConfig {
     private final PonLink ponUplink;
     private final long wifiDelayUs;
     private final WirelessPhy wirelessPhy;
+    private final Map<Integer, ApCapabilityMode> apCapabilityModes;
+    private final Map<Integer, WirelessPhy> stationPhys;
+    private final boolean apActivityEnabled;
+    private final long apActivityWindowNs;
     private final WifiFrameExchange wifiFrameExchange;
     private final EdcaParameters edcaParameters;
     private final WifiAccessMode wifiAccessMode;
@@ -40,6 +46,8 @@ public final class SimulationConfig {
 
     SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs,
                      PonLink ponDownlink, PonLink ponUplink, long wifiDelayUs, WirelessPhy wirelessPhy,
+                     Map<Integer, ApCapabilityMode> apCapabilityModes, Map<Integer, WirelessPhy> stationPhys,
+                     boolean apActivityEnabled, long apActivityWindowNs,
                      WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters, WifiAccessMode wifiAccessMode,
                      WifiRetryPolicy wifiRetryPolicy,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled,
@@ -54,6 +62,10 @@ public final class SimulationConfig {
         this.ponUplink = ponUplink;
         this.wifiDelayUs = wifiDelayUs;
         this.wirelessPhy = wirelessPhy;
+        this.apCapabilityModes = Map.copyOf(apCapabilityModes);
+        this.stationPhys = Map.copyOf(stationPhys);
+        this.apActivityEnabled = apActivityEnabled;
+        this.apActivityWindowNs = apActivityWindowNs;
         this.wifiFrameExchange = wifiFrameExchange;
         this.edcaParameters = edcaParameters;
         this.wifiAccessMode = wifiAccessMode;
@@ -121,9 +133,9 @@ public final class SimulationConfig {
         return ponUplink;
     }
 
-    /** 共享光发送与 HE SU 都可能引入小数微秒，使用整数纳秒时钟。 */
+    /** 共享光发送、HE SU 及精确的 AP 活动观察窗口使用整数纳秒时钟。 */
     public boolean usesNanosecondTicks() {
-        return wirelessPhy != null || ponDownlink != null || ponUplink != null;
+        return wirelessPhy != null || ponDownlink != null || ponUplink != null || apActivityEnabled;
     }
 
     public long wifiDelayUs() {
@@ -136,6 +148,31 @@ public final class SimulationConfig {
     /** HE SU 模式的静态速率模型。固定时延模式返回 null。 */
     public WirelessPhy wirelessPhy() {
         return wirelessPhy;
+    }
+
+    /** 返回该 SFU 显式配置的静态 AP 能力。旧场景返回 null。 */
+    public ApCapabilityMode apCapabilityMode(int sfuId) {
+        if (sfuId < 1 || sfuId > sfuCount) {
+            throw new IllegalArgumentException("SFU ID out of range: " + sfuId);
+        }
+        return apCapabilityModes.get(sfuId);
+    }
+
+    /** 上下行 DATA 均使用报文关联 STA 的有效 PHY。未启用静态 AP 能力时使用原全局模型。 */
+    public WirelessPhy wirelessPhyForSta(int staId) {
+        if (staId < 1 || staId > staCount()) {
+            throw new IllegalArgumentException("STA ID out of range: " + staId);
+        }
+        return stationPhys.getOrDefault(staId, wirelessPhy);
+    }
+
+    public boolean apActivityEnabled() {
+        return apActivityEnabled;
+    }
+
+    /** 固定观察窗口从 0 开始。-1 表示使用最后一个仿真事件作为结束边界。 */
+    public long apActivityWindowNs() {
+        return apActivityWindowNs;
     }
 
     /** 启用立即 ACK 时的响应时序。旧场景只计算 DATA，返回 null。 */

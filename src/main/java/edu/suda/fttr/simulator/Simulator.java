@@ -13,6 +13,7 @@ import edu.suda.fttr.link.PonDownlink;
 import edu.suda.fttr.link.PonUplink;
 import edu.suda.fttr.link.WifiLink;
 import edu.suda.fttr.mac.WifiRetryPolicy;
+import edu.suda.fttr.phy.ApCapabilityMode;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.trace.TraceLogger;
 
@@ -68,17 +69,30 @@ public final class Simulator {
 
         // 原有逻辑光链路继续服务选用固定时延模式的方向。
         FixedDelayModel fiberDelay = new FixedDelayModel(config.fiberDelayUs());
-        // 链路时长模型可共用。每台 SFU 各自维护一个与其 STA 共享的信道。
-        WifiLink wifi = wirelessPhy == null ? new WifiLink(new FixedDelayModel(config.wifiDelayUs()))
+        // 旧场景共用全局链路时长。启用静态能力的 SFU 各自持有关联 STA 的实际 PHY。
+        WifiLink legacyWifi = wirelessPhy == null ? new WifiLink(new FixedDelayModel(config.wifiDelayUs()))
                 : new WifiLink(wirelessPhy, config.wifiFrameExchange());
         List<FiberLink> fibers = new ArrayList<>(config.sfuCount());
         List<Sfu> sfus = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
             fibers.add(new FiberLink(fiberDelay));
             int sfuId = i + 1;
+            ApCapabilityMode mode = config.apCapabilityMode(sfuId);
+            Map<Integer, Sta> associated = stationsBySfu.get(i);
+            WifiLink wifi = legacyWifi;
+            if (mode != null) {
+                Map<Integer, WirelessPhy> stationPhys = new HashMap<>();
+                for (int staId : associated.keySet()) {
+                    stationPhys.put(staId, config.wirelessPhyForSta(staId));
+                }
+                wifi = new WifiLink(wirelessPhy, config.wifiFrameExchange(), stationPhys);
+            }
             PonUplink.Port uplinkPort = ponUplink == null ? null : ponUplink.attachSfu(sfuId);
-            sfus.add(new Sfu(sfuId, wifi, stationsBySfu.get(i), config.edcaParameters(), config.wifiAccessMode(),
+            sfus.add(new Sfu(sfuId, wifi, associated, config.edcaParameters(), config.wifiAccessMode(),
                     retryPolicy, uplinkPort));
+            if (config.apActivityEnabled()) {
+                context.trackApActivity(sfuId, mode, config.apActivityWindowNs());
+            }
         }
         // 输入事件只提供报文和生成时间，实际路径由仿真器和设备根据关联表决定。
         for (Event input : config.inputEvents()) {
@@ -212,7 +226,7 @@ public final class Simulator {
             recordGeneratedTraffic(config, trace, uplinkWindowsUs, true);
         }
         if (wirelessPhy != null) {
-            trace.recordWirelessPhyRate(wirelessPhy.phyRateMbps());
+            recordWirelessProfiles(config, trace, stations);
         }
         if (ponDownlink != null) {
             ponDownlink.recordSummary(context);
@@ -222,6 +236,27 @@ public final class Simulator {
             ponUplink.recordReportSummary(mfu.receivedUplinkReports(), context);
         }
         context.recordSummary(sfus, stations, config.uplinkEnabled());
+    }
+
+    private static void recordWirelessProfiles(SimulationConfig config, TraceLogger trace, List<Sta> stations) {
+        boolean usesLegacyPhy = false;
+        for (int sfuId = 1; sfuId <= config.sfuCount(); sfuId++) {
+            ApCapabilityMode mode = config.apCapabilityMode(sfuId);
+            if (mode == null) {
+                usesLegacyPhy = true;
+            } else {
+                trace.recordApCapability(sfuId, mode);
+            }
+        }
+        for (Sta sta : stations) {
+            ApCapabilityMode mode = config.apCapabilityMode(sta.sfuId());
+            if (mode != null) {
+                trace.recordStationPhy(sta, mode, config.wirelessPhyForSta(sta.id()));
+            }
+        }
+        if (usesLegacyPhy) {
+            trace.recordWirelessPhyRate(config.wirelessPhy().phyRateMbps());
+        }
     }
 
     private static void recordGeneratedTraffic(SimulationConfig config, TraceLogger trace,
