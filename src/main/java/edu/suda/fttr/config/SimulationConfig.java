@@ -4,6 +4,7 @@ import edu.suda.fttr.dba.TcontTopology;
 import edu.suda.fttr.entity.ApEnergyModel;
 import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.link.AmpduConfig;
 import edu.suda.fttr.link.WifiFrameExchange;
 import edu.suda.fttr.mac.EdcaParameters;
 import edu.suda.fttr.mac.WifiAccessMode;
@@ -38,6 +39,7 @@ public final class SimulationConfig {
     private final EdcaParameters edcaParameters;
     private final WifiAccessMode wifiAccessMode;
     private final WifiRetryPolicy wifiRetryPolicy;
+    private final AmpduConfig ampduConfig;
     private final List<Long> downlinkTrafficWindowsUs;
     private final List<Long> uplinkTrafficWindowsUs;
     private final boolean uplinkEnabled;
@@ -55,7 +57,7 @@ public final class SimulationConfig {
                      Map<Integer, WirelessPhy> alternateStationPhys, boolean apActivityEnabled, long apActivityWindowNs,
                      ApEnergyModel apEnergyModel, ApModeSwitch.Settings apSwitching,
                      WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters, WifiAccessMode wifiAccessMode,
-                     WifiRetryPolicy wifiRetryPolicy,
+                     WifiRetryPolicy wifiRetryPolicy, AmpduConfig ampduConfig,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled,
                      boolean demandLedgerEnabled, boolean dbaShadowEnabled, boolean dbaExecutionEnabled,
                      boolean dbaMultiGrantEnabled, boolean dbaGiantEnabled, boolean dbaGiantCompleteEnabled,
@@ -79,6 +81,7 @@ public final class SimulationConfig {
         this.edcaParameters = edcaParameters;
         this.wifiAccessMode = wifiAccessMode;
         this.wifiRetryPolicy = wifiRetryPolicy;
+        this.ampduConfig = ampduConfig;
         this.downlinkTrafficWindowsUs = List.copyOf(downlinkTrafficWindowsUs);
         this.uplinkTrafficWindowsUs = List.copyOf(uplinkTrafficWindowsUs);
         this.uplinkEnabled = uplinkEnabled;
@@ -217,6 +220,11 @@ public final class SimulationConfig {
 
     public WifiRetryPolicy wifiRetryPolicy() {
         return wifiRetryPolicy;
+    }
+
+    /** 非空时允许使用 A-MPDU 和压缩 Block ACK。 */
+    public AmpduConfig ampduConfig() {
+        return ampduConfig;
     }
 
     /** 各 SFU 的下行泊松生成窗口，按 ID 排列。手动模式或未开启下行时为空。 */

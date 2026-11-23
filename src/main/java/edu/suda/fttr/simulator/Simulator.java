@@ -91,6 +91,7 @@ public final class Simulator {
             PonUplink.Port uplinkPort = ponUplink == null ? null : ponUplink.attachSfu(sfuId);
             Sfu sfu = new Sfu(sfuId, wifi, associated, config.edcaParameters(), config.wifiAccessMode(),
                     retryPolicy, uplinkPort);
+            sfu.configureAmpdu(config.ampduConfig());
             sfus.add(sfu);
             if (config.apActivityEnabled()) {
                 context.trackApActivity(sfuId, mode, config.apActivityWindowNs());
@@ -207,6 +208,15 @@ public final class Simulator {
                     break;
                 case WIFI_ACK_END:
                     sfus.get(event.sfuId() - 1).completeTransmission(event.packet(), context);
+                    break;
+                case WIFI_AMPDU_DATA_END:
+                    sfus.get(event.sfuId() - 1).receiveAggregate(event.packet(), context);
+                    break;
+                case WIFI_AMPDU_BA_START:
+                    sfus.get(event.sfuId() - 1).transmitBlockAck(event.packet(), context);
+                    break;
+                case WIFI_AMPDU_BA_END:
+                    sfus.get(event.sfuId() - 1).completeBlockAck(event.packet(), context);
                     break;
                 case PACKET_ARRIVAL_AT_MFU:
                     mfu.receiveUplink(event.packet(), event.sfuId(), context);

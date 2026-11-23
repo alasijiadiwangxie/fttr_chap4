@@ -5,6 +5,7 @@ import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -51,6 +52,29 @@ public final class WifiLink {
         return requireAckExchange().responseDurationNs();
     }
 
+    public long blockAckNs() {
+        return requireAckExchange().blockAckNs();
+    }
+
+    public long blockAckResponseDurationNs() {
+        return requireAckExchange().blockAckResponseDurationNs();
+    }
+
+    /** APEP 只对后面还有 MPDU 的子帧补齐 0–3 B。末尾由 PHY 处理填充。 */
+    public int ampduBytes(Packet head, List<Packet> packets) {
+        WirelessPhy phy = dataPhy(head);
+        int apepBytes = 0;
+        for (Packet packet : packets) {
+            int alignment = (4 - apepBytes % 4) % 4;
+            apepBytes = Math.addExact(apepBytes, alignment + phy.ampduSubframeBytes(packet.bytes()));
+        }
+        return apepBytes;
+    }
+
+    public long ampduDurationNs(Packet head, int apepBytes) {
+        return dataPhy(head).ampduPpduTiming(apepBytes).durationNs();
+    }
+
     /** 由实际 DATA 与 ACK 时长组成的完整单帧交换，供 TXOP 判断剩余预算。 */
     public long exchangeDurationNs(Packet packet) {
         long responseNs = ackResponseDurationNs();
@@ -78,8 +102,11 @@ public final class WifiLink {
 
     private long dataDurationNs(Packet packet) {
         // 上行取源 STA，下行取目的 STA。正常 DATA、碰撞 DATA 和 TXOP 都复用这一次选取规则。
-        WirelessPhy dataPhy = stationPhys.getOrDefault(packet.staId(), wirelessPhy);
-        return dataPhy.ppduDurationNs(packet.bytes());
+        return dataPhy(packet).ppduDurationNs(packet.bytes());
+    }
+
+    private WirelessPhy dataPhy(Packet packet) {
+        return stationPhys.getOrDefault(packet.staId(), wirelessPhy);
     }
 
     private WifiFrameExchange requireAckExchange() {

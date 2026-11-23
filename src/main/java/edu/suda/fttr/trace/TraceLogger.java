@@ -23,6 +23,7 @@ import edu.suda.fttr.simulator.Event;
 
 import java.io.PrintStream;
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Locale;
 
 /** 每行保留时刻、节点、动作和报文身份，便于逐事件核对。 */
@@ -91,6 +92,11 @@ public final class TraceLogger {
                 break;
             case WIFI_ACK_END:
                 write(event, packet.isUplink() ? "STA" : "SFU", "WIFI_ACK_END");
+                break;
+            case WIFI_AMPDU_DATA_END:
+            case WIFI_AMPDU_BA_START:
+            case WIFI_AMPDU_BA_END:
+                // 由 SFU 输出聚合边界、MPDU 列表及 Block ACK 位图。
                 break;
             case PACKET_ARRIVAL_AT_STA:
             case PACKET_ARRIVAL_AT_MFU:
@@ -458,6 +464,29 @@ public final class TraceLogger {
         String receiver = packet.isUplink() ? "SFU" : "STA";
         write(packet, timeTicks, receiver, "WIFI_DATA_END", sfuId);
         write(packet, timeTicks, receiver, "WIFI_SIFS_START", sfuId);
+    }
+
+    public void recordAmpduEvent(long nowNs, String phase, Packet head, int sfuId, List<Packet> members, int bytes,
+                                  long ppduNs, long sifsNs, long baNs, long bitmap) {
+        StringBuilder packetIds = new StringBuilder();
+        for (Packet packet : members) {
+            if (packetIds.length() > 0) {
+                packetIds.append(',');
+            }
+            packetIds.append(packet.id());
+        }
+        output.printf(Locale.ROOT, "t_us=%s t_ns=%d node=SFU event=WIFI_AMPDU_%s sfu_id=%d packet_id=%d "
+                        + "sta_id=%d type=%s direction=%s count=%d apep_bytes=%d ppdu_ns=%d sifs_ns=%d ba_ns=%d "
+                        + "packet_ids=%s bitmap=%s%n",
+                formatMicroseconds(nowNs), nowNs, phase, sfuId, head.id(), head.staId(), head.type(), head.direction(),
+                members.size(), bytes, ppduNs, sifsNs, baNs, packetIds, Long.toUnsignedString(bitmap, 16));
+    }
+
+    public void recordAmpduMpdu(long nowNs, Packet head, Packet member, int sfuId, String status, int retries) {
+        output.printf(Locale.ROOT, "t_us=%s t_ns=%d node=SFU event=WIFI_AMPDU_MPDU sfu_id=%d packet_id=%d "
+                        + "head_id=%d sta_id=%d type=%s direction=%s status=%s retry_count=%d%n",
+                formatMicroseconds(nowNs), nowNs, sfuId, member.id(), head.id(), head.staId(), head.type(),
+                head.direction(), status, retries);
     }
 
     private void writeUplink(Packet packet, long timeTicks, String node, String action, int sfuId, String details) {

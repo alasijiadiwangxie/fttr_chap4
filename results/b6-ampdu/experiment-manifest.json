@@ -1,0 +1,95 @@
+{
+  "actual_java_runs": 380,
+  "table_rows": 420,
+  "jar_sha256": "925cd452c8948c323f1b4a79954b963227d7a3e4db9c8162be62c62a5958305a",
+  "experiment": {
+    "observation_us": 15000000,
+    "seed": 101,
+    "max_apep_bytes": 65535,
+    "fixed_packet_bytes": 1500,
+    "fixed_intervals_us": [
+      2400,
+      800,
+      600,
+      500,
+      450,
+      400,
+      375,
+      350,
+      300,
+      240,
+      180,
+      90
+    ],
+    "extra_intervals_us": {
+      "2": [
+        60
+      ],
+      "4": [
+        60,
+        45
+      ],
+      "8": [
+        60,
+        45,
+        40,
+        30
+      ]
+    },
+    "b5_grid_packet_bytes": [
+      100,
+      500,
+      1000,
+      1200,
+      1500
+    ],
+    "b5_grid_intervals_us": [
+      90,
+      180,
+      300,
+      450,
+      600
+    ],
+    "b5_grid_variants": [
+      "A1",
+      "B1",
+      "C8",
+      "D8"
+    ],
+    "variants": {
+      "A1": {
+        "aifsn": 6,
+        "depth": 1
+      },
+      "B1": {
+        "aifsn": 3,
+        "depth": 1
+      },
+      "C2": {
+        "aifsn": 6,
+        "depth": 2
+      },
+      "C4": {
+        "aifsn": 6,
+        "depth": 4
+      },
+      "C8": {
+        "aifsn": 6,
+        "depth": 8
+      },
+      "D2": {
+        "aifsn": 3,
+        "depth": 2
+      },
+      "D4": {
+        "aifsn": 3,
+        "depth": 4
+      },
+      "D8": {
+        "aifsn": 3,
+        "depth": 8
+      }
+    }
+  },
+  "base_plan": "configs/b5-paper-aligned.json"
+}

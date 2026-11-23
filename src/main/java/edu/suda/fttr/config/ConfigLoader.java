@@ -7,6 +7,7 @@ import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApEnergyModel;
 import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.link.AmpduConfig;
 import edu.suda.fttr.link.PonLinkTiming;
 import edu.suda.fttr.link.WifiFrameExchange;
 import edu.suda.fttr.mac.EdcaParameters;
@@ -66,6 +67,10 @@ public final class ConfigLoader {
     private static final String MAC_ACK_RATE_MBPS = "wifi.mac.ack.rate.mbps";
     private static final String MAC_ACK_TIMEOUT_US = "wifi.mac.ack.timeout.us";
     private static final String MAC_MAX_RETRIES = "wifi.mac.retry.max";
+    private static final String AMPDU_ENABLED = "wifi.mac.ampdu.enabled";
+    private static final String AMPDU_MAX_MPDUS = "wifi.mac.ampdu.max-mpdus";
+    private static final String AMPDU_MAX_BYTES = "wifi.mac.ampdu.max-bytes";
+    private static final String AMPDU_FIRST_ATTEMPT_ERRORS = "wifi.mac.ampdu.first-attempt-error.packet.ids";
     private static final String EDCA_SEED = "wifi.mac.edca.seed";
     private static final String AP_ACTIVITY_ENABLED = "wifi.ap.activity.enabled";
     private static final String AP_ACTIVITY_WINDOW_US = "wifi.ap.activity.window.us";
@@ -85,7 +90,8 @@ public final class ConfigLoader {
             UPLINK_DBA_MODE, TCONT_ENABLED, TCONT_ALLOC_IDS,
             "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
             MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
-            MAC_MAX_RETRIES, EDCA_SEED, AP_ACTIVITY_ENABLED, AP_ACTIVITY_WINDOW_US, AP_ENERGY_ENABLED,
+            MAC_MAX_RETRIES, AMPDU_ENABLED, AMPDU_MAX_MPDUS, AMPDU_MAX_BYTES, AMPDU_FIRST_ATTEMPT_ERRORS,
+            EDCA_SEED, AP_ACTIVITY_ENABLED, AP_ACTIVITY_WINDOW_US, AP_ENERGY_ENABLED,
             LCM_POWER + "idle.w", LCM_POWER + "tx.w", LCM_POWER + "rx.w",
             HCM_POWER + "idle.w", HCM_POWER + "tx.w", HCM_POWER + "rx.w",
             AP_SWITCH_ENABLED, LCM_TO_HCM + "delay.us", LCM_TO_HCM + "power.w",
@@ -201,6 +207,7 @@ public final class ConfigLoader {
         WifiAccessMode accessMode = readWifiAccessMode(properties);
         WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy, edcaParameters.sifsUs());
         WifiRetryPolicy retryPolicy = readWifiRetryPolicy(properties, accessMode, frameExchange, edcaParameters);
+        AmpduConfig ampduConfig = readAmpduConfig(properties, accessMode, frameExchange, edcaParameters);
         long wifiUs = wirelessPhy == null ? readNonNegativeLong(properties, "wifi.delay.us") : 0;
         long durationUs = poisson ? readPositiveDuration(properties, "traffic.duration.us") : 0;
         PoissonTraffic downlink = poisson && directionMode.allows(Packet.Direction.DL)
@@ -226,7 +233,7 @@ public final class ConfigLoader {
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
                 apCapabilityModes, stationPhys, alternateStationPhys, apActivityEnabled, apActivityWindowNs,
                 apEnergyModel, apSwitching,
-                frameExchange, edcaParameters, accessMode, retryPolicy,
+                frameExchange, edcaParameters, accessMode, retryPolicy, ampduConfig,
                 downlink.windowsUs, uplink.windowsUs,
                 directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled,
                 dbaMultiGrantEnabled, dbaGiantEnabled, dbaGiantCompleteEnabled, tcontTopology);
@@ -527,6 +534,42 @@ public final class ConfigLoader {
             case "edca-multi-ac": return WifiAccessMode.EDCA_MULTI_AC;
             default: throw new IllegalArgumentException(MAC_ACCESS + " must be fixed-priority, edca-countdown or edca-multi-ac");
         }
+    }
+
+    private static AmpduConfig readAmpduConfig(Properties properties, WifiAccessMode accessMode,
+                                                WifiFrameExchange frameExchange, EdcaParameters edcaParameters) {
+        String enabled = properties.getProperty(AMPDU_ENABLED, "false").strip();
+        if (enabled.equals("false")) {
+            return null;
+        }
+        if (!enabled.equals("true")) {
+            throw new IllegalArgumentException(AMPDU_ENABLED + " must be true or false");
+        }
+        if (accessMode != WifiAccessMode.EDCA_MULTI_AC || frameExchange == null) {
+            throw new IllegalArgumentException(AMPDU_ENABLED + " requires HE SU, edca-multi-ac and data-sifs-ack");
+        }
+        for (AccessCategory category : CATEGORIES) {
+            if (edcaParameters.forCategory(category).txopLimitUs() != 0) {
+                throw new IllegalArgumentException(AMPDU_ENABLED + " requires zero TXOP limits in this model");
+            }
+        }
+        if (readOptionalNonNegativeInt(properties, "wifi.phy.mac.overhead.bytes", 34) < 4) {
+            throw new IllegalArgumentException(AMPDU_ENABLED + " requires MAC overhead including the 4-byte delimiter");
+        }
+        frameExchange.blockAckResponseDurationNs();
+        Set<Integer> firstAttemptErrors = new HashSet<>();
+        String errorList = properties.getProperty(AMPDU_FIRST_ATTEMPT_ERRORS, "").strip();
+        if (!errorList.isEmpty()) {
+            for (String entry : errorList.split(",", -1)) {
+                long id = parseNonNegativeLong(entry, AMPDU_FIRST_ATTEMPT_ERRORS);
+                if (id == 0 || id > Integer.MAX_VALUE || !firstAttemptErrors.add((int) id)) {
+                    throw new IllegalArgumentException(AMPDU_FIRST_ATTEMPT_ERRORS
+                            + " must list distinct positive 32-bit packet IDs");
+                }
+            }
+        }
+        return new AmpduConfig(readOptionalNonNegativeInt(properties, AMPDU_MAX_MPDUS, 8),
+                readOptionalNonNegativeInt(properties, AMPDU_MAX_BYTES, 65_535), firstAttemptErrors);
     }
 
     private static EdcaParameters readEdcaParameters(Properties properties) {

@@ -399,6 +399,20 @@ public final class SimulationContext {
         trace.recordWifiDataEnd(packet, sfuId, nowTicks);
     }
 
+    public void recordAmpduEvent(String phase, Packet head, int sfuId, List<Packet> members, int bytes,
+                                 long ppduNs, long sifsNs, long baNs, long bitmap) {
+        trace.recordAmpduEvent(nowTicks, phase, head, sfuId, members, bytes, ppduNs, sifsNs, baNs, bitmap);
+    }
+
+    public void recordAmpduMpdu(Packet head, Packet member, int sfuId, String status, int retries) {
+        trace.recordAmpduMpdu(nowTicks, head, member, sfuId, status, retries);
+    }
+
+    /** 一个聚合交换只释放一次占用，逐 MPDU 的服务日志不改变全局忙时。 */
+    public void recordWifiAggregateEnd() {
+        recordWifiEnd();
+    }
+
     public void recordWifiService(Packet packet, int sfuId, long queueEntryTicks, long startTicks, long dataEndTicks,
                                   boolean channelReleased) {
         if (channelReleased) {
@@ -480,8 +494,14 @@ public final class SimulationContext {
     }
 
     public void recordWifiRetryLimitDrop(Packet packet, int sfuId, int retries) {
+        recordWifiRetryLimitDrop(packet, sfuId, retries, true);
+    }
+
+    public void recordWifiRetryLimitDrop(Packet packet, int sfuId, int retries, boolean collision) {
         wifiRetryLimitDrops++;
-        recordCollisionLoss(packet);
+        if (collision) {
+            recordCollisionLoss(packet);
+        }
         trace.recordMacRetryPacket(packet, sfuId, nowTicks, "WIFI_RETRY_LIMIT_DROP", retries);
     }
 

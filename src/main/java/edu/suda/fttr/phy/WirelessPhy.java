@@ -1,6 +1,6 @@
 package edu.suda.fttr.phy;
 
-/** IEEE 802.11ax 全带宽 HE SU 的单数据报文 airtime 模型，时间单位统一为纳秒。 */
+/** IEEE 802.11ax 全带宽 HE SU 的 PPDU airtime 模型，时间单位统一为纳秒。 */
 public final class WirelessPhy {
     // 表 27-13 和表 27-33：20/40/80/160 MHz 的数据子载波数及短符号分段子载波数。
     private static final int[] DATA_TONES = {234, 468, 980, 1960};
@@ -15,7 +15,9 @@ public final class WirelessPhy {
     // 图 27-8：L-STF 8、L-LTF 8、L-SIG 4、RL-SIG 4、HE-SIG-A 8、HE-STF 4 μs。
     private static final long PREAMBLE_WITHOUT_LTF_NS = 36_000;
     private static final int SERVICE_BITS = 16;
-    private static final int MAX_APEP_BYTES = 11_454 + 4; // 单 MPDU 最大长度和它的 4 B delimiter。
+    private static final int MPDU_DELIMITER_BYTES = 4;
+    private static final int MAX_APEP_BYTES = 11_454 + MPDU_DELIMITER_BYTES;
+    public static final int MAX_AMPDU_APEP_BYTES = 6_500_631;
     private static final long MAX_PPDU_NS = 5_484_000;
 
     private final int bandwidthMhz;
@@ -113,14 +115,45 @@ public final class WirelessPhy {
 
     /** 返回前导码、数据符号和 PE 三部分，以及用于核对的填充规则结果。 */
     public PpduTiming ppduTiming(int payloadBytes) {
-        long apepBytes = (long) payloadBytes + macOverheadBytes;
-        if (payloadBytes <= 0 || apepBytes > MAX_APEP_BYTES) {
+        PpduTiming timing = timingFromApep(singleSubframeBytes(payloadBytes));
+        if (timing.durationNs() > MAX_PPDU_NS) {
+            throw new IllegalArgumentException("HE SU PPDU exceeds 5484 microseconds for payload " + payloadBytes + " bytes");
+        }
+        return timing;
+    }
+
+    /** 为聚合取得一个未对齐子帧的字节数，MAC 开销已经包含 4 B delimiter。 */
+    public int ampduSubframeBytes(int payloadBytes) {
+        if (macOverheadBytes < MPDU_DELIMITER_BYTES) {
+            throw new IllegalArgumentException("A-MPDU MAC overhead must include its 4-byte delimiter");
+        }
+        return singleSubframeBytes(payloadBytes);
+    }
+
+    private int singleSubframeBytes(int payloadBytes) {
+        long subframeBytes = (long) payloadBytes + macOverheadBytes;
+        if (payloadBytes <= 0 || subframeBytes > MAX_APEP_BYTES) {
             throw new IllegalArgumentException("HE SU packet and overhead must fit in a single MPDU (APEP limit "
                     + MAX_APEP_BYTES + " bytes)");
         }
+        return (int) subframeBytes;
+    }
 
+    /** 聚合已在 MAC 层计入各 MPDU、delimiter 和非末尾子帧对齐。整个 APEP 共用一次 PHY 编码。 */
+    public PpduTiming ampduPpduTiming(int apepBytes) {
+        if (apepBytes <= 0 || apepBytes > MAX_AMPDU_APEP_BYTES) {
+            throw new IllegalArgumentException("HE SU A-MPDU APEP must be in 1.." + MAX_AMPDU_APEP_BYTES + " bytes");
+        }
+        PpduTiming timing = timingFromApep(apepBytes);
+        if (timing.durationNs() > MAX_PPDU_NS) {
+            throw new IllegalArgumentException("HE SU PPDU exceeds 5484 microseconds for A-MPDU APEP " + apepBytes + " bytes");
+        }
+        return timing;
+    }
+
+    private PpduTiming timingFromApep(long apepBytes) {
         // 27.3.12.2：由 APEP 和 SERVICE 算数据符号数量，再确定最后一个符号的预 FEC 填充边界。
-        // 单一子帧的 APEP 为 payload + overhead，末尾填充由该边界决定，不提前凑成 4 B 倍数。
+        // 最终子帧后的 PHY 填充由该边界决定，不再预先按字节添加。
         long neededBits = 8 * apepBytes + SERVICE_BITS;
         long precedingSymbols = ceilDivide(neededBits, dataBits) - 1;
         long lastDataBits = neededBits - precedingSymbols * dataBits;
@@ -143,12 +176,8 @@ public final class WirelessPhy {
 
         // 27.3.13：使用接收端的 nominal padding 规则（未启用 PPE Thresholds），按最终 a 选 PE。
         long packetExtensionNs = 1_000L * Math.max(0, nominalPacketPaddingUs - (4 - finalFactor) * 4);
-        PpduTiming timing = new PpduTiming(preambleNs, symbols, symbolNs, packetExtensionNs, initialFactor,
+        return new PpduTiming(preambleNs, symbols, symbolNs, packetExtensionNs, initialFactor,
                 finalFactor, ldpcExtra, paddedDataBits - neededBits, postFecPaddingBits);
-        if (timing.durationNs() > MAX_PPDU_NS) {
-            throw new IllegalArgumentException("HE SU PPDU exceeds 5484 microseconds for payload " + payloadBytes + " bytes");
-        }
-        return timing;
     }
 
     private int lastSymbolCodedBits(int paddingFactor) {
