@@ -240,6 +240,7 @@ public final class Sfu {
             context.recordWifiMacAttempt(packet, id, active.retries);
         }
         context.recordApDataBoundary(packet, id, true);
+        context.recordApDownlinkAttempt(packet, id, null);
         wifi.transmit(packet, id, context);
     }
 
@@ -251,6 +252,7 @@ public final class Sfu {
         if (ackPending && edcaAccess != null) {
             publishMacDuration(packet, false, announcedNavEndTicks - dataEndTicks, context);
         }
+        context.recordApUplinkReception(packet, id, 1);
         deliverData(active, txStartTicks, context);
         if (!ackPending) {
             completeTransmission(packet, context);
@@ -259,6 +261,7 @@ public final class Sfu {
 
     private void deliverData(QueuedPacket queued, long startTicks, SimulationContext context) {
         Packet packet = queued.packet;
+        context.recordApTrafficDelivery(packet, id);
         if (packet.isUplink()) {
             // 成功接收 DATA 后交给独立光路。无线侧照常完成 SIFS 和 ACK。
             if (ponUplinkPort == null) {
@@ -368,6 +371,7 @@ public final class Sfu {
             context.recordApDataBoundary(head, id, true);
         }
         traceAggregate("DATA_START", head, attempt, context);
+        context.recordApDownlinkAttempt(head, id, attempt.packets);
         for (QueuedPacket queued : attempt.members) {
             context.recordWifiMacAttempt(queued.packet, id, queued.retries);
         }
@@ -387,6 +391,10 @@ public final class Sfu {
             attempt.bitmap |= 1L << i;
         }
         traceAggregate("DATA_END", head, attempt, context);
+        if (head.isUplink() && attempt.bitmap != 0) {
+            Packet firstDecoded = attempt.packets.get(Long.numberOfTrailingZeros(attempt.bitmap));
+            context.recordApUplinkReception(firstDecoded, id, Long.bitCount(attempt.bitmap));
+        }
         for (int i = 0; i < attempt.members.size(); i++) {
             if (attempt.acknowledged(i)) {
                 QueuedPacket queued = attempt.members.get(i);
@@ -557,6 +565,7 @@ public final class Sfu {
                     }
                 }
                 if (attempt == null) {
+                    context.recordApDownlinkAttempt(packet, id, null);
                     wifi.transmitCollidedData(packet, id, context);
                 } else {
                     collidedAggregates.put(packet, attempt);

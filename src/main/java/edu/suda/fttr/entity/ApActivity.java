@@ -14,6 +14,8 @@ public final class ApActivity {
     private ApCapabilityMode switchTarget;
     private State state = State.IDLE;
     private long lastEventNs;
+    private long txAfterWindowNs;
+    private long rxAfterWindowNs;
     private int transmittingFrames;
     private int receivingFrames;
     private boolean finished;
@@ -105,8 +107,47 @@ public final class ApActivity {
     }
 
     private void advanceTo(long timeNs) {
-        accumulate(observedDurationNs(lastEventNs, timeNs));
+        long observedNs = observedDurationNs(lastEventNs, timeNs);
+        accumulate(observedNs);
+        // 在线业务观测读取自然时间轴。固定能耗窗口截去的活动仍可由 C1 观测。
+        long outsideWindowNs = timeNs - lastEventNs - observedNs;
+        if (state == State.TX) {
+            txAfterWindowNs += outsideWindowNs;
+        } else if (state == State.RX) {
+            rxAfterWindowNs += outsideWindowNs;
+        }
         lastEventNs = timeNs;
+    }
+
+    /** 只读投影到当前采样边界，保留尚未结束的 TX/RX，也不会结算或移动 B2 状态。 */
+    public Airtime airtimeAt(long timeNs) {
+        requireEventTime(timeNs);
+        long txNs = txAfterWindowNs;
+        long rxNs = rxAfterWindowNs;
+        for (long[] durations : stateDurationsNs) {
+            txNs += durations[State.TX.ordinal()];
+            rxNs += durations[State.RX.ordinal()];
+        }
+        long openDurationNs = timeNs - lastEventNs;
+        if (state == State.TX) {
+            txNs += openDurationNs;
+        } else if (state == State.RX) {
+            rxNs += openDurationNs;
+        }
+        return new Airtime(txNs, rxNs);
+    }
+
+    public static final class Airtime {
+        private final long txNs;
+        private final long rxNs;
+
+        private Airtime(long txNs, long rxNs) {
+            this.txNs = txNs;
+            this.rxNs = rxNs;
+        }
+
+        public long txNs() { return txNs; }
+        public long rxNs() { return rxNs; }
     }
 
     private Transition changeState(long timeNs, State next) {

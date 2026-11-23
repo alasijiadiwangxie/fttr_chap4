@@ -35,6 +35,8 @@ public final class SimulationConfig {
     private final long apActivityWindowNs;
     private final ApEnergyModel apEnergyModel;
     private final ApModeSwitch.Settings apSwitching;
+    private final long apObservationPeriodNs;
+    private final double apObservationAlpha;
     private final WifiFrameExchange wifiFrameExchange;
     private final EdcaParameters edcaParameters;
     private final WifiAccessMode wifiAccessMode;
@@ -56,6 +58,7 @@ public final class SimulationConfig {
                      Map<Integer, ApCapabilityMode> apCapabilityModes, Map<Integer, WirelessPhy> stationPhys,
                      Map<Integer, WirelessPhy> alternateStationPhys, boolean apActivityEnabled, long apActivityWindowNs,
                      ApEnergyModel apEnergyModel, ApModeSwitch.Settings apSwitching,
+                     long apObservationPeriodNs, double apObservationAlpha,
                      WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters, WifiAccessMode wifiAccessMode,
                      WifiRetryPolicy wifiRetryPolicy, AmpduConfig ampduConfig,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled,
@@ -77,6 +80,8 @@ public final class SimulationConfig {
         this.apActivityWindowNs = apActivityWindowNs;
         this.apEnergyModel = apEnergyModel;
         this.apSwitching = apSwitching;
+        this.apObservationPeriodNs = apObservationPeriodNs;
+        this.apObservationAlpha = apObservationAlpha;
         this.wifiFrameExchange = wifiFrameExchange;
         this.edcaParameters = edcaParameters;
         this.wifiAccessMode = wifiAccessMode;
@@ -185,6 +190,15 @@ public final class SimulationConfig {
     /** 固定观察窗口从 0 开始。-1 表示使用最后一个仿真事件作为结束边界。 */
     public long apActivityWindowNs() {
         return apActivityWindowNs;
+    }
+
+    /** 关闭 C1 时返回 0。配置观测器不改变原有模拟时钟的刻度。 */
+    public long apObservationPeriodNs() {
+        return apObservationPeriodNs;
+    }
+
+    public double apObservationAlpha() {
+        return apObservationAlpha;
     }
 
     /** 返回已校验的功耗参数。未启用 B3 时返回 null。 */

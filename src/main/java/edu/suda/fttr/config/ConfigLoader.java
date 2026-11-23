@@ -6,6 +6,7 @@ import edu.suda.fttr.dba.TcontTopology;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApEnergyModel;
 import edu.suda.fttr.entity.ApModeSwitch;
+import edu.suda.fttr.entity.ApTrafficObserver;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.link.AmpduConfig;
 import edu.suda.fttr.link.PonLinkTiming;
@@ -74,6 +75,9 @@ public final class ConfigLoader {
     private static final String EDCA_SEED = "wifi.mac.edca.seed";
     private static final String AP_ACTIVITY_ENABLED = "wifi.ap.activity.enabled";
     private static final String AP_ACTIVITY_WINDOW_US = "wifi.ap.activity.window.us";
+    private static final String AP_OBSERVATION_ENABLED = "wifi.ap.observation.enabled";
+    private static final String AP_OBSERVATION_PERIOD_US = "wifi.ap.observation.period.us";
+    private static final String AP_OBSERVATION_EWMA_ALPHA = "wifi.ap.observation.ewma.alpha";
     private static final String AP_ENERGY = "wifi.ap.energy.";
     private static final String AP_ENERGY_ENABLED = AP_ENERGY + "enabled";
     private static final String LCM_POWER = AP_ENERGY + "lcm.";
@@ -92,6 +96,7 @@ public final class ConfigLoader {
             MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
             MAC_MAX_RETRIES, AMPDU_ENABLED, AMPDU_MAX_MPDUS, AMPDU_MAX_BYTES, AMPDU_FIRST_ATTEMPT_ERRORS,
             EDCA_SEED, AP_ACTIVITY_ENABLED, AP_ACTIVITY_WINDOW_US, AP_ENERGY_ENABLED,
+            AP_OBSERVATION_ENABLED, AP_OBSERVATION_PERIOD_US, AP_OBSERVATION_EWMA_ALPHA,
             LCM_POWER + "idle.w", LCM_POWER + "tx.w", LCM_POWER + "rx.w",
             HCM_POWER + "idle.w", HCM_POWER + "tx.w", HCM_POWER + "rx.w",
             AP_SWITCH_ENABLED, LCM_TO_HCM + "delay.us", LCM_TO_HCM + "power.w",
@@ -198,6 +203,8 @@ public final class ConfigLoader {
         boolean apActivityEnabled = readApActivityEnabled(properties);
         long apActivityWindowNs = properties.containsKey(AP_ACTIVITY_WINDOW_US)
                 ? readDurationNs(properties, AP_ACTIVITY_WINDOW_US, "0", true) : -1;
+        long apObservationPeriodNs = readApObservationPeriod(properties);
+        double apObservationAlpha = readApObservationAlpha(properties);
         ApEnergyModel apEnergyModel = readApEnergyModel(properties, apActivityEnabled);
         ApModeSwitch.Settings apSwitching = readApSwitching(properties, sfuCount, apCapabilityModes, apEnergyModel);
         Map<Integer, WirelessPhy> alternateStationPhys = new HashMap<>();
@@ -229,10 +236,10 @@ public final class ConfigLoader {
         List<Event> inputEvents = poisson ? TrafficGenerator.generate(sources) : manualEvents;
 
         validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
-                stationPhys, alternateStationPhys, frameExchange, apActivityEnabled);
+                stationPhys, alternateStationPhys, frameExchange, apActivityEnabled || apObservationPeriodNs > 0);
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
                 apCapabilityModes, stationPhys, alternateStationPhys, apActivityEnabled, apActivityWindowNs,
-                apEnergyModel, apSwitching,
+                apEnergyModel, apSwitching, apObservationPeriodNs, apObservationAlpha,
                 frameExchange, edcaParameters, accessMode, retryPolicy, ampduConfig,
                 downlink.windowsUs, uplink.windowsUs,
                 directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled,
@@ -681,6 +688,31 @@ public final class ConfigLoader {
         return value.equals("true");
     }
 
+    private static long readApObservationPeriod(Properties properties) {
+        String enabled = properties.getProperty(AP_OBSERVATION_ENABLED, "false").strip();
+        if (!enabled.equals("true") && !enabled.equals("false")) {
+            throw new IllegalArgumentException(AP_OBSERVATION_ENABLED + " must be true or false");
+        }
+        String defaultUs = Long.toString(ApTrafficObserver.DEFAULT_PERIOD_NS / 1_000);
+        long periodNs = readDurationNs(properties, AP_OBSERVATION_PERIOD_US, defaultUs, true);
+        return enabled.equals("true") ? periodNs : 0;
+    }
+
+    private static double readApObservationAlpha(Properties properties) {
+        String error = AP_OBSERVATION_EWMA_ALPHA + " must be in (0, 1]";
+        double alpha;
+        try {
+            String defaultAlpha = Double.toString(ApTrafficObserver.DEFAULT_EWMA_ALPHA);
+            alpha = Double.parseDouble(properties.getProperty(AP_OBSERVATION_EWMA_ALPHA, defaultAlpha).strip());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(error, e);
+        }
+        if (!(alpha > 0 && alpha <= 1)) {
+            throw new IllegalArgumentException(error);
+        }
+        return alpha;
+    }
+
     private static ApEnergyModel readApEnergyModel(Properties properties, boolean activityEnabled) {
         String enabled = properties.getProperty(AP_ENERGY_ENABLED, "false").strip();
         if (!enabled.equals("true") && !enabled.equals("false")) {
@@ -849,14 +881,14 @@ public final class ConfigLoader {
                                                 SimulationConfig.PonLink ponUplink, long wifiUs, WirelessPhy wirelessPhy,
                                                 Map<Integer, WirelessPhy> stationPhys,
                                                 Map<Integer, WirelessPhy> alternatePhys, WifiFrameExchange frameExchange,
-                                                boolean apActivityEnabled) {
+                                                boolean needsApNanoseconds) {
         // 同一 SFU 按到达时刻累计无线工作量即可计算忙闲边界，优先级只改变其中的发送顺序。
         boolean hasUplink = inputEvents.stream().anyMatch(event -> event.packet().isUplink());
         boolean hasDownlink = inputEvents.stream().anyMatch(event -> !event.packet().isUplink());
         boolean mixed = hasUplink && hasDownlink;
         long[] completion = new long[sfuCount];
         boolean bothFixed = ponDownlink == null && ponUplink == null;
-        long ticksPerUs = wirelessPhy == null && bothFixed && !apActivityEnabled ? 1 : 1_000;
+        long ticksPerUs = wirelessPhy == null && bothFixed && !needsApNanoseconds ? 1 : 1_000;
         long responseTicks = frameExchange == null ? 0 : frameExchange.responseDurationNs();
         try {
             boolean usesFixedFiber = bothFixed || (ponDownlink == null && hasDownlink) || (ponUplink == null && hasUplink);

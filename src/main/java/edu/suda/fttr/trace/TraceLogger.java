@@ -4,6 +4,7 @@ import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.ApEnergyModel;
 import edu.suda.fttr.entity.ApModeSwitch;
+import edu.suda.fttr.entity.ApTrafficObserver;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.PonDemandLedger;
@@ -632,6 +633,45 @@ public final class TraceLogger {
                         + "from=%s to=%s reason=%s%s%n",
                 formatMicroseconds(timeNs), timeNs, sfuId, mode == null ? "LEGACY" : mode.name(),
                 change.from(), change.to(), reason, packetFields);
+    }
+
+    public void recordApTrafficObservation(int sfuId, ApTrafficObserver.Observation observation) {
+        output.printf(Locale.ROOT, "event=WIFI_AP_OBSERVATION t_ns=%d sfu_id=%d ac=%s direction=%s "
+                        + "window_start_ns=%d window_end_ns=%d pending_packets=%d pending_bytes=%d head_wait_ns=%d "
+                        + "inflight_packets=%d inflight_bytes=%d awaiting_confirm_packets=%d "
+                        + "arrival_packets=%d arrival_bytes=%d delivered_packets=%d delivered_bytes=%d "
+                        + "confirmed_packets=%d confirmed_bytes=%d retry_attempt_mpdus=%d retry_attempt_bytes=%d "
+                        + "requeued_packets=%d dropped_packets=%d dropped_bytes=%d "
+                        + "tx_ns=%d rx_ns=%d ppdus=%d mpdus=%d avg_depth=%.12g "
+                        + "arrival_pps=%.12g arrival_mbps=%.12g delivery_pps=%.12g delivery_mbps=%.12g "
+                        + "ewma_arrival_pps=%.12g ewma_arrival_mbps=%.12g delivery_success_ratio=%.12g%n",
+                observation.endNs(), sfuId, observation.category(), observation.direction(),
+                observation.startNs(), observation.endNs(), observation.queuePackets(), observation.queueBytes(),
+                observation.headWaitNs(), observation.inFlightPackets(), observation.inFlightBytes(),
+                observation.awaitingConfirmPackets(), observation.arrivalPackets(), observation.arrivalBytes(),
+                observation.deliveredPackets(), observation.deliveredBytes(), observation.confirmedPackets(),
+                observation.confirmedBytes(), observation.retriedPackets(), observation.retriedBytes(),
+                observation.requeuedPackets(), observation.droppedPackets(), observation.droppedBytes(),
+                observation.txNs(), observation.rxNs(), observation.dataPpdus(), observation.ppduMembers(),
+                observation.averageDepth(), observation.arrivalPps(), observation.arrivalMbps(),
+                observation.deliveredPps(), observation.deliveredMbps(), observation.ewmaArrivalPps(),
+                observation.ewmaArrivalMbps(), observation.deliverySuccessRatio());
+    }
+
+    public void recordApQueueEvent(int sfuId, ApTrafficObserver.QueueEvent event) {
+        Packet packet = event.packet();
+        output.printf(Locale.ROOT, "event=WIFI_AP_QUEUE_EVENT t_ns=%d sfu_id=%d ac=%s direction=%s "
+                        + "packet_id=%d bytes=%d action=%s pending_packets=%d pending_bytes=%d "
+                        + "inflight_packets=%d inflight_bytes=%d awaiting_confirm_packets=%d%n",
+                event.timeNs(), sfuId, packet.type(), packet.direction(), packet.id(), packet.bytes(), event.kind(),
+                event.queuePackets(), event.queueBytes(), event.inFlightPackets(), event.inFlightBytes(),
+                event.awaitingConfirmPackets());
+    }
+
+    public void recordApObservedPpdu(Packet packet, int sfuId, int depth, long timeNs) {
+        output.printf(Locale.ROOT, "event=WIFI_AP_PPDU_OBSERVED t_ns=%d sfu_id=%d ac=%s direction=%s "
+                        + "packet_id=%d depth=%d%n",
+                timeNs, sfuId, packet.type(), packet.direction(), packet.id(), depth);
     }
 
     public void recordApActivityTotals(int sfuId, String mode, ApActivity.Totals totals, boolean switchingEnabled) {

@@ -4,6 +4,7 @@ import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.ApEnergyModel;
 import edu.suda.fttr.entity.ApModeSwitch;
+import edu.suda.fttr.entity.ApTrafficObserver;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.PonDemandLedger;
@@ -22,6 +23,7 @@ import edu.suda.fttr.trace.TraceLogger;
 import java.math.BigDecimal;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -37,6 +39,10 @@ public final class SimulationContext {
     private final DelayStats overallDelay = new DelayStats();
     private final Map<Integer, UplinkStats> uplinkByStation = new HashMap<>();
     private final Map<Integer, ApActivity> apActivities = new HashMap<>();
+    private final Map<Integer, ApTrafficObserver> apObservers = new LinkedHashMap<>();
+    private boolean apActivityTraceEnabled;
+    private long apObservationPeriodNs;
+    private long lastApSampleNs;
     private long nowTicks;
     private int deliveredPackets;
     private long deliveredBytes;
@@ -181,6 +187,17 @@ public final class SimulationContext {
 
     Event nextEvent() {
         Event event = events.poll();
+        if (apObservationPeriodNs > 0) {
+            // 只用事件时钟推进采样。相同时间戳的全部协议事件（含新安排的零延时事件）先执行。
+            // 观测不进入事件队列，也不改变自然结束时间、吞吐分母或能耗窗口。
+            long throughNs = event == null ? observationTimeNs(nowTicks) : observationTimeNs(event.timeTicks()) - 1;
+            while (throughNs - lastApSampleNs >= apObservationPeriodNs) {
+                sampleApTraffic(lastApSampleNs + apObservationPeriodNs);
+            }
+            if (event == null && throughNs > lastApSampleNs) {
+                sampleApTraffic(throughNs); // 自然结束后的最后一个非空短窗口。
+            }
+        }
         if (event != null) {
             nowTicks = event.timeTicks();
             trace.recordEvent(event);
@@ -345,7 +362,78 @@ public final class SimulationContext {
     }
 
     void trackApActivity(int sfuId, ApCapabilityMode mode, long windowNs) {
+        apActivityTraceEnabled = true;
         apActivities.put(sfuId, new ApActivity(mode, windowNs));
+    }
+
+    void trackApTraffic(int sfuId, ApCapabilityMode mode, long periodNs, double alpha) {
+        apObservationPeriodNs = periodNs;
+        apObservers.put(sfuId, new ApTrafficObserver(periodNs, alpha));
+        // 单独开 C1 时，用相同的活动边界，无需开启 B2 日志或 B3 功率统计。
+        apActivities.computeIfAbsent(sfuId, key -> new ApActivity(mode, -1));
+    }
+
+    /** 调用方只能读取已经发布的不可变窗口。关闭观测或首个采样点前返回空列表。 */
+    public List<ApTrafficObserver.Observation> latestApTrafficObservation(int sfuId) {
+        ApTrafficObserver observer = apObservers.get(sfuId);
+        return observer == null ? List.of() : observer.latest();
+    }
+
+    private void sampleApTraffic(long endNs) {
+        apObservers.forEach((sfuId, observer) -> {
+            ApActivity.Airtime airtime = apActivities.get(sfuId).airtimeAt(endNs);
+            for (ApTrafficObserver.Observation observation : observer.sample(endNs, airtime.txNs(), airtime.rxNs())) {
+                trace.recordApTrafficObservation(sfuId, observation);
+            }
+        });
+        lastApSampleNs = endNs;
+    }
+
+    private long observationTimeNs(long ticks) {
+        return nanosecondClock ? ticks : Math.multiplyExact(ticks, 1_000);
+    }
+
+    /** 实际 DATA 开始才离开待发视图，包括退避后再次发送和发生碰撞的 PPDU。 */
+    public void recordApDownlinkAttempt(Packet head, int sfuId, List<Packet> aggregate) {
+        ApTrafficObserver observer = apObservers.get(sfuId);
+        if (observer == null || head.isUplink()) {
+            return;
+        }
+        long timeNs = observationTimeNs(nowTicks);
+        if (aggregate == null) {
+            traceApQueue(sfuId, observer.start(head, timeNs));
+        } else {
+            for (Packet packet : aggregate) {
+                traceApQueue(sfuId, observer.start(packet, timeNs));
+            }
+        }
+        recordObservedPpdu(observer, head, sfuId, aggregate == null ? 1 : aggregate.size(), timeNs);
+    }
+
+    /** 上行仅在 AP 解码到成员后记入可见深度。不从 STA 队列推断其它成员。 */
+    public void recordApUplinkReception(Packet head, int sfuId, int decodedMpdus) {
+        ApTrafficObserver observer = apObservers.get(sfuId);
+        if (observer != null && head.isUplink() && decodedMpdus > 0) {
+            recordObservedPpdu(observer, head, sfuId, decodedMpdus, observationTimeNs(nowTicks));
+        }
+    }
+
+    private void recordObservedPpdu(ApTrafficObserver observer, Packet head, int sfuId, int depth, long timeNs) {
+        observer.recordPpdu(head, depth, timeNs);
+        trace.recordApObservedPpdu(head, sfuId, depth, timeNs);
+    }
+
+    public void recordApTrafficDelivery(Packet packet, int sfuId) {
+        ApTrafficObserver observer = apObservers.get(sfuId);
+        if (observer != null) {
+            traceApQueue(sfuId, observer.deliver(packet, observationTimeNs(nowTicks)));
+        }
+    }
+
+    private void traceApQueue(int sfuId, ApTrafficObserver.QueueEvent event) {
+        if (event != null) {
+            trace.recordApQueueEvent(sfuId, event);
+        }
     }
 
     public void recordApSwitchEvent(String event, int sfuId, ApModeSwitch.Request request, ApCapabilityMode from,
@@ -382,15 +470,16 @@ public final class SimulationContext {
         ApActivity activity = apActivities.get(sfuId);
         if (activity != null) {
             ApActivity.State frameState = apTransmits ? ApActivity.State.TX : ApActivity.State.RX;
-            ApActivity.Transition transition = start ? activity.begin(nowTicks, frameState)
-                    : activity.end(nowTicks, frameState);
+            long timeNs = observationTimeNs(nowTicks);
+            ApActivity.Transition transition = start ? activity.begin(timeNs, frameState)
+                    : activity.end(timeNs, frameState);
             logApActivity(sfuId, activity, transition, packet, reason);
         }
     }
 
     private void logApActivity(int sfuId, ApActivity activity, ApActivity.Transition transition, Packet packet,
                                String reason) {
-        if (transition != null) {
+        if (apActivityTraceEnabled && transition != null) {
             trace.recordApActivityChange(sfuId, activity.mode(), nowTicks, transition, packet, reason);
         }
     }
@@ -431,6 +520,10 @@ public final class SimulationContext {
             overallDelay.add(queueWaitUs, delayUs);
         }
         trace.recordWifiService(packet, sfuId, queueEntryTicks, startTicks, nowTicks, endToEndTicks);
+        ApTrafficObserver observer = apObservers.get(sfuId);
+        if (observer != null) {
+            traceApQueue(sfuId, observer.confirm(packet, observationTimeNs(nowTicks)));
+        }
     }
 
     public void recordWifiTxopStart(Packet packet, int sfuId, long limitNs) {
@@ -463,7 +556,8 @@ public final class SimulationContext {
                     representative = packet;
                 }
             }
-            ApActivity.Transition transition = activity.beginCollision(nowTicks, txFrames, packets.size() - txFrames);
+            ApActivity.Transition transition = activity.beginCollision(observationTimeNs(nowTicks), txFrames,
+                    packets.size() - txFrames);
             logApActivity(sfuId, activity, transition, representative, "COLLISION_START");
         }
     }
@@ -471,6 +565,7 @@ public final class SimulationContext {
     public void recordWifiCollisionDrop(Packet packet, int sfuId) {
         recordCollisionLoss(packet);
         trace.recordCollisionPacket(packet, sfuId, nowTicks, "WIFI_COLLISION_DROP");
+        observeApDrop(packet, sfuId);
     }
 
     public void recordWifiCollisionDataEnd(Packet packet, int sfuId) {
@@ -491,6 +586,10 @@ public final class SimulationContext {
 
     public void recordWifiMacRetry(Packet packet, int sfuId, int retries, int cwBefore, int cwAfter, int backoff) {
         trace.recordMacRetry(packet, sfuId, nowTicks, retries, cwBefore, cwAfter, backoff);
+        ApTrafficObserver observer = apObservers.get(sfuId);
+        if (observer != null) {
+            traceApQueue(sfuId, observer.retry(packet, observationTimeNs(nowTicks)));
+        }
     }
 
     public void recordWifiRetryLimitDrop(Packet packet, int sfuId, int retries) {
@@ -503,6 +602,14 @@ public final class SimulationContext {
             recordCollisionLoss(packet);
         }
         trace.recordMacRetryPacket(packet, sfuId, nowTicks, "WIFI_RETRY_LIMIT_DROP", retries);
+        observeApDrop(packet, sfuId);
+    }
+
+    private void observeApDrop(Packet packet, int sfuId) {
+        ApTrafficObserver observer = apObservers.get(sfuId);
+        if (observer != null) {
+            traceApQueue(sfuId, observer.drop(packet, observationTimeNs(nowTicks)));
+        }
     }
 
     private void recordCollisionLoss(Packet packet) {
@@ -528,6 +635,10 @@ public final class SimulationContext {
 
     public void recordEnqueue(Packet packet, int sfuId, int queueDepth) {
         trace.recordEnqueue(packet, nowTicks, sfuId, queueDepth);
+        ApTrafficObserver observer = apObservers.get(sfuId);
+        if (observer != null) {
+            traceApQueue(sfuId, observer.enqueue(packet, observationTimeNs(nowTicks)));
+        }
     }
 
     public void recordQueueSelection(Packet packet, int sfuId, int vo, int vi, int be, int bk) {
@@ -549,7 +660,7 @@ public final class SimulationContext {
         for (Sfu sfu : sfus) {
             trace.recordSfuSummary(sfu, throughputMbps(sfu.sentBytes()));
             ApActivity activity = apActivities.get(sfu.id());
-            if (activity != null) {
+            if (apActivityTraceEnabled && activity != null) {
                 ApActivity.Totals totals = activity.finish(nowTicks);
                 ApCapabilityMode mode = activity.mode();
                 String observedMode = observedApMode(mode, totals);

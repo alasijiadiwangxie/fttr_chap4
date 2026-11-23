@@ -96,6 +96,9 @@ public final class Simulator {
             if (config.apActivityEnabled()) {
                 context.trackApActivity(sfuId, mode, config.apActivityWindowNs());
             }
+            if (config.apObservationPeriodNs() > 0) {
+                context.trackApTraffic(sfuId, mode, config.apObservationPeriodNs(), config.apObservationAlpha());
+            }
             ApModeSwitch.Settings switching = config.apSwitching();
             if (switching != null && !switching.requestsFor(sfuId).isEmpty()) {
                 Map<Integer, WirelessPhy> alternatePhys = new HashMap<>();
