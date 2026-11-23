@@ -37,6 +37,7 @@ public final class SimulationConfig {
     private final ApModeSwitch.Settings apSwitching;
     private final long apObservationPeriodNs;
     private final double apObservationAlpha;
+    private final ChannelObservationInput channelObservation;
     private final WifiFrameExchange wifiFrameExchange;
     private final EdcaParameters edcaParameters;
     private final WifiAccessMode wifiAccessMode;
@@ -59,6 +60,7 @@ public final class SimulationConfig {
                      Map<Integer, WirelessPhy> alternateStationPhys, boolean apActivityEnabled, long apActivityWindowNs,
                      ApEnergyModel apEnergyModel, ApModeSwitch.Settings apSwitching,
                      long apObservationPeriodNs, double apObservationAlpha,
+                     ChannelObservationInput channelObservation,
                      WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters, WifiAccessMode wifiAccessMode,
                      WifiRetryPolicy wifiRetryPolicy, AmpduConfig ampduConfig,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled,
@@ -82,6 +84,7 @@ public final class SimulationConfig {
         this.apSwitching = apSwitching;
         this.apObservationPeriodNs = apObservationPeriodNs;
         this.apObservationAlpha = apObservationAlpha;
+        this.channelObservation = channelObservation;
         this.wifiFrameExchange = wifiFrameExchange;
         this.edcaParameters = edcaParameters;
         this.wifiAccessMode = wifiAccessMode;
@@ -199,6 +202,11 @@ public final class SimulationConfig {
 
     public double apObservationAlpha() {
         return apObservationAlpha;
+    }
+
+    /** null 表示 C2a 关闭。该输入由仿真控制层消费。 */
+    public ChannelObservationInput channelObservation() {
+        return channelObservation;
     }
 
     /** 返回已校验的功耗参数。未启用 B3 时返回 null。 */

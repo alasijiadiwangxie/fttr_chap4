@@ -92,6 +92,11 @@ public final class Simulator {
             Sfu sfu = new Sfu(sfuId, wifi, associated, config.edcaParameters(), config.wifiAccessMode(),
                     retryPolicy, uplinkPort);
             sfu.configureAmpdu(config.ampduConfig());
+            if (config.channelObservation() != null) {
+                int bandwidthMhz = mode != null ? mode.bandwidthMhz()
+                        : wirelessPhy != null ? wirelessPhy.bandwidthMhz() : 20;
+                sfu.configureChannelObservation(bandwidthMhz);
+            }
             sfus.add(sfu);
             if (config.apActivityEnabled()) {
                 context.trackApActivity(sfuId, mode, config.apActivityWindowNs());
@@ -111,6 +116,9 @@ public final class Simulator {
                     context.scheduleAfterNanoseconds(request.timeNs(), EventType.WIFI_AP_SWITCH_REQUEST, null, sfuId);
                 }
             }
+        }
+        if (config.channelObservation() != null) {
+            context.trackChannelObservation(config.channelObservation(), sfus, stations);
         }
         // 输入事件只提供报文和生成时间，实际路径由仿真器和设备根据关联表决定。
         for (Event input : config.inputEvents()) {

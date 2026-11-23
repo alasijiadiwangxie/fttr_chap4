@@ -74,6 +74,10 @@ public final class ApModeSwitch {
         return links.get(mode);
     }
 
+    public ApCapabilityMode mode() {
+        return mode;
+    }
+
     public static ApCapabilityMode otherMode(ApCapabilityMode mode) {
         return mode == ApCapabilityMode.LCM ? ApCapabilityMode.HCM : ApCapabilityMode.LCM;
     }

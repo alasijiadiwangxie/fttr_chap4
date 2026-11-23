@@ -1,5 +1,8 @@
 package edu.suda.fttr.entity;
 
+import edu.suda.fttr.channel.ApChannelObservations;
+import edu.suda.fttr.channel.ApChannelObservations.LocalReception;
+import edu.suda.fttr.channel.ChannelReport;
 import edu.suda.fttr.link.AmpduConfig;
 import edu.suda.fttr.link.PonUplink;
 import edu.suda.fttr.link.PonReportPoll;
@@ -22,6 +25,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /** 每台 SFU 统一协调本信道上的下行和关联 STA 的上行。 */
@@ -29,6 +33,8 @@ public final class Sfu {
     private final int id;
     private WifiLink wifi;
     private ApModeSwitch modeSwitch;
+    private ApChannelObservations channelObservations;
+    private int initialVisibleSubchannels;
     private final WifiChannel channel = new WifiChannel();
     private final Map<Integer, Sta> stations;
     private final EdcaState edcaState;
@@ -107,6 +113,43 @@ public final class Sfu {
 
     public void configureAmpdu(AmpduConfig config) {
         ampduConfig = config;
+    }
+
+    public void configureChannelObservation(int apBandwidthMhz) {
+        channelObservations = new ApChannelObservations(id, stations.keySet());
+        initialVisibleSubchannels = Math.min(ChannelReport.SUBCHANNEL_COUNT, apBandwidthMhz / 20);
+    }
+
+    public ApChannelObservations.Receipt receiveChannelReport(ChannelReport report, long nowNs) {
+        return channelObservations.receive(report, nowNs);
+    }
+
+    /** SFU 只查询已进入本地收件箱且仍有效的报告，受当前 AP 能力上限约束。 */
+    public Optional<ChannelReport> channelReport(int staId, int subchannel, long nowNs) {
+        return channelObservations == null ? Optional.empty()
+                : channelObservations.latest(staId, subchannel, visibleSubchannels(), nowNs);
+    }
+
+    public ApChannelObservations.Visibility channelVisibility(int staId, int subchannel, long nowNs) {
+        return channelObservations == null ? ApChannelObservations.Visibility.UNKNOWN
+                : channelObservations.visibility(staId, subchannel, visibleSubchannels(), nowNs);
+    }
+
+    public Optional<ApChannelObservations.LocalEvidence> localChannelReception(int staId, LocalReception kind,
+                                                                              long nowNs) {
+        return channelObservations == null ? Optional.empty() : channelObservations.localReception(staId, kind, nowNs);
+    }
+
+    private int visibleSubchannels() {
+        return modeSwitch == null ? initialVisibleSubchannels : modeSwitch.mode().bandwidthMhz() / 20;
+    }
+
+    private void observeLocalReception(Packet packet, LocalReception kind, int mpdus, SimulationContext context) {
+        if (channelObservations != null) {
+            long nowNs = context.nowNanoseconds();
+            channelObservations.recordLocalReception(packet.staId(), kind, nowNs, mpdus);
+            context.recordChannelLocal(nowNs, id, packet.staId(), kind, mpdus);
+        }
     }
 
     public void receiveModeSwitchRequest(SimulationContext context) {
@@ -252,6 +295,9 @@ public final class Sfu {
         if (ackPending && edcaAccess != null) {
             publishMacDuration(packet, false, announcedNavEndTicks - dataEndTicks, context);
         }
+        if (packet.isUplink()) {
+            observeLocalReception(packet, LocalReception.UL_DATA, 1, context);
+        }
         context.recordApUplinkReception(packet, id, 1);
         deliverData(active, txStartTicks, context);
         if (!ackPending) {
@@ -287,6 +333,9 @@ public final class Sfu {
         checkActive(packet);
         if (wifi.hasAckExchange()) {
             context.recordApAckBoundary(packet, id, false);
+            if (!packet.isUplink()) {
+                observeLocalReception(packet, LocalReception.DL_ACK, 1, context);
+            }
         }
         if (announcedNavEndTicks > context.nowTicks()) {
             // 立即 ACK 沿用本次 DATA 宣布的预约，只报告完成 ACK 之后的剩余部分。
@@ -393,6 +442,7 @@ public final class Sfu {
         traceAggregate("DATA_END", head, attempt, context);
         if (head.isUplink() && attempt.bitmap != 0) {
             Packet firstDecoded = attempt.packets.get(Long.numberOfTrailingZeros(attempt.bitmap));
+            observeLocalReception(firstDecoded, LocalReception.UL_DATA, Long.bitCount(attempt.bitmap), context);
             context.recordApUplinkReception(firstDecoded, id, Long.bitCount(attempt.bitmap));
         }
         for (int i = 0; i < attempt.members.size(); i++) {
@@ -416,6 +466,9 @@ public final class Sfu {
     public void completeBlockAck(Packet head, SimulationContext context) {
         checkActive(head);
         context.recordApAckBoundary(head, id, false);
+        if (!head.isUplink()) {
+            observeLocalReception(head, LocalReception.DL_BLOCK_ACK, Long.bitCount(activeAggregate.bitmap), context);
+        }
         traceAggregate("BA_END", head, activeAggregate, context);
         settleAggregate(head, activeAggregate, true, context);
         activeAggregate = null;

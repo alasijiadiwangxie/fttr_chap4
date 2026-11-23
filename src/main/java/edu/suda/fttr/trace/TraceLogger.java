@@ -1,5 +1,9 @@
 package edu.suda.fttr.trace;
 
+import edu.suda.fttr.channel.ApChannelObservations.LocalReception;
+import edu.suda.fttr.channel.ChannelReport;
+import edu.suda.fttr.channel.ChannelTruth;
+import edu.suda.fttr.config.ChannelObservationInput;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.ApEnergyModel;
@@ -624,6 +628,45 @@ public final class TraceLogger {
         output.printf(Locale.ROOT, "summary=WIFI_STA_PHY sfu_id=%d sta_id=%d ap_mode=%s bandwidth_mhz=%d nss=%d "
                         + "phy_rate_mbps=%.6f%n", sta.sfuId(), sta.id(), mode, phy.bandwidthMhz(), phy.nss(),
                 phy.phyRateMbps());
+    }
+
+    public void recordChannelTruth(ChannelTruth.Change change) {
+        output.printf(Locale.ROOT, "event=WIFI_CHANNEL_TRUTH t_ns=%d sfu_id=%d sta_id=%d subchannel=%d "
+                        + "sinr_db=%s cqi=%d interfered=%s%n",
+                change.effectiveAtNs(), change.sfuId(), change.staId(), change.subchannel(),
+                Double.toString(change.sinrDb()), change.cqi(), change.interfered());
+    }
+
+    public void recordChannelFeedback(long timeNs, ChannelObservationInput.Feedback request, String phase,
+                                      ChannelReport report) {
+        output.printf(Locale.ROOT, "event=WIFI_CHANNEL_FEEDBACK t_ns=%d report_id=%d sfu_id=%d sta_id=%d "
+                        + "subchannel=%d measured_ns=%d arrival_ns=%d expires_ns=%d phase=%s sinr_db=%s cqi=%s%n",
+                timeNs, request.id(), request.sfuId(), request.staId(), request.subchannel(),
+                request.measuredNs(), request.arrivalNs(), request.expiresNs(), phase,
+                report == null ? "-" : Double.toString(report.sinrDb()), report == null ? "-" : report.cqi());
+    }
+
+    public void recordChannelObservation(long timeNs, Sfu sfu, int staId, int subchannel) {
+        ChannelReport report = sfu.channelReport(staId, subchannel, timeNs).orElse(null);
+        output.printf(Locale.ROOT, "event=WIFI_CHANNEL_OBSERVATION t_ns=%d sfu_id=%d sta_id=%d subchannel=%d "
+                        + "status=%s measured_ns=%s arrival_ns=%s expires_ns=%s sinr_db=%s cqi=%s "
+                        + "local_ul_data_ns=%s local_dl_ack_ns=%s local_dl_ba_ns=%s%n",
+                timeNs, sfu.id(), staId, subchannel, sfu.channelVisibility(staId, subchannel, timeNs),
+                report == null ? "-" : report.measuredAtNs(), report == null ? "-" : report.arrivedAtNs(),
+                report == null ? "-" : report.expiresAtNs(), report == null ? "-" : Double.toString(report.sinrDb()),
+                report == null ? "-" : report.cqi(), localChannelTime(sfu, staId, LocalReception.UL_DATA, timeNs),
+                localChannelTime(sfu, staId, LocalReception.DL_ACK, timeNs),
+                localChannelTime(sfu, staId, LocalReception.DL_BLOCK_ACK, timeNs));
+    }
+
+    private static String localChannelTime(Sfu sfu, int staId, LocalReception kind, long timeNs) {
+        return sfu.localChannelReception(staId, kind, timeNs).map(value -> Long.toString(value.receivedAtNs()))
+                .orElse("-");
+    }
+
+    public void recordChannelLocal(long timeNs, int sfuId, int staId, LocalReception kind, int mpdus) {
+        output.printf(Locale.ROOT, "event=WIFI_CHANNEL_LOCAL t_ns=%d sfu_id=%d sta_id=%d kind=%s mpdus=%d%n",
+                timeNs, sfuId, staId, kind, mpdus);
     }
 
     public void recordApActivityChange(int sfuId, ApCapabilityMode mode, long timeNs, ApActivity.Transition change,

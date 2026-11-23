@@ -1,5 +1,7 @@
 package edu.suda.fttr.config;
 
+import edu.suda.fttr.channel.ChannelReport;
+import edu.suda.fttr.channel.ChannelTruth;
 import edu.suda.fttr.dba.GiantSlaAdmission;
 import edu.suda.fttr.dba.TcontProfile;
 import edu.suda.fttr.dba.TcontTopology;
@@ -78,6 +80,10 @@ public final class ConfigLoader {
     private static final String AP_OBSERVATION_ENABLED = "wifi.ap.observation.enabled";
     private static final String AP_OBSERVATION_PERIOD_US = "wifi.ap.observation.period.us";
     private static final String AP_OBSERVATION_EWMA_ALPHA = "wifi.ap.observation.ewma.alpha";
+    private static final String CHANNEL_OBSERVATION_ENABLED = "wifi.channel.observation.enabled";
+    private static final String CHANNEL_TRUTH = "wifi.channel.truth";
+    private static final String CHANNEL_FEEDBACK = "wifi.channel.feedback";
+    private static final String CHANNEL_READ_TIMES = "wifi.channel.observe.us";
     private static final String AP_ENERGY = "wifi.ap.energy.";
     private static final String AP_ENERGY_ENABLED = AP_ENERGY + "enabled";
     private static final String LCM_POWER = AP_ENERGY + "lcm.";
@@ -97,6 +103,7 @@ public final class ConfigLoader {
             MAC_MAX_RETRIES, AMPDU_ENABLED, AMPDU_MAX_MPDUS, AMPDU_MAX_BYTES, AMPDU_FIRST_ATTEMPT_ERRORS,
             EDCA_SEED, AP_ACTIVITY_ENABLED, AP_ACTIVITY_WINDOW_US, AP_ENERGY_ENABLED,
             AP_OBSERVATION_ENABLED, AP_OBSERVATION_PERIOD_US, AP_OBSERVATION_EWMA_ALPHA,
+            CHANNEL_OBSERVATION_ENABLED, CHANNEL_TRUTH, CHANNEL_FEEDBACK, CHANNEL_READ_TIMES,
             LCM_POWER + "idle.w", LCM_POWER + "tx.w", LCM_POWER + "rx.w",
             HCM_POWER + "idle.w", HCM_POWER + "tx.w", HCM_POWER + "rx.w",
             AP_SWITCH_ENABLED, LCM_TO_HCM + "delay.us", LCM_TO_HCM + "power.w",
@@ -205,6 +212,7 @@ public final class ConfigLoader {
                 ? readDurationNs(properties, AP_ACTIVITY_WINDOW_US, "0", true) : -1;
         long apObservationPeriodNs = readApObservationPeriod(properties);
         double apObservationAlpha = readApObservationAlpha(properties);
+        ChannelObservationInput channelObservation = readChannelObservation(properties, staSfuIds);
         ApEnergyModel apEnergyModel = readApEnergyModel(properties, apActivityEnabled);
         ApModeSwitch.Settings apSwitching = readApSwitching(properties, sfuCount, apCapabilityModes, apEnergyModel);
         Map<Integer, WirelessPhy> alternateStationPhys = new HashMap<>();
@@ -236,10 +244,11 @@ public final class ConfigLoader {
         List<Event> inputEvents = poisson ? TrafficGenerator.generate(sources) : manualEvents;
 
         validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
-                stationPhys, alternateStationPhys, frameExchange, apActivityEnabled || apObservationPeriodNs > 0);
+                stationPhys, alternateStationPhys, frameExchange,
+                apActivityEnabled || apObservationPeriodNs > 0 || channelObservation != null);
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
                 apCapabilityModes, stationPhys, alternateStationPhys, apActivityEnabled, apActivityWindowNs,
-                apEnergyModel, apSwitching, apObservationPeriodNs, apObservationAlpha,
+                apEnergyModel, apSwitching, apObservationPeriodNs, apObservationAlpha, channelObservation,
                 frameExchange, edcaParameters, accessMode, retryPolicy, ampduConfig,
                 downlink.windowsUs, uplink.windowsUs,
                 directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled,
@@ -711,6 +720,91 @@ public final class ConfigLoader {
             throw new IllegalArgumentException(error);
         }
         return alpha;
+    }
+
+    private static ChannelObservationInput readChannelObservation(Properties properties, List<Integer> staSfuIds) {
+        boolean enabled = channelBoolean(properties.getProperty(CHANNEL_OBSERVATION_ENABLED, "false").strip(),
+                CHANNEL_OBSERVATION_ENABLED);
+        List<ChannelTruth.Change> changes = new ArrayList<>();
+        for (String row : channelRows(properties, CHANNEL_TRUTH, ";")) {
+            String[] fields = channelFields(row, CHANNEL_TRUTH, 7, staSfuIds);
+            changes.add(new ChannelTruth.Change(Integer.parseInt(fields[0]), Integer.parseInt(fields[1]),
+                    Integer.parseInt(fields[2]), parseDurationNs(fields[3], CHANNEL_TRUTH, false),
+                    channelSinr(fields[4]), channelInt(fields[5], CHANNEL_TRUTH),
+                    channelBoolean(fields[6], CHANNEL_TRUTH + " interfered")));
+        }
+        ChannelTruth truth = new ChannelTruth(changes);
+        List<ChannelObservationInput.Feedback> feedback = new ArrayList<>();
+        for (String row : channelRows(properties, CHANNEL_FEEDBACK, ";")) {
+            String[] fields = channelFields(row, CHANNEL_FEEDBACK, 6, staSfuIds);
+            feedback.add(new ChannelObservationInput.Feedback(feedback.size() + 1, Integer.parseInt(fields[0]),
+                    Integer.parseInt(fields[1]), Integer.parseInt(fields[2]),
+                    parseDurationNs(fields[3], CHANNEL_FEEDBACK, false),
+                    parseDurationNs(fields[4], CHANNEL_FEEDBACK, false),
+                    parseDurationNs(fields[5], CHANNEL_FEEDBACK, true)));
+        }
+        List<Long> reads = new ArrayList<>();
+        Set<Long> seenReads = new HashSet<>();
+        for (String time : channelRows(properties, CHANNEL_READ_TIMES, ",")) {
+            long timeNs = parseDurationNs(time, CHANNEL_READ_TIMES, false);
+            if (!seenReads.add(timeNs)) {
+                throw new IllegalArgumentException(CHANNEL_READ_TIMES + " repeats a timestamp: " + time);
+            }
+            reads.add(timeNs);
+        }
+        return enabled ? new ChannelObservationInput(truth, feedback, reads) : null;
+    }
+
+    private static String[] channelRows(Properties properties, String key, String separator) {
+        String value = properties.getProperty(key, "").strip();
+        return value.isEmpty() ? new String[0] : value.split(separator, -1);
+    }
+
+    private static String[] channelFields(String row, String key, int length, List<Integer> staSfuIds) {
+        String[] fields = row.split(",", -1);
+        if (fields.length != length) {
+            throw new IllegalArgumentException(key + " requires " + length + " fields per row: " + row);
+        }
+        for (int i = 0; i < fields.length; i++) {
+            fields[i] = fields[i].strip();
+        }
+        int sfuId = channelInt(fields[0], key);
+        int staId = channelInt(fields[1], key);
+        int subchannel = channelInt(fields[2], key);
+        if (staId < 1 || staId > staSfuIds.size() || sfuId != staSfuIds.get(staId - 1)) {
+            throw new IllegalArgumentException(key + " requires an associated SFU and STA: " + row);
+        }
+        if (subchannel < 0 || subchannel >= ChannelReport.SUBCHANNEL_COUNT) {
+            throw new IllegalArgumentException(key + " subchannel must be 0..3: " + row);
+        }
+        return fields;
+    }
+
+    private static int channelInt(String value, String key) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(key + " requires an integer: " + value, e);
+        }
+    }
+
+    private static double channelSinr(String value) {
+        try {
+            double sinr = Double.parseDouble(value);
+            if (Double.isFinite(sinr)) {
+                return sinr;
+            }
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(CHANNEL_TRUTH + " requires a finite SINR in dB: " + value, e);
+        }
+        throw new IllegalArgumentException(CHANNEL_TRUTH + " requires a finite SINR in dB: " + value);
+    }
+
+    private static boolean channelBoolean(String value, String key) {
+        if (!value.equals("true") && !value.equals("false")) {
+            throw new IllegalArgumentException(key + " must be true or false");
+        }
+        return value.equals("true");
     }
 
     private static ApEnergyModel readApEnergyModel(Properties properties, boolean activityEnabled) {

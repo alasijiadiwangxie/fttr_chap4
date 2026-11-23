@@ -1,5 +1,7 @@
 package edu.suda.fttr.simulator;
 
+import edu.suda.fttr.channel.ApChannelObservations.LocalReception;
+import edu.suda.fttr.config.ChannelObservationInput;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.ApEnergyModel;
@@ -43,6 +45,7 @@ public final class SimulationContext {
     private boolean apActivityTraceEnabled;
     private long apObservationPeriodNs;
     private long lastApSampleNs;
+    private ChannelObservationRuntime channelObservation;
     private long nowTicks;
     private int deliveredPackets;
     private long deliveredBytes;
@@ -82,6 +85,11 @@ public final class SimulationContext {
 
     public long nowTicks() {
         return nowTicks;
+    }
+
+    /** 当前协议事件的绝对时间，转换时不改变原协议时钟的精度。 */
+    public long nowNanoseconds() {
+        return observationTimeNs(nowTicks);
     }
 
     /** 先用整数刻度做时间差，再换算到统计所用的微秒。 */
@@ -187,6 +195,13 @@ public final class SimulationContext {
 
     Event nextEvent() {
         Event event = events.poll();
+        if (channelObservation != null) {
+            if (event == null) {
+                channelObservation.finish();
+            } else {
+                channelObservation.advanceBeforeProtocolEvent(observationTimeNs(event.timeTicks()));
+            }
+        }
         if (apObservationPeriodNs > 0) {
             // 只用事件时钟推进采样。相同时间戳的全部协议事件（含新安排的零延时事件）先执行。
             // 观测不进入事件队列，也不改变自然结束时间、吞吐分母或能耗窗口。
@@ -203,6 +218,14 @@ public final class SimulationContext {
             trace.recordEvent(event);
         }
         return event;
+    }
+
+    void trackChannelObservation(ChannelObservationInput input, List<Sfu> sfus, List<Sta> stations) {
+        channelObservation = new ChannelObservationRuntime(input, sfus, stations, trace);
+    }
+
+    public void recordChannelLocal(long timeNs, int sfuId, int staId, LocalReception kind, int mpdus) {
+        trace.recordChannelLocal(timeNs, sfuId, staId, kind, mpdus);
     }
 
     public void recordDelivery(Packet packet, Sta sta) {
