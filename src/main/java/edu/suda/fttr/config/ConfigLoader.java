@@ -5,6 +5,7 @@ import edu.suda.fttr.dba.TcontProfile;
 import edu.suda.fttr.dba.TcontTopology;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApEnergyModel;
+import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.link.PonLinkTiming;
 import edu.suda.fttr.link.WifiFrameExchange;
@@ -72,6 +73,10 @@ public final class ConfigLoader {
     private static final String AP_ENERGY_ENABLED = AP_ENERGY + "enabled";
     private static final String LCM_POWER = AP_ENERGY + "lcm.";
     private static final String HCM_POWER = AP_ENERGY + "hcm.";
+    private static final String AP_SWITCH = "wifi.ap.switch.";
+    private static final String AP_SWITCH_ENABLED = AP_SWITCH + "enabled";
+    private static final String LCM_TO_HCM = AP_SWITCH + "lcm-to-hcm.";
+    private static final String HCM_TO_LCM = AP_SWITCH + "hcm-to-lcm.";
     private static final Set<String> KEYS = Set.of(
             FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", DOWNLINK_PROPAGATION_US,
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
@@ -82,7 +87,9 @@ public final class ConfigLoader {
             MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
             MAC_MAX_RETRIES, EDCA_SEED, AP_ACTIVITY_ENABLED, AP_ACTIVITY_WINDOW_US, AP_ENERGY_ENABLED,
             LCM_POWER + "idle.w", LCM_POWER + "tx.w", LCM_POWER + "rx.w",
-            HCM_POWER + "idle.w", HCM_POWER + "tx.w", HCM_POWER + "rx.w");
+            HCM_POWER + "idle.w", HCM_POWER + "tx.w", HCM_POWER + "rx.w",
+            AP_SWITCH_ENABLED, LCM_TO_HCM + "delay.us", LCM_TO_HCM + "power.w",
+            HCM_TO_LCM + "delay.us", HCM_TO_LCM + "power.w");
     private static final Set<String> PHY_KEYS = Set.of(
             "wifi.phy.bandwidth.mhz", "wifi.phy.mcs", "wifi.phy.nss", "wifi.phy.gi.us",
             "wifi.phy.mac.overhead.bytes", "wifi.phy.he-ltf.type", "wifi.phy.nominal.packet.padding.us");
@@ -91,6 +98,8 @@ public final class ConfigLoader {
     private static final Pattern STA_KEY = Pattern.compile(
             "sta\\.([1-9][0-9]*)\\.(?:sfu\\.id|wifi\\.max\\.(?:bandwidth\\.mhz|nss))");
     private static final Pattern SFU_AP_MODE_KEY = Pattern.compile("sfu\\.([1-9][0-9]*)\\.wifi\\.ap\\.mode");
+    private static final Pattern SFU_AP_SWITCH_KEY =
+            Pattern.compile("sfu\\.([1-9][0-9]*)\\.wifi\\.ap\\.switch\\.requests");
     private static final Pattern EDCA_AC_KEY = Pattern.compile(
             "wifi\\.mac\\.edca\\.(VO|VI|BE|BK)\\.(aifsn|cwmin|cwmax|txop\\.limit\\.us)");
     private static final Pattern POISSON_SOURCE = Pattern.compile(
@@ -180,11 +189,14 @@ public final class ConfigLoader {
                 ? readNonNegativeLong(properties, FIBER_DELAY_US) : 0;
         WirelessPhy wirelessPhy = readWirelessPhy(properties);
         Map<Integer, ApCapabilityMode> apCapabilityModes = readApCapabilityModes(properties, sfuCount, wirelessPhy);
-        Map<Integer, WirelessPhy> stationPhys = readStationPhys(properties, staSfuIds, apCapabilityModes);
         boolean apActivityEnabled = readApActivityEnabled(properties);
         long apActivityWindowNs = properties.containsKey(AP_ACTIVITY_WINDOW_US)
                 ? readDurationNs(properties, AP_ACTIVITY_WINDOW_US, "0", true) : -1;
         ApEnergyModel apEnergyModel = readApEnergyModel(properties, apActivityEnabled);
+        ApModeSwitch.Settings apSwitching = readApSwitching(properties, sfuCount, apCapabilityModes, apEnergyModel);
+        Map<Integer, WirelessPhy> alternateStationPhys = new HashMap<>();
+        Map<Integer, WirelessPhy> stationPhys = readStationPhys(properties, staSfuIds, apCapabilityModes,
+                apSwitching, alternateStationPhys);
         EdcaParameters edcaParameters = readEdcaParameters(properties);
         WifiAccessMode accessMode = readWifiAccessMode(properties);
         WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy, edcaParameters.sifsUs());
@@ -210,9 +222,10 @@ public final class ConfigLoader {
         List<Event> inputEvents = poisson ? TrafficGenerator.generate(sources) : manualEvents;
 
         validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
-                stationPhys, frameExchange, apActivityEnabled);
+                stationPhys, alternateStationPhys, frameExchange, apActivityEnabled);
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
-                apCapabilityModes, stationPhys, apActivityEnabled, apActivityWindowNs, apEnergyModel,
+                apCapabilityModes, stationPhys, alternateStationPhys, apActivityEnabled, apActivityWindowNs,
+                apEnergyModel, apSwitching,
                 frameExchange, edcaParameters, accessMode, retryPolicy,
                 downlink.windowsUs, uplink.windowsUs,
                 directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled,
@@ -473,11 +486,14 @@ public final class ConfigLoader {
     }
 
     private static long readDurationNs(Properties properties, String key, String defaultUs, boolean positive) {
+        return parseDurationNs(properties.getProperty(key, defaultUs), key, positive);
+    }
+
+    private static long parseDurationNs(String value, String key, boolean positive) {
         String constraint = positive ? "positive" : "non-negative";
         long durationNs;
         try {
-            durationNs = new BigDecimal(properties.getProperty(key, defaultUs).strip())
-                    .scaleByPowerOfTen(3).longValueExact();
+            durationNs = new BigDecimal(value.strip()).scaleByPowerOfTen(3).longValueExact();
         } catch (NumberFormatException | ArithmeticException e) {
             throw new IllegalArgumentException(key + " must be a " + constraint
                     + " duration in microseconds representable in whole nanoseconds", e);
@@ -659,8 +675,75 @@ public final class ConfigLoader {
         return watts;
     }
 
+    private static ApModeSwitch.Settings readApSwitching(Properties properties, int sfuCount,
+                                                        Map<Integer, ApCapabilityMode> modes, ApEnergyModel energy) {
+        String enabled = properties.getProperty(AP_SWITCH_ENABLED, "false").strip();
+        if (enabled.equals("false")) {
+            return null;
+        }
+        if (!enabled.equals("true")) {
+            throw new IllegalArgumentException(AP_SWITCH_ENABLED + " must be true or false");
+        }
+        if (energy == null) {
+            throw new IllegalArgumentException(AP_SWITCH_ENABLED + " requires " + AP_ENERGY_ENABLED + "=true");
+        }
+        Map<Integer, List<ApModeSwitch.Request>> schedules = new HashMap<>();
+        for (int sfuId = 1; sfuId <= sfuCount; sfuId++) {
+            String key = "sfu." + sfuId + ".wifi.ap.switch.requests";
+            String value = properties.getProperty(key, "").strip();
+            if (value.isEmpty()) {
+                continue;
+            }
+            if (!modes.containsKey(sfuId)) {
+                throw new IllegalArgumentException(key + " requires a configured initial AP mode");
+            }
+            schedules.put(sfuId, readApSwitchRequests(value, key));
+        }
+        boolean hasProfile = properties.containsKey(LCM_TO_HCM + "delay.us") || properties.containsKey(LCM_TO_HCM + "power.w")
+                || properties.containsKey(HCM_TO_LCM + "delay.us") || properties.containsKey(HCM_TO_LCM + "power.w");
+        if (schedules.isEmpty() && !hasProfile) {
+            return new ApModeSwitch.Settings(schedules, null, null);
+        }
+        return new ApModeSwitch.Settings(schedules, readApSwitchProfile(properties, LCM_TO_HCM),
+                readApSwitchProfile(properties, HCM_TO_LCM));
+    }
+
+    private static List<ApModeSwitch.Request> readApSwitchRequests(String value, String key) {
+        List<ApModeSwitch.Request> requests = new ArrayList<>();
+        long previousNs = -1;
+        for (String entry : value.split(",", -1)) {
+            String[] fields = entry.split(":", -1);
+            if (fields.length != 2) {
+                throw new IllegalArgumentException(key + " must list timeUs:LCM or timeUs:HCM");
+            }
+            long timeNs = parseDurationNs(fields[0], key, false);
+            if (timeNs < previousNs) {
+                throw new IllegalArgumentException(key + " must list requests in chronological order");
+            }
+            ApCapabilityMode target;
+            try {
+                target = ApCapabilityMode.valueOf(fields[1].strip());
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException(key + " targets must be LCM or HCM", e);
+            }
+            requests.add(new ApModeSwitch.Request(requests.size() + 1, timeNs, target));
+            previousNs = timeNs;
+        }
+        return List.copyOf(requests);
+    }
+
+    private static ApModeSwitch.Profile readApSwitchProfile(Properties properties, String prefix) {
+        String delayKey = prefix + "delay.us";
+        String powerKey = prefix + "power.w";
+        long delayNs = parseDurationNs(requireProperty(properties, delayKey), delayKey, true);
+        requireProperty(properties, powerKey);
+        return new ApModeSwitch.Profile(delayNs, readPowerWatts(properties, powerKey, null));
+    }
+
     private static Map<Integer, WirelessPhy> readStationPhys(Properties properties, List<Integer> staSfuIds,
-                                                            Map<Integer, ApCapabilityMode> apModes) {
+                                                            Map<Integer, ApCapabilityMode> apModes,
+                                                            ApModeSwitch.Settings switching,
+                                                            Map<Integer, WirelessPhy> alternateStationPhys) {
         Map<Integer, WirelessPhy> stationPhys = new HashMap<>();
         for (int staIndex = 0; staIndex < staSfuIds.size(); staIndex++) {
             int staId = staIndex + 1;
@@ -684,10 +767,18 @@ public final class ConfigLoader {
                 throw new IllegalArgumentException(nssKey + " must be in 1..8");
             }
             // 带宽和空间流数分别取两端的能力交集；同一模型用于 STA 的两个 DATA 方向。
-            stationPhys.put(staId, buildWirelessPhy(properties, Math.min(mode.bandwidthMhz(), maxBandwidthMhz),
-                    ApCapabilityMode.MCS, Math.min(mode.nss(), maxNss), ApCapabilityMode.GI_NS));
+            stationPhys.put(staId, buildStationPhy(properties, mode, maxBandwidthMhz, maxNss));
+            if (switching != null && !switching.requestsFor(sfuId).isEmpty()) {
+                alternateStationPhys.put(staId, buildStationPhy(properties, ApModeSwitch.otherMode(mode),
+                        maxBandwidthMhz, maxNss));
+            }
         }
         return stationPhys;
+    }
+
+    private static WirelessPhy buildStationPhy(Properties properties, ApCapabilityMode mode, int bandwidthMhz, int nss) {
+        return buildWirelessPhy(properties, Math.min(mode.bandwidthMhz(), bandwidthMhz),
+                ApCapabilityMode.MCS, Math.min(mode.nss(), nss), ApCapabilityMode.GI_NS);
     }
 
     private static int readOptionalNonNegativeInt(Properties properties, String key, int defaultValue) {
@@ -713,7 +804,8 @@ public final class ConfigLoader {
     private static void validateCompletionClock(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds,
                                                 long fiberUs, SimulationConfig.PonLink ponDownlink,
                                                 SimulationConfig.PonLink ponUplink, long wifiUs, WirelessPhy wirelessPhy,
-                                                Map<Integer, WirelessPhy> stationPhys, WifiFrameExchange frameExchange,
+                                                Map<Integer, WirelessPhy> stationPhys,
+                                                Map<Integer, WirelessPhy> alternatePhys, WifiFrameExchange frameExchange,
                                                 boolean apActivityEnabled) {
         // 同一 SFU 按到达时刻累计无线工作量即可计算忙闲边界，优先级只改变其中的发送顺序。
         boolean hasUplink = inputEvents.stream().anyMatch(event -> event.packet().isUplink());
@@ -744,6 +836,10 @@ public final class ConfigLoader {
                 int sfuIndex = staSfuIds.get(packet.staId() - 1) - 1;
                 WirelessPhy packetPhy = stationPhys.getOrDefault(packet.staId(), wirelessPhy);
                 long dataTicks = packetPhy == null ? fixedWifiTicks : packetPhy.ppduDurationNs(packet.bytes());
+                WirelessPhy alternate = alternatePhys.get(packet.staId());
+                if (alternate != null) {
+                    dataTicks = Math.max(dataTicks, alternate.ppduDurationNs(packet.bytes()));
+                }
                 long exchangeTicks = Math.addExact(dataTicks, responseTicks);
                 completion[sfuIndex] = Math.addExact(Math.max(arrival, completion[sfuIndex]), exchangeTicks);
                 if (packet.isUplink()) {
@@ -837,6 +933,9 @@ public final class ConfigLoader {
                 continue;
             }
             Matcher apMode = SFU_AP_MODE_KEY.matcher(key);
+            if (!apMode.matches()) {
+                apMode = SFU_AP_SWITCH_KEY.matcher(key);
+            }
             if (apMode.matches()) {
                 if (parseNonNegativeLong(apMode.group(1), key) > sfuCount) {
                     throw new IllegalArgumentException("SFU index out of range: " + key);

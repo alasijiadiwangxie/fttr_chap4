@@ -2,6 +2,7 @@ package edu.suda.fttr.simulator;
 
 import edu.suda.fttr.config.SimulationConfig;
 import edu.suda.fttr.entity.AccessCategory;
+import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.PonDbaShadowPlanner;
@@ -88,10 +89,23 @@ public final class Simulator {
                 wifi = new WifiLink(wirelessPhy, config.wifiFrameExchange(), stationPhys);
             }
             PonUplink.Port uplinkPort = ponUplink == null ? null : ponUplink.attachSfu(sfuId);
-            sfus.add(new Sfu(sfuId, wifi, associated, config.edcaParameters(), config.wifiAccessMode(),
-                    retryPolicy, uplinkPort));
+            Sfu sfu = new Sfu(sfuId, wifi, associated, config.edcaParameters(), config.wifiAccessMode(),
+                    retryPolicy, uplinkPort);
+            sfus.add(sfu);
             if (config.apActivityEnabled()) {
                 context.trackApActivity(sfuId, mode, config.apActivityWindowNs());
+            }
+            ApModeSwitch.Settings switching = config.apSwitching();
+            if (switching != null && !switching.requestsFor(sfuId).isEmpty()) {
+                Map<Integer, WirelessPhy> alternatePhys = new HashMap<>();
+                for (int staId : associated.keySet()) {
+                    alternatePhys.put(staId, config.alternateWirelessPhyForSta(staId));
+                }
+                WifiLink alternate = new WifiLink(wirelessPhy, config.wifiFrameExchange(), alternatePhys);
+                sfu.configureModeSwitch(new ApModeSwitch(sfuId, switching, mode, wifi, alternate));
+                for (ApModeSwitch.Request request : switching.requestsFor(sfuId)) {
+                    context.scheduleAfterNanoseconds(request.timeNs(), EventType.WIFI_AP_SWITCH_REQUEST, null, sfuId);
+                }
             }
         }
         // 输入事件只提供报文和生成时间，实际路径由仿真器和设备根据关联表决定。
@@ -215,6 +229,12 @@ public final class Simulator {
                 case WIFI_ACK_TIMEOUT:
                     sfus.get(event.sfuId() - 1).onAckTimeout(event.packet(), context);
                     break;
+                case WIFI_AP_SWITCH_REQUEST:
+                    sfus.get(event.sfuId() - 1).receiveModeSwitchRequest(context);
+                    break;
+                case WIFI_AP_SWITCH_END:
+                    sfus.get(event.sfuId() - 1).finishModeSwitch(context);
+                    break;
                 default:
                     throw new IllegalStateException("Unhandled event: " + event.type());
             }
@@ -235,7 +255,7 @@ public final class Simulator {
             ponUplink.recordSummary(context);
             ponUplink.recordReportSummary(mfu.receivedUplinkReports(), context);
         }
-        context.recordSummary(sfus, stations, config.uplinkEnabled(), config.apEnergyModel());
+        context.recordSummary(sfus, stations, config.uplinkEnabled(), config.apEnergyModel(), config.apSwitching());
     }
 
     private static void recordWirelessProfiles(SimulationConfig config, TraceLogger trace, List<Sta> stations) {

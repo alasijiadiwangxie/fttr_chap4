@@ -3,6 +3,7 @@ package edu.suda.fttr.trace;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.ApEnergyModel;
+import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.PonDemandLedger;
@@ -110,6 +111,8 @@ public final class TraceLogger {
                 break;
             case WIFI_COLLISION_DATA_END:
             case WIFI_ACK_TIMEOUT:
+            case WIFI_AP_SWITCH_REQUEST:
+            case WIFI_AP_SWITCH_END:
                 // SFU 处理结果后记录失败、重传或信道释放日志。
                 break;
             default:
@@ -595,17 +598,31 @@ public final class TraceLogger {
 
     public void recordApActivityChange(int sfuId, ApCapabilityMode mode, long timeNs, ApActivity.Transition change,
                                        Packet packet, String reason) {
+        String packetFields = packet == null ? "" : " packet_id=" + packet.id() + " direction=" + packet.direction();
         output.printf(Locale.ROOT, "t_us=%s t_ns=%d node=SFU event=WIFI_AP_ACTIVITY_CHANGE sfu_id=%d ap_mode=%s "
-                        + "from=%s to=%s reason=%s packet_id=%d direction=%s%n",
+                        + "from=%s to=%s reason=%s%s%n",
                 formatMicroseconds(timeNs), timeNs, sfuId, mode == null ? "LEGACY" : mode.name(),
-                change.from(), change.to(), reason, packet.id(), packet.direction());
+                change.from(), change.to(), reason, packetFields);
     }
 
-    public void recordApActivityTotals(int sfuId, ApCapabilityMode mode, ApActivity.Totals totals) {
+    public void recordApActivityTotals(int sfuId, String mode, ApActivity.Totals totals, boolean switchingEnabled) {
+        String switchField = switchingEnabled ? " switch_ns=" + totals.switchNs() : "";
         output.printf(Locale.ROOT, "summary=WIFI_AP_ACTIVITY sfu_id=%d ap_mode=%s observation_start_ns=0 "
-                        + "observation_end_ns=%d idle_ns=%d tx_ns=%d rx_ns=%d%n",
-                sfuId, mode == null ? "LEGACY" : mode.name(), totals.observationEndNs(),
-                totals.idleNs(), totals.txNs(), totals.rxNs());
+                        + "observation_end_ns=%d idle_ns=%d tx_ns=%d rx_ns=%d%s%n",
+                sfuId, mode, totals.observationEndNs(), totals.idleNs(), totals.txNs(), totals.rxNs(), switchField);
+    }
+
+    public void recordApSwitchEvent(long timeNs, String event, int sfuId, ApModeSwitch.Request request,
+                                    ApCapabilityMode from, ApModeSwitch.Profile profile, long observedNs,
+                                    BigDecimal energyUj) {
+        String duration = profile == null ? "" : " duration_ns=" + profile.delayNs()
+                + " power_w=" + profile.powerW().toPlainString();
+        String accounting = energyUj == null ? "" : " observed_ns=" + observedNs
+                + " switch_energy_uj=" + energyUj.toPlainString();
+        output.printf(Locale.ROOT, "t_us=%s t_ns=%d node=SFU event=%s sfu_id=%d switch_id=%d from_mode=%s to_mode=%s "
+                        + "request_ns=%d%s%s%n",
+                formatMicroseconds(timeNs), timeNs, event, sfuId, request.id(), from, request.target(),
+                request.timeNs(), duration, accounting);
     }
 
     public void recordApEnergy(int sfuId, ApCapabilityMode mode, long observationEndNs, ApEnergyModel.Power power,
@@ -613,20 +630,40 @@ public final class TraceLogger {
         output.printf(Locale.ROOT, "summary=WIFI_AP_ENERGY model=%s sfu_id=%d ap_mode=%s observation_start_ns=0 "
                         + "observation_end_ns=%d idle_power_w=%s tx_power_w=%s rx_power_w=%s %s%n",
                 ApEnergyModel.PROFILE, sfuId, mode.name(), observationEndNs, power.idleW().toPlainString(),
-                power.txW().toPlainString(), power.rxW().toPlainString(), formatApEnergy(energy, observationEndNs));
+                power.txW().toPlainString(), power.rxW().toPlainString(), formatApEnergy(energy, observationEndNs, false));
     }
 
     public void recordApNetworkEnergy(long observationEndNs, int modeledApCount, int legacyApCount,
-                                      ApEnergyModel.Energy energy) {
+                                      ApEnergyModel.Energy energy, boolean switchingEnabled) {
         output.printf(Locale.ROOT, "summary=WIFI_AP_ENERGY_NETWORK model=%s observation_start_ns=0 "
                         + "observation_end_ns=%d modeled_ap_count=%d legacy_ap_count=%d %s%n",
                 ApEnergyModel.PROFILE, observationEndNs, modeledApCount, legacyApCount,
-                formatApEnergy(energy, observationEndNs));
+                formatApEnergy(energy, observationEndNs, switchingEnabled));
     }
 
-    private static String formatApEnergy(ApEnergyModel.Energy energy, long observationEndNs) {
+    public void recordSwitchableApEnergy(int sfuId, String mode, long observationEndNs, ApEnergyModel.Energy energy) {
+        output.printf(Locale.ROOT, "summary=WIFI_AP_ENERGY model=%s sfu_id=%d ap_mode=%s observation_start_ns=0 "
+                        + "observation_end_ns=%d %s%n",
+                ApEnergyModel.PROFILE, sfuId, mode, observationEndNs, formatApEnergy(energy, observationEndNs, true));
+    }
+
+    public void recordApEnergyByMode(int sfuId, ApCapabilityMode mode, ApActivity.Durations durations,
+                                     ApEnergyModel.Power power, ApEnergyModel.Energy energy) {
+        output.printf(Locale.ROOT, "summary=WIFI_AP_ENERGY_MODE sfu_id=%d ap_mode=%s idle_ns=%d tx_ns=%d rx_ns=%d "
+                        + "idle_power_w=%s tx_power_w=%s rx_power_w=%s %s%n",
+                sfuId, mode, durations.idleNs(), durations.txNs(), durations.rxNs(),
+                power.idleW().toPlainString(), power.txW().toPlainString(), power.rxW().toPlainString(),
+                formatApStateEnergy(energy));
+    }
+
+    private static String formatApStateEnergy(ApEnergyModel.Energy energy) {
         return "idle_energy_uj=" + energy.idleUj().toPlainString() + " tx_energy_uj=" + energy.txUj().toPlainString()
-                + " rx_energy_uj=" + energy.rxUj().toPlainString() + " total_energy_uj=" + energy.totalUj().toPlainString()
+                + " rx_energy_uj=" + energy.rxUj().toPlainString();
+    }
+
+    private static String formatApEnergy(ApEnergyModel.Energy energy, long observationEndNs, boolean switchingEnabled) {
+        String switching = switchingEnabled ? " switch_energy_uj=" + energy.switchUj().toPlainString() : "";
+        return formatApStateEnergy(energy) + switching + " total_energy_uj=" + energy.totalUj().toPlainString()
                 + " avg_power_w=" + energy.averagePowerW(observationEndNs).toPlainString();
     }
 

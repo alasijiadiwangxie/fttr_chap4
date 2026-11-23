@@ -13,6 +13,10 @@ final class EventQueue {
 
     private static int accessPriority(Event event) {
         EventType type = event.type();
+        if (type == EventType.WIFI_AP_SWITCH_REQUEST) {
+            // 先登记同刻请求。已占用的交换照常完成，尚未开始的新竞争需等切换完成。
+            return -2;
+        }
         if (type == EventType.FIBER_TX_END && event.dbaGrant() != null) {
             return -1; // 真实DATA在半开窗口末先释放资源，下一帧控制/装载可在同刻启动。
         }

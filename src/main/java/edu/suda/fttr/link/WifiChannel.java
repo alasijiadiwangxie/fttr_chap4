@@ -3,7 +3,7 @@ package edu.suda.fttr.link;
 import java.util.Objects;
 import java.util.function.Consumer;
 
-/** 单个 SFU 及其关联 STA 共用的信道。忙态表示资源被当前帧交换占用。 */
+/** 单个 SFU 及其关联 STA 的接入资源。帧交换或 AP 重配置期间为忙。 */
 public final class WifiChannel {
     public enum State {
         IDLE, BUSY

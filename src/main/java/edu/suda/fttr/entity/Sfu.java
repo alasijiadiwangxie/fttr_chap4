@@ -25,7 +25,8 @@ import java.util.Set;
 /** 每台 SFU 统一协调本信道上的下行和关联 STA 的上行。 */
 public final class Sfu {
     private final int id;
-    private final WifiLink wifi;
+    private WifiLink wifi;
+    private ApModeSwitch modeSwitch;
     private final WifiChannel channel = new WifiChannel();
     private final Map<Integer, Sta> stations;
     private final EdcaState edcaState;
@@ -93,6 +94,32 @@ public final class Sfu {
 
     public int id() {
         return id;
+    }
+
+    public void configureModeSwitch(ApModeSwitch modeSwitch) {
+        this.modeSwitch = modeSwitch;
+    }
+
+    public void receiveModeSwitchRequest(SimulationContext context) {
+        modeSwitch.receiveRequest(context);
+        tryStartModeSwitch(context);
+    }
+
+    public void finishModeSwitch(SimulationContext context) {
+        // 新能力必须在释放接入资源之前生效。切换独占资源，但不计入已有 DATA/ACK 忙时。
+        wifi = modeSwitch.finish(context);
+        channel.release();
+        tryStartModeSwitch(context);
+        if (!multiAc) {
+            requestSelection(context);
+        }
+    }
+
+    private void tryStartModeSwitch(SimulationContext context) {
+        if (modeSwitch != null && ccaState() == WifiChannel.State.IDLE && awaitingAck.isEmpty()
+                && modeSwitch.startPending(context)) {
+            channel.occupy();
+        }
     }
 
     public void receivePonBwmap(Packet packet, SimulationContext context) {
@@ -274,6 +301,7 @@ public final class Sfu {
             txop = null;
         }
         active = null;
+        tryStartModeSwitch(context);
         if (multiAc) {
             startDeviceQueueHead(ac, context);
         } else {
@@ -329,6 +357,9 @@ public final class Sfu {
 
     public void selectNext(SimulationContext context) {
         selectionPending = false;
+        if (modeSwitch != null && ccaState() == WifiChannel.State.BUSY) {
+            return; // 同刻请求先封锁接入，切换结束后可重新安排选队。
+        }
         Deque<QueuedPacket> queue = highestPriorityQueue();
         context.recordQueueSelection(queue.getFirst().packet, id,
                 voQueue.size(), viQueue.size(), beQueue.size(), bkQueue.size());
@@ -395,6 +426,7 @@ public final class Sfu {
         if (collidedData.isEmpty()) {
             channel.release();
             context.recordWifiCollisionEnd(id);
+            tryStartModeSwitch(context);
         }
     }
 
@@ -420,6 +452,7 @@ public final class Sfu {
             advanceDeviceQueue(ac, context);
         }
         edcaAccess.resumeSender(packet);
+        tryStartModeSwitch(context);
     }
 
     private void advanceDeviceQueue(EdcaState.AcState ac, SimulationContext context) {

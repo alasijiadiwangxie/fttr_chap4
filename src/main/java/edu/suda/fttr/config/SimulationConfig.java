@@ -2,6 +2,7 @@ package edu.suda.fttr.config;
 
 import edu.suda.fttr.dba.TcontTopology;
 import edu.suda.fttr.entity.ApEnergyModel;
+import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.link.WifiFrameExchange;
 import edu.suda.fttr.mac.EdcaParameters;
@@ -28,9 +29,11 @@ public final class SimulationConfig {
     private final WirelessPhy wirelessPhy;
     private final Map<Integer, ApCapabilityMode> apCapabilityModes;
     private final Map<Integer, WirelessPhy> stationPhys;
+    private final Map<Integer, WirelessPhy> alternateStationPhys;
     private final boolean apActivityEnabled;
     private final long apActivityWindowNs;
     private final ApEnergyModel apEnergyModel;
+    private final ApModeSwitch.Settings apSwitching;
     private final WifiFrameExchange wifiFrameExchange;
     private final EdcaParameters edcaParameters;
     private final WifiAccessMode wifiAccessMode;
@@ -49,7 +52,8 @@ public final class SimulationConfig {
     SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs,
                      PonLink ponDownlink, PonLink ponUplink, long wifiDelayUs, WirelessPhy wirelessPhy,
                      Map<Integer, ApCapabilityMode> apCapabilityModes, Map<Integer, WirelessPhy> stationPhys,
-                     boolean apActivityEnabled, long apActivityWindowNs, ApEnergyModel apEnergyModel,
+                     Map<Integer, WirelessPhy> alternateStationPhys, boolean apActivityEnabled, long apActivityWindowNs,
+                     ApEnergyModel apEnergyModel, ApModeSwitch.Settings apSwitching,
                      WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters, WifiAccessMode wifiAccessMode,
                      WifiRetryPolicy wifiRetryPolicy,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled,
@@ -66,9 +70,11 @@ public final class SimulationConfig {
         this.wirelessPhy = wirelessPhy;
         this.apCapabilityModes = Map.copyOf(apCapabilityModes);
         this.stationPhys = Map.copyOf(stationPhys);
+        this.alternateStationPhys = Map.copyOf(alternateStationPhys);
         this.apActivityEnabled = apActivityEnabled;
         this.apActivityWindowNs = apActivityWindowNs;
         this.apEnergyModel = apEnergyModel;
+        this.apSwitching = apSwitching;
         this.wifiFrameExchange = wifiFrameExchange;
         this.edcaParameters = edcaParameters;
         this.wifiAccessMode = wifiAccessMode;
@@ -181,6 +187,15 @@ public final class SimulationConfig {
     /** 返回已校验的功耗参数。未启用 B3 时返回 null。 */
     public ApEnergyModel apEnergyModel() {
         return apEnergyModel;
+    }
+
+    /** 同一终端在备用 AP 模式下的有效 PHY，仅为配置了切换请求的 SFU 构造。 */
+    public WirelessPhy alternateWirelessPhyForSta(int staId) {
+        return alternateStationPhys.get(staId);
+    }
+
+    public ApModeSwitch.Settings apSwitching() {
+        return apSwitching;
     }
 
     /** 启用立即 ACK 时的响应时序。旧场景只计算 DATA，返回 null。 */

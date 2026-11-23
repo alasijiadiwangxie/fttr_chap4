@@ -3,6 +3,7 @@ package edu.suda.fttr.simulator;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.ApEnergyModel;
+import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.PonDemandLedger;
@@ -18,6 +19,7 @@ import edu.suda.fttr.dba.GiantDbaPolicy;
 import edu.suda.fttr.phy.ApCapabilityMode;
 import edu.suda.fttr.trace.TraceLogger;
 
+import java.math.BigDecimal;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
@@ -346,6 +348,22 @@ public final class SimulationContext {
         apActivities.put(sfuId, new ApActivity(mode, windowNs));
     }
 
+    public void recordApSwitchEvent(String event, int sfuId, ApModeSwitch.Request request, ApCapabilityMode from,
+                                    ApModeSwitch.Profile profile, long observedNs, BigDecimal energyUj) {
+        trace.recordApSwitchEvent(nowTicks, event, sfuId, request, from, profile, observedNs, energyUj);
+    }
+
+    public void startApModeSwitch(int sfuId, ApCapabilityMode target) {
+        ApActivity activity = apActivities.get(sfuId);
+        logApActivity(sfuId, activity, activity.beginSwitch(nowTicks, target), null, "SWITCH_START");
+    }
+
+    public long finishApModeSwitch(int sfuId, long startNs) {
+        ApActivity activity = apActivities.get(sfuId);
+        logApActivity(sfuId, activity, activity.endSwitch(nowTicks), null, "SWITCH_END");
+        return activity.observedDurationNs(startNs, nowTicks);
+    }
+
     /** DATA 的实际发送端和接收端决定 AP 活动。接入和帧间等待没有活动边界。 */
     public void recordApDataBoundary(Packet packet, int sfuId, boolean start) {
         recordApFrameBoundary(packet, sfuId, !packet.isUplink(), start, start ? "DATA_START" : "DATA_END");
@@ -500,7 +518,8 @@ public final class SimulationContext {
         trace.recordVirtualCollision(loser, winner, sfuId, nowTicks, cwBefore, cwAfter, backoff);
     }
 
-    void recordSummary(List<Sfu> sfus, List<Sta> stations, boolean uplinkEnabled, ApEnergyModel apEnergyModel) {
+    void recordSummary(List<Sfu> sfus, List<Sta> stations, boolean uplinkEnabled, ApEnergyModel apEnergyModel,
+                       ApModeSwitch.Settings switching) {
         byClass.forEach((type, stats) -> trace.recordClassSummary(
                 type, stats.count, stats.averageWaitUs(), stats.averageDelayUs()));
         trace.recordGlobalDelay(overallDelay.count, overallDelay.averageWaitUs(), overallDelay.averageDelayUs());
@@ -513,14 +532,14 @@ public final class SimulationContext {
             if (activity != null) {
                 ApActivity.Totals totals = activity.finish(nowTicks);
                 ApCapabilityMode mode = activity.mode();
-                trace.recordApActivityTotals(sfu.id(), mode, totals);
+                String observedMode = observedApMode(mode, totals);
+                trace.recordApActivityTotals(sfu.id(), observedMode, totals, switching != null);
                 if (apEnergyModel != null) {
                     // 所有 AP 共用 B2 的观察窗口。LEGACY 仍有活动统计，能耗汇总只覆盖有功率参数的 AP。
                     observationEndNs = totals.observationEndNs();
                     if (mode != null) {
-                        ApEnergyModel.Power power = apEnergyModel.powerFor(mode);
-                        ApEnergyModel.Energy energy = power.integrate(totals);
-                        trace.recordApEnergy(sfu.id(), mode, observationEndNs, power, energy);
+                        ApEnergyModel.Energy energy = recordApEnergy(sfu.id(), mode, observedMode, totals,
+                                apEnergyModel, switching);
                         networkEnergy = networkEnergy.plus(energy);
                         modeledApCount++;
                     }
@@ -528,7 +547,8 @@ public final class SimulationContext {
             }
         }
         if (apEnergyModel != null) {
-            trace.recordApNetworkEnergy(observationEndNs, modeledApCount, sfus.size() - modeledApCount, networkEnergy);
+            trace.recordApNetworkEnergy(observationEndNs, modeledApCount, sfus.size() - modeledApCount, networkEnergy,
+                    switching != null);
         }
         for (Sta sta : stations) {
             trace.recordStaSummary(sta, throughputMbps(sta.receivedBytes()));
@@ -550,6 +570,45 @@ public final class SimulationContext {
         } else {
             trace.recordSinglePacketSummary(deliveredPackets, deliveredBytes, lastDeliveryDelayTicks);
         }
+    }
+
+    private ApEnergyModel.Energy recordApEnergy(int sfuId, ApCapabilityMode mode, String observedMode,
+                                               ApActivity.Totals totals, ApEnergyModel model,
+                                               ApModeSwitch.Settings switching) {
+        if (switching == null) {
+            ApEnergyModel.Power power = model.powerFor(mode);
+            ApEnergyModel.Energy energy = power.integrate(totals);
+            trace.recordApEnergy(sfuId, mode, totals.observationEndNs(), power, energy);
+            return energy;
+        }
+        ApEnergyModel.Energy energy = model.integrate(totals, switching.powerFrom(ApCapabilityMode.LCM),
+                switching.powerFrom(ApCapabilityMode.HCM));
+        trace.recordSwitchableApEnergy(sfuId, observedMode, totals.observationEndNs(), energy);
+        for (ApCapabilityMode capability : ApCapabilityMode.values()) {
+            ApEnergyModel.Power power = model.powerFor(capability);
+            ApActivity.Durations durations = totals.forMode(capability);
+            trace.recordApEnergyByMode(sfuId, capability, durations, power, power.integrate(durations));
+        }
+        return energy;
+    }
+
+    private static String observedApMode(ApCapabilityMode finalMode, ApActivity.Totals totals) {
+        if (finalMode == null) {
+            return "LEGACY";
+        }
+        boolean lcm = hasObservedTime(totals.forMode(ApCapabilityMode.LCM));
+        boolean hcm = hasObservedTime(totals.forMode(ApCapabilityMode.HCM));
+        if (lcm && hcm) {
+            return "MIXED";
+        }
+        if (lcm) {
+            return ApCapabilityMode.LCM.name();
+        }
+        return hcm ? ApCapabilityMode.HCM.name() : finalMode.name();
+    }
+
+    private static boolean hasObservedTime(ApActivity.Durations durations) {
+        return durations.idleNs() > 0 || durations.txNs() > 0 || durations.rxNs() > 0;
     }
 
     private void recordUplinkSummary(List<Sta> stations) {
