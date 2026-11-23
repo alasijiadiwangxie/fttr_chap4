@@ -2,6 +2,7 @@ package edu.suda.fttr.simulator;
 
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApActivity;
+import edu.suda.fttr.entity.ApEnergyModel;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.PonDemandLedger;
@@ -499,16 +500,35 @@ public final class SimulationContext {
         trace.recordVirtualCollision(loser, winner, sfuId, nowTicks, cwBefore, cwAfter, backoff);
     }
 
-    void recordSummary(List<Sfu> sfus, List<Sta> stations, boolean uplinkEnabled) {
+    void recordSummary(List<Sfu> sfus, List<Sta> stations, boolean uplinkEnabled, ApEnergyModel apEnergyModel) {
         byClass.forEach((type, stats) -> trace.recordClassSummary(
                 type, stats.count, stats.averageWaitUs(), stats.averageDelayUs()));
         trace.recordGlobalDelay(overallDelay.count, overallDelay.averageWaitUs(), overallDelay.averageDelayUs());
+        ApEnergyModel.Energy networkEnergy = ApEnergyModel.Energy.ZERO;
+        long observationEndNs = 0;
+        int modeledApCount = 0;
         for (Sfu sfu : sfus) {
             trace.recordSfuSummary(sfu, throughputMbps(sfu.sentBytes()));
             ApActivity activity = apActivities.get(sfu.id());
             if (activity != null) {
-                trace.recordApActivityTotals(sfu.id(), activity.mode(), activity.finish(nowTicks));
+                ApActivity.Totals totals = activity.finish(nowTicks);
+                ApCapabilityMode mode = activity.mode();
+                trace.recordApActivityTotals(sfu.id(), mode, totals);
+                if (apEnergyModel != null) {
+                    // 所有 AP 共用 B2 的观察窗口。LEGACY 仍有活动统计，能耗汇总只覆盖有功率参数的 AP。
+                    observationEndNs = totals.observationEndNs();
+                    if (mode != null) {
+                        ApEnergyModel.Power power = apEnergyModel.powerFor(mode);
+                        ApEnergyModel.Energy energy = power.integrate(totals);
+                        trace.recordApEnergy(sfu.id(), mode, observationEndNs, power, energy);
+                        networkEnergy = networkEnergy.plus(energy);
+                        modeledApCount++;
+                    }
+                }
             }
+        }
+        if (apEnergyModel != null) {
+            trace.recordApNetworkEnergy(observationEndNs, modeledApCount, sfus.size() - modeledApCount, networkEnergy);
         }
         for (Sta sta : stations) {
             trace.recordStaSummary(sta, throughputMbps(sta.receivedBytes()));

@@ -1,6 +1,7 @@
 package edu.suda.fttr.config;
 
 import edu.suda.fttr.dba.TcontTopology;
+import edu.suda.fttr.entity.ApEnergyModel;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.link.WifiFrameExchange;
 import edu.suda.fttr.mac.EdcaParameters;
@@ -29,6 +30,7 @@ public final class SimulationConfig {
     private final Map<Integer, WirelessPhy> stationPhys;
     private final boolean apActivityEnabled;
     private final long apActivityWindowNs;
+    private final ApEnergyModel apEnergyModel;
     private final WifiFrameExchange wifiFrameExchange;
     private final EdcaParameters edcaParameters;
     private final WifiAccessMode wifiAccessMode;
@@ -47,7 +49,7 @@ public final class SimulationConfig {
     SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs,
                      PonLink ponDownlink, PonLink ponUplink, long wifiDelayUs, WirelessPhy wirelessPhy,
                      Map<Integer, ApCapabilityMode> apCapabilityModes, Map<Integer, WirelessPhy> stationPhys,
-                     boolean apActivityEnabled, long apActivityWindowNs,
+                     boolean apActivityEnabled, long apActivityWindowNs, ApEnergyModel apEnergyModel,
                      WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters, WifiAccessMode wifiAccessMode,
                      WifiRetryPolicy wifiRetryPolicy,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled,
@@ -66,6 +68,7 @@ public final class SimulationConfig {
         this.stationPhys = Map.copyOf(stationPhys);
         this.apActivityEnabled = apActivityEnabled;
         this.apActivityWindowNs = apActivityWindowNs;
+        this.apEnergyModel = apEnergyModel;
         this.wifiFrameExchange = wifiFrameExchange;
         this.edcaParameters = edcaParameters;
         this.wifiAccessMode = wifiAccessMode;
@@ -173,6 +176,11 @@ public final class SimulationConfig {
     /** 固定观察窗口从 0 开始。-1 表示使用最后一个仿真事件作为结束边界。 */
     public long apActivityWindowNs() {
         return apActivityWindowNs;
+    }
+
+    /** 返回已校验的功耗参数。未启用 B3 时返回 null。 */
+    public ApEnergyModel apEnergyModel() {
+        return apEnergyModel;
     }
 
     /** 启用立即 ACK 时的响应时序。旧场景只计算 DATA，返回 null。 */

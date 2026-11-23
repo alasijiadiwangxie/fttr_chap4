@@ -4,6 +4,7 @@ import edu.suda.fttr.dba.GiantSlaAdmission;
 import edu.suda.fttr.dba.TcontProfile;
 import edu.suda.fttr.dba.TcontTopology;
 import edu.suda.fttr.entity.AccessCategory;
+import edu.suda.fttr.entity.ApEnergyModel;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.link.PonLinkTiming;
 import edu.suda.fttr.link.WifiFrameExchange;
@@ -67,6 +68,10 @@ public final class ConfigLoader {
     private static final String EDCA_SEED = "wifi.mac.edca.seed";
     private static final String AP_ACTIVITY_ENABLED = "wifi.ap.activity.enabled";
     private static final String AP_ACTIVITY_WINDOW_US = "wifi.ap.activity.window.us";
+    private static final String AP_ENERGY = "wifi.ap.energy.";
+    private static final String AP_ENERGY_ENABLED = AP_ENERGY + "enabled";
+    private static final String LCM_POWER = AP_ENERGY + "lcm.";
+    private static final String HCM_POWER = AP_ENERGY + "hcm.";
     private static final Set<String> KEYS = Set.of(
             FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", DOWNLINK_PROPAGATION_US,
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
@@ -75,7 +80,9 @@ public final class ConfigLoader {
             UPLINK_DBA_MODE, TCONT_ENABLED, TCONT_ALLOC_IDS,
             "wifi.delay.us", "wifi.model", "sta.count", "sfu.count", "traffic.mode", "traffic.direction",
             MAC_EXCHANGE, MAC_ACCESS, MAC_SIFS_US, MAC_SLOT_US, MAC_ACK_RATE_MBPS, MAC_ACK_TIMEOUT_US,
-            MAC_MAX_RETRIES, EDCA_SEED, AP_ACTIVITY_ENABLED, AP_ACTIVITY_WINDOW_US);
+            MAC_MAX_RETRIES, EDCA_SEED, AP_ACTIVITY_ENABLED, AP_ACTIVITY_WINDOW_US, AP_ENERGY_ENABLED,
+            LCM_POWER + "idle.w", LCM_POWER + "tx.w", LCM_POWER + "rx.w",
+            HCM_POWER + "idle.w", HCM_POWER + "tx.w", HCM_POWER + "rx.w");
     private static final Set<String> PHY_KEYS = Set.of(
             "wifi.phy.bandwidth.mhz", "wifi.phy.mcs", "wifi.phy.nss", "wifi.phy.gi.us",
             "wifi.phy.mac.overhead.bytes", "wifi.phy.he-ltf.type", "wifi.phy.nominal.packet.padding.us");
@@ -177,6 +184,7 @@ public final class ConfigLoader {
         boolean apActivityEnabled = readApActivityEnabled(properties);
         long apActivityWindowNs = properties.containsKey(AP_ACTIVITY_WINDOW_US)
                 ? readDurationNs(properties, AP_ACTIVITY_WINDOW_US, "0", true) : -1;
+        ApEnergyModel apEnergyModel = readApEnergyModel(properties, apActivityEnabled);
         EdcaParameters edcaParameters = readEdcaParameters(properties);
         WifiAccessMode accessMode = readWifiAccessMode(properties);
         WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy, edcaParameters.sifsUs());
@@ -204,7 +212,7 @@ public final class ConfigLoader {
         validateCompletionClock(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
                 stationPhys, frameExchange, apActivityEnabled);
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
-                apCapabilityModes, stationPhys, apActivityEnabled, apActivityWindowNs,
+                apCapabilityModes, stationPhys, apActivityEnabled, apActivityWindowNs, apEnergyModel,
                 frameExchange, edcaParameters, accessMode, retryPolicy,
                 downlink.windowsUs, uplink.windowsUs,
                 directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled,
@@ -612,6 +620,43 @@ public final class ConfigLoader {
             throw new IllegalArgumentException(AP_ACTIVITY_WINDOW_US + " requires " + AP_ACTIVITY_ENABLED + "=true");
         }
         return value.equals("true");
+    }
+
+    private static ApEnergyModel readApEnergyModel(Properties properties, boolean activityEnabled) {
+        String enabled = properties.getProperty(AP_ENERGY_ENABLED, "false").strip();
+        if (!enabled.equals("true") && !enabled.equals("false")) {
+            throw new IllegalArgumentException(AP_ENERGY_ENABLED + " must be true or false");
+        }
+        if (enabled.equals("true") && !activityEnabled) {
+            throw new IllegalArgumentException(AP_ENERGY_ENABLED + " requires " + AP_ACTIVITY_ENABLED + "=true");
+        }
+        ApEnergyModel.Power lcm = readApPower(properties, LCM_POWER, ApEnergyModel.LCM_DEFAULT);
+        ApEnergyModel.Power hcm = readApPower(properties, HCM_POWER, ApEnergyModel.HCM_DEFAULT);
+        return enabled.equals("true") ? new ApEnergyModel(lcm, hcm) : null;
+    }
+
+    private static ApEnergyModel.Power readApPower(Properties properties, String prefix, ApEnergyModel.Power defaults) {
+        return new ApEnergyModel.Power(readPowerWatts(properties, prefix + "idle.w", defaults.idleW()),
+                readPowerWatts(properties, prefix + "tx.w", defaults.txW()),
+                readPowerWatts(properties, prefix + "rx.w", defaults.rxW()));
+    }
+
+    private static BigDecimal readPowerWatts(Properties properties, String key, BigDecimal defaultWatts) {
+        String configured = properties.getProperty(key);
+        if (configured == null) {
+            return defaultWatts;
+        }
+        String message = key + " must be a positive finite decimal power in W";
+        BigDecimal watts;
+        try {
+            watts = new BigDecimal(configured.strip());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(message, e);
+        }
+        if (!ApEnergyModel.Power.isValidWatts(watts)) {
+            throw new IllegalArgumentException(message);
+        }
+        return watts;
     }
 
     private static Map<Integer, WirelessPhy> readStationPhys(Properties properties, List<Integer> staSfuIds,

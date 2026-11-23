@@ -235,7 +235,7 @@ public final class Simulator {
             ponUplink.recordSummary(context);
             ponUplink.recordReportSummary(mfu.receivedUplinkReports(), context);
         }
-        context.recordSummary(sfus, stations, config.uplinkEnabled());
+        context.recordSummary(sfus, stations, config.uplinkEnabled(), config.apEnergyModel());
     }
 
     private static void recordWirelessProfiles(SimulationConfig config, TraceLogger trace, List<Sta> stations) {

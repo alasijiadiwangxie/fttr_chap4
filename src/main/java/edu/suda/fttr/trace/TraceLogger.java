@@ -2,6 +2,7 @@ package edu.suda.fttr.trace;
 
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApActivity;
+import edu.suda.fttr.entity.ApEnergyModel;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.PonDemandLedger;
@@ -605,6 +606,28 @@ public final class TraceLogger {
                         + "observation_end_ns=%d idle_ns=%d tx_ns=%d rx_ns=%d%n",
                 sfuId, mode == null ? "LEGACY" : mode.name(), totals.observationEndNs(),
                 totals.idleNs(), totals.txNs(), totals.rxNs());
+    }
+
+    public void recordApEnergy(int sfuId, ApCapabilityMode mode, long observationEndNs, ApEnergyModel.Power power,
+                               ApEnergyModel.Energy energy) {
+        output.printf(Locale.ROOT, "summary=WIFI_AP_ENERGY model=%s sfu_id=%d ap_mode=%s observation_start_ns=0 "
+                        + "observation_end_ns=%d idle_power_w=%s tx_power_w=%s rx_power_w=%s %s%n",
+                ApEnergyModel.PROFILE, sfuId, mode.name(), observationEndNs, power.idleW().toPlainString(),
+                power.txW().toPlainString(), power.rxW().toPlainString(), formatApEnergy(energy, observationEndNs));
+    }
+
+    public void recordApNetworkEnergy(long observationEndNs, int modeledApCount, int legacyApCount,
+                                      ApEnergyModel.Energy energy) {
+        output.printf(Locale.ROOT, "summary=WIFI_AP_ENERGY_NETWORK model=%s observation_start_ns=0 "
+                        + "observation_end_ns=%d modeled_ap_count=%d legacy_ap_count=%d %s%n",
+                ApEnergyModel.PROFILE, observationEndNs, modeledApCount, legacyApCount,
+                formatApEnergy(energy, observationEndNs));
+    }
+
+    private static String formatApEnergy(ApEnergyModel.Energy energy, long observationEndNs) {
+        return "idle_energy_uj=" + energy.idleUj().toPlainString() + " tx_energy_uj=" + energy.txUj().toPlainString()
+                + " rx_energy_uj=" + energy.rxUj().toPlainString() + " total_energy_uj=" + energy.totalUj().toPlainString()
+                + " avg_power_w=" + energy.averagePowerW(observationEndNs).toPlainString();
     }
 
     public void recordPonSummary(Packet.Direction direction, long sentPackets, double averageWaitUs,
