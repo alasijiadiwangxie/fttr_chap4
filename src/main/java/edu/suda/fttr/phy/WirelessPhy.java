@@ -21,6 +21,7 @@ public final class WirelessPhy {
     private static final long MAX_PPDU_NS = 5_484_000;
 
     private final int bandwidthMhz;
+    private final int mcs;
     private final int nss;
     private final int macOverheadBytes;
     private final int codingNumerator;
@@ -65,6 +66,7 @@ public final class WirelessPhy {
         }
 
         this.bandwidthMhz = bandwidthMhz;
+        this.mcs = mcs;
         this.nss = nss;
         this.macOverheadBytes = macOverheadBytes;
         codingNumerator = CODING_NUMERATOR[mcs];
@@ -102,6 +104,15 @@ public final class WirelessPhy {
 
     public int bandwidthMhz() {
         return bandwidthMhz;
+    }
+
+    public int mcs() {
+        return mcs;
+    }
+
+    /** 加入 MAC 首部和 FCS。分隔符和聚合对齐填充不是 MPDU 的一部分。 */
+    public int mpduBytes(int payloadBytes) {
+        return ampduSubframeBytes(payloadBytes) - MPDU_DELIMITER_BYTES;
     }
 
     public int nss() {

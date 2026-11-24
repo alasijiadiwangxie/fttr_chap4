@@ -4,6 +4,8 @@ import edu.suda.fttr.channel.ApChannelObservations.LocalReception;
 import edu.suda.fttr.channel.ChannelReport;
 import edu.suda.fttr.channel.ChannelTruth;
 import edu.suda.fttr.config.ChannelObservationInput;
+import edu.suda.fttr.energy.ApModePredictor;
+import edu.suda.fttr.energy.ApQosLedger;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.ApEnergyModel;
@@ -23,6 +25,8 @@ import edu.suda.fttr.dba.DbaContext;
 import edu.suda.fttr.dba.GiantDbaPolicy;
 import edu.suda.fttr.dba.TcontProfile;
 import edu.suda.fttr.phy.ApCapabilityMode;
+import edu.suda.fttr.phy.DownlinkDecoder.ChannelSample;
+import edu.suda.fttr.phy.SinrPerModel;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 
@@ -30,6 +34,7 @@ import java.io.PrintStream;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Locale;
+import java.util.StringJoiner;
 
 /** 每行保留时刻、节点、动作和报文身份，便于逐事件核对。 */
 public final class TraceLogger {
@@ -124,6 +129,9 @@ public final class TraceLogger {
             case WIFI_ACK_TIMEOUT:
             case WIFI_AP_SWITCH_REQUEST:
             case WIFI_AP_SWITCH_END:
+            case WIFI_EXTERNAL_CCA_EDGE:
+            case WIFI_CHANNEL_MANAGEMENT_START:
+            case WIFI_CHANNEL_MANAGEMENT_END:
                 // SFU 处理结果后记录失败、重传或信道释放日志。
                 break;
             default:
@@ -471,6 +479,35 @@ public final class TraceLogger {
         write(packet, timeTicks, receiver, "WIFI_SIFS_START", sfuId);
     }
 
+    public void recordWifiMpduDecode(long endNs, long startNs, Packet head, Packet packet, int sfuId, int attempt,
+                                     int mcs, int mpduBytes, ChannelSample sample, int frequencyBlocks,
+                                     SinrPerModel.Decision decision) {
+        String outcome = decision == null ? "MAC_COLLISION" : decision.decoded() ? "DECODED" : "SINR_ERROR";
+        String scalarSinr = sample != null && sample.uniformSinr() ? Double.toString(sample.sinrDb(0)) : "-";
+        output.printf(Locale.ROOT, "event=WIFI_PHY_MPDU_DECODE t_ns=%d ppdu_start_ns=%d sfu_id=%d sta_id=%d "
+                        + "head_id=%d packet_id=%d attempt=%d mcs=%d mpdu_bytes=%d sinr_db=%s per=%s draw=%s outcome=%s%s%n",
+                endNs, startNs, sfuId, packet.staId(), head.id(), packet.id(), attempt, mcs, mpduBytes,
+                scalarSinr, decision == null ? "-" : Double.toString(decision.per()),
+                decision == null ? "-" : Double.toString(decision.draw()), outcome,
+                frequencyBlocks == 0 ? "" : frequencyBlockDetails(sample, frequencyBlocks));
+    }
+
+    private static String frequencyBlockDetails(ChannelSample sample, int blocks) {
+        StringJoiner channels = new StringJoiner(",");
+        StringJoiner sinrDb = new StringJoiner(",");
+        StringJoiner weights = new StringJoiner(",");
+        for (int subchannel = 0; subchannel < blocks; subchannel++) {
+            channels.add(Integer.toString(subchannel));
+            if (sample != null) {
+                sinrDb.add(Double.toString(sample.sinrDb(subchannel)));
+                weights.add(Double.toString(sample.weight(subchannel)));
+            }
+        }
+        return " frequency_model=subchannel-blocks subchannels=" + channels
+                + " subchannel_sinr_db=" + (sample == null ? "-" : sinrDb)
+                + " block_weights=" + (sample == null ? "-" : weights);
+    }
+
     public void recordAmpduEvent(long nowNs, String phase, Packet head, int sfuId, List<Packet> members, int bytes,
                                   long ppduNs, long sifsNs, long baNs, long bitmap) {
         StringBuilder packetIds = new StringBuilder();
@@ -640,10 +677,35 @@ public final class TraceLogger {
     public void recordChannelFeedback(long timeNs, ChannelObservationInput.Feedback request, String phase,
                                       ChannelReport report) {
         output.printf(Locale.ROOT, "event=WIFI_CHANNEL_FEEDBACK t_ns=%d report_id=%d sfu_id=%d sta_id=%d "
-                        + "subchannel=%d measured_ns=%d arrival_ns=%d expires_ns=%d phase=%s sinr_db=%s cqi=%s%n",
+                        + "subchannel=%d measured_ns=%d arrival_ns=%d expires_ns=%d phase=%s sinr_db=%s cqi=%s%s%n",
                 timeNs, request.id(), request.sfuId(), request.staId(), request.subchannel(),
                 request.measuredNs(), request.arrivalNs(), request.expiresNs(), phase,
-                report == null ? "-" : Double.toString(report.sinrDb()), report == null ? "-" : report.cqi());
+                report == null ? "-" : Double.toString(report.sinrDb()), report == null ? "-" : report.cqi(),
+                request.airtimeNs() == 0 ? "" : " airtime_ns=" + request.airtimeNs());
+    }
+
+    public void recordChannelScan(long timeNs, ChannelObservationInput.Scan scan, String phase, long busyNs,
+                                  BigDecimal energyUj) {
+        output.printf(Locale.ROOT, "event=WIFI_CHANNEL_SCAN t_ns=%d sfu_id=%d subchannel=%d phase=%s "
+                        + "started_ns=%d ended_ns=%d busy_ns=%d busy_fraction=%.9f expires_ns=%d extra_energy_uj=%s%n",
+                timeNs, scan.sfuId(), scan.subchannel(), phase, scan.startNs(), scan.endNs(), busyNs,
+                (double) busyNs / (scan.endNs() - scan.startNs()), scan.expiresNs(), energyUj.toPlainString());
+    }
+
+    public void recordPassiveChannel(long timeNs, Sfu sfu, int busyMask, long confirmed, long retries, long dropped) {
+        long settled = confirmed + dropped;
+        output.printf(Locale.ROOT, "event=WIFI_CHANNEL_PASSIVE t_ns=%d sfu_id=%d cca=%s visible_busy_mask=%d "
+                        + "confirmed=%d retransmissions=%d dropped=%d success_ratio=%.9f%n",
+                timeNs, sfu.id(), sfu.ccaState(), busyMask, confirmed, retries, dropped,
+                settled == 0 ? -1.0 : (double) confirmed / settled);
+    }
+
+    public void recordChannelOverhead(int sfuId, long feedbackNs, long scanNs, BigDecimal scanEnergyUj,
+                                      BigDecimal feedbackRxEnergyUj, BigDecimal feedbackExtraEnergyUj) {
+        output.printf(Locale.ROOT, "summary=WIFI_CHANNEL_OVERHEAD sfu_id=%d feedback_airtime_ns=%d "
+                        + "scan_airtime_ns=%d scan_energy_uj=%s feedback_rx_energy_uj=%s feedback_extra_energy_uj=%s%n",
+                sfuId, feedbackNs, scanNs, scanEnergyUj.toPlainString(), feedbackRxEnergyUj.toPlainString(),
+                feedbackExtraEnergyUj.toPlainString());
     }
 
     public void recordChannelObservation(long timeNs, Sfu sfu, int staId, int subchannel) {
@@ -667,6 +729,11 @@ public final class TraceLogger {
     public void recordChannelLocal(long timeNs, int sfuId, int staId, LocalReception kind, int mpdus) {
         output.printf(Locale.ROOT, "event=WIFI_CHANNEL_LOCAL t_ns=%d sfu_id=%d sta_id=%d kind=%s mpdus=%d%n",
                 timeNs, sfuId, staId, kind, mpdus);
+    }
+
+    public void recordExternalCca(long timeNs, int sfuId, int observedMask, int accessMask, boolean busy) {
+        output.printf(Locale.ROOT, "event=WIFI_EXTERNAL_CCA t_ns=%d sfu_id=%d observed_mask=%d access_mask=%d busy=%b%n",
+                timeNs, sfuId, observedMask, accessMask, busy);
     }
 
     public void recordApActivityChange(int sfuId, ApCapabilityMode mode, long timeNs, ApActivity.Transition change,
@@ -709,6 +776,39 @@ public final class TraceLogger {
                 event.timeNs(), sfuId, packet.type(), packet.direction(), packet.id(), packet.bytes(), event.kind(),
                 event.queuePackets(), event.queueBytes(), event.inFlightPackets(), event.inFlightBytes(),
                 event.awaitingConfirmPackets());
+    }
+
+    public void recordApPrediction(int sfuId, ApModePredictor.Forecast forecast) {
+        output.printf(Locale.ROOT, "event=WIFI_AP_PREDICTION t_ns=%d window_end_ns=%d sfu_id=%d current_mode=%s "
+                        + "mode=%s confidence=%s busy_fraction=%.12g service_mbps=%.12g success_mbps=%.12g "
+                        + "agg_depth=%.12g retry_fraction=%.12g queue_packets=%.12g ending_queue_packets=%.12g "
+                        + "workload_ns=%.12g tx_ns=%.12g rx_ns=%.12g idle_ns=%.12g tx_uj=%.12g rx_uj=%.12g "
+                        + "idle_uj=%.12g energy_uj=%.12g energy_per_bit_uj=%.12g switch_ns=%d switch_uj=%.12g%n",
+                forecast.startNs, forecast.endNs, sfuId, forecast.currentMode, forecast.mode, forecast.confidence,
+                forecast.busyFraction, forecast.serviceMbps, forecast.successMbps, forecast.aggDepth,
+                forecast.retryFraction, forecast.queuePackets, forecast.endingQueuePackets, forecast.workloadNs,
+                forecast.txNs, forecast.rxNs, forecast.idleNs, forecast.txUj, forecast.rxUj, forecast.idleUj,
+                forecast.energyUj, forecast.energyPerBitUj, forecast.switchNs, forecast.switchUj);
+        for (ApModePredictor.QosForecast qos : forecast.qos) {
+            output.printf(Locale.ROOT, "event=WIFI_AP_QOS_FEASIBILITY t_ns=%d window_end_ns=%d sfu_id=%d "
+                            + "mode=%s ac=%s status=%s waiting_ns=%.12g service_ns=%.12g e2e_ns=%.12g "
+                            + "success_probability=%.12g deadline_ns=%d min_on_time=%.12g%n",
+                    forecast.startNs, forecast.endNs, sfuId, forecast.mode, qos.ac, qos.status, qos.waitingNs,
+                    qos.serviceNs, qos.e2eNs, qos.successProbability, qos.requirement.deadlineNs(),
+                    qos.requirement.minOnTime());
+        }
+    }
+
+    public void recordApQos(ApQosLedger.Snapshot qos) {
+        output.printf(Locale.ROOT, "event=WIFI_AP_QOS t_ns=%d sfu_id=%d direction=%s ac=%s deadline_ns=%d "
+                        + "arrived=%d delivered=%d dropped=%d incomplete=%d overdue=%d on_time=%d violations=%d "
+                        + "decided=%d avg_ns=%.12g p95_ns=%d p99_ns=%d jitter_ns=%.12g on_time_rate=%.12g "
+                        + "violation_rate=%.12g loss_rate=%.12g queue_packets=%d inflight_packets=%d "
+                        + "awaiting_confirm_packets=%d head_wait_ns=%d backlog_delta=%d%n",
+                qos.cutoffNs, qos.sfuId, qos.direction, qos.ac, qos.deadlineNs, qos.arrived, qos.delivered,
+                qos.dropped, qos.incomplete, qos.overdue, qos.onTime, qos.violations, qos.decided, qos.avgNs,
+                qos.p95Ns, qos.p99Ns, qos.jitterNs, qos.onTimeRate, qos.violationRate, qos.lossRate, qos.queuePackets,
+                qos.inflightPackets, qos.awaitingConfirmPackets, qos.headWaitNs, qos.backlogDelta);
     }
 
     public void recordApObservedPpdu(Packet packet, int sfuId, int depth, long timeNs) {

@@ -12,6 +12,8 @@ import java.util.TreeMap;
 
 /** 完整场景的信道真值时序。由仿真事件层持有，供测量及离线核查。 */
 public final class ChannelTruth {
+    /** 旧场景没有绝对噪声输入时使用的合成背景功率。 */
+    public static final double DEFAULT_NOISE_DBM = -95.0;
     private final List<Change> changes;
     private final Map<LinkSubchannel, NavigableMap<Long, Change>> bySubchannel = new HashMap<>();
 
@@ -56,13 +58,22 @@ public final class ChannelTruth {
         private final double sinrDb;
         private final int cqi;
         private final boolean interfered;
+        private final double noiseDbm;
 
         public Change(int sfuId, int staId, int subchannel, long effectiveAtNs,
                       double sinrDb, int cqi, boolean interfered) {
+            this(sfuId, staId, subchannel, effectiveAtNs, sinrDb, cqi, interfered, DEFAULT_NOISE_DBM);
+        }
+
+        public Change(int sfuId, int staId, int subchannel, long effectiveAtNs,
+                      double sinrDb, int cqi, boolean interfered, double noiseDbm) {
             ChannelReport.requireLink(sfuId, staId, subchannel);
             ChannelReport.requireQuality(sinrDb, cqi);
             if (effectiveAtNs < 0) {
                 throw new IllegalArgumentException("Channel truth time cannot be negative");
+            }
+            if (!Double.isFinite(noiseDbm)) {
+                throw new IllegalArgumentException("Channel truth background noise must be finite dBm");
             }
             this.sfuId = sfuId;
             this.staId = staId;
@@ -71,6 +82,7 @@ public final class ChannelTruth {
             this.sinrDb = sinrDb;
             this.cqi = cqi;
             this.interfered = interfered;
+            this.noiseDbm = noiseDbm;
         }
 
         public int sfuId() { return sfuId; }
@@ -80,6 +92,7 @@ public final class ChannelTruth {
         public double sinrDb() { return sinrDb; }
         public int cqi() { return cqi; }
         public boolean interfered() { return interfered; }
+        public double noiseDbm() { return noiseDbm; }
     }
 
     private static final class LinkSubchannel {

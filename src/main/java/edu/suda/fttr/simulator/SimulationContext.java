@@ -1,7 +1,12 @@
 package edu.suda.fttr.simulator;
 
 import edu.suda.fttr.channel.ApChannelObservations.LocalReception;
+import edu.suda.fttr.channel.ExternalInterference;
 import edu.suda.fttr.config.ChannelObservationInput;
+import edu.suda.fttr.config.SimulationConfig;
+import edu.suda.fttr.channel.AuxChannelScan;
+import edu.suda.fttr.energy.ApModePredictor;
+import edu.suda.fttr.energy.ApQosLedger;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.ApEnergyModel;
@@ -20,6 +25,9 @@ import edu.suda.fttr.dba.DbaPlan;
 import edu.suda.fttr.dba.DbaContext;
 import edu.suda.fttr.dba.GiantDbaPolicy;
 import edu.suda.fttr.phy.ApCapabilityMode;
+import edu.suda.fttr.phy.DownlinkDecoder.ChannelSample;
+import edu.suda.fttr.phy.SinrPerModel;
+import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.trace.TraceLogger;
 
 import java.math.BigDecimal;
@@ -28,6 +36,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.TreeMap;
 
 /** 每次运行使用独立的事件队列、整数时钟和日志。 */
 public final class SimulationContext {
@@ -42,10 +52,15 @@ public final class SimulationContext {
     private final Map<Integer, UplinkStats> uplinkByStation = new HashMap<>();
     private final Map<Integer, ApActivity> apActivities = new HashMap<>();
     private final Map<Integer, ApTrafficObserver> apObservers = new LinkedHashMap<>();
+    private final Map<Integer, PredictionTrack> apPredictors = new HashMap<>();
+    private final Map<Integer, List<ApModePredictor.Forecast>> latestForecasts = new HashMap<>();
+    private ApQosLedger qosLedger;
+    private long qosCutoffNs;
     private boolean apActivityTraceEnabled;
     private long apObservationPeriodNs;
     private long lastApSampleNs;
     private ChannelObservationRuntime channelObservation;
+    private boolean causalChannelSampling;
     private long nowTicks;
     private int deliveredPackets;
     private long deliveredBytes;
@@ -195,12 +210,9 @@ public final class SimulationContext {
 
     Event nextEvent() {
         Event event = events.poll();
-        if (channelObservation != null) {
-            if (event == null) {
-                channelObservation.finish();
-            } else {
-                channelObservation.advanceBeforeProtocolEvent(observationTimeNs(event.timeTicks()));
-            }
+        finishQosAtBoundary(event);
+        if (!causalChannelSampling) {
+            advanceChannelObservation(event);
         }
         if (apObservationPeriodNs > 0) {
             // 只用事件时钟推进采样。相同时间戳的全部协议事件（含新安排的零延时事件）先执行。
@@ -213,6 +225,9 @@ public final class SimulationContext {
                 sampleApTraffic(throughNs); // 自然结束后的最后一个非空短窗口。
             }
         }
+        if (causalChannelSampling) {
+            advanceChannelObservation(event);
+        }
         if (event != null) {
             nowTicks = event.timeTicks();
             trace.recordEvent(event);
@@ -220,12 +235,114 @@ public final class SimulationContext {
         return event;
     }
 
-    void trackChannelObservation(ChannelObservationInput input, List<Sfu> sfus, List<Sta> stations) {
-        channelObservation = new ChannelObservationRuntime(input, sfus, stations, trace);
+    private void advanceChannelObservation(Event event) {
+        if (channelObservation == null) {
+            return;
+        }
+        if (event == null) {
+            channelObservation.finish();
+        } else {
+            channelObservation.advanceBeforeProtocolEvent(observationTimeNs(event.timeTicks()));
+        }
+    }
+
+    void trackChannelObservation(ChannelObservationInput input, List<Sfu> sfus, List<Sta> stations,
+                                 ExternalInterference interference, ApEnergyModel energyModel) {
+        channelObservation = new ChannelObservationRuntime(input, sfus, stations, trace, interference, energyModel, this);
+        if (interference != null || input.hasManagementObservations()) {
+            enableCausalChannelSampling();
+        }
+    }
+
+    void enableCausalChannelSampling() {
+        causalChannelSampling = true;
+    }
+
+    void executeChannelManagement(Event event) {
+        channelObservation.executeManagement(event);
+    }
+
+    public void recordChannelFeedbackActivity(int sfuId, boolean start) {
+        if (start) {
+            recordWifiStart();
+        }
+        recordApFrameBoundary(null, sfuId, false, start, start ? "FEEDBACK_RX_START" : "FEEDBACK_RX_END");
+        if (!start) {
+            recordWifiEnd();
+        }
+    }
+
+    long apActivityOverlapNs(int sfuId, long startNs, long endNs) {
+        ApActivity activity = apActivities.get(sfuId);
+        return activity == null ? endNs - startNs : activity.observedDurationNs(startNs, endNs);
+    }
+
+    ApCapabilityMode apActivityMode(int sfuId) {
+        ApActivity activity = apActivities.get(sfuId);
+        return activity == null ? null : activity.mode();
     }
 
     public void recordChannelLocal(long timeNs, int sfuId, int staId, LocalReception kind, int mpdus) {
         trace.recordChannelLocal(timeNs, sfuId, staId, kind, mpdus);
+    }
+
+    public void recordExternalCca(int sfuId, int observedMask, int accessMask, boolean busy) {
+        trace.recordExternalCca(nowNanoseconds(), sfuId, observedMask, accessMask, busy);
+        PredictionTrack track = apPredictors.get(sfuId);
+        if (track != null && track.passive) {
+            track.advanceCca(nowNanoseconds());
+            track.accessMask = accessMask;
+            track.busyMask = observedMask & accessMask;
+        }
+    }
+
+    void trackApAnalysis(SimulationConfig config, List<Sfu> sfus) {
+        qosLedger = new ApQosLedger(sfus.size(), config.apAnalysis());
+        qosCutoffNs = config.apActivityWindowNs();
+        if (!config.apAnalysis().predictionEnabled()) {
+            return;
+        }
+        enableCausalChannelSampling();
+        for (Sfu sfu : sfus) {
+            ApCapabilityMode mode = config.apCapabilityMode(sfu.id());
+            Map<Integer, WirelessPhy> current = new TreeMap<>();
+            Map<Integer, WirelessPhy> candidate = new TreeMap<>();
+            for (int sta = 1; sta <= config.staCount(); sta++) {
+                if (config.staSfuIds().get(sta - 1) == sfu.id()) {
+                    current.put(sta, config.wirelessPhyForSta(sta));
+                    candidate.put(sta, config.alternateWirelessPhyForSta(sta));
+                }
+            }
+            var predictor = new ApModePredictor(config.apAnalysis(),
+                    Map.of(mode, current, ApModeSwitch.otherMode(mode), candidate),
+                    config.apEnergyModel(), config.apSwitching(), config.wifiFrameExchange(),
+                    config.edcaParameters(), config.wifiRetryPolicy(), config.ampduConfig(),
+                    config.downlinkDecoder() == null ? null : config.downlinkDecoder().observedPerCurve());
+            boolean passive = config.channelObservation() != null && config.channelObservation().passive();
+            apPredictors.put(sfu.id(), new PredictionTrack(sfu, predictor, passive, mode.bandwidthMhz()));
+        }
+    }
+
+    /** C3 发布的已完成快照，供后续读取。 */
+    public List<ApModePredictor.Forecast> latestApModeForecasts(int sfuId) {
+        return latestForecasts.getOrDefault(sfuId, List.of());
+    }
+
+    void recordQosGeneration(Packet packet, int sfuId) {
+        if (qosLedger != null) {
+            qosLedger.generated(packet, sfuId, nowNanoseconds());
+        }
+    }
+
+    private void finishQosAtBoundary(Event next) {
+        if (qosLedger != null && (next == null
+                || (qosCutoffNs > 0 && observationTimeNs(next.timeTicks()) > qosCutoffNs))) {
+            long endNs = qosCutoffNs > 0 ? qosCutoffNs : nowNanoseconds();
+            for (ApQosLedger.Snapshot metrics : qosLedger.finish(endNs)) {
+                trace.recordApQos(metrics);
+            }
+            qosLedger = null;
+        }
     }
 
     public void recordDelivery(Packet packet, Sta sta) {
@@ -246,6 +363,9 @@ public final class SimulationContext {
         deliveredPackets++;
         deliveredBytes += packet.bytes();
         lastDeliveryDelayTicks = elapsedSinceGenerationTicks(packet);
+        if (qosLedger != null) {
+            qosLedger.delivered(packet, nowNanoseconds());
+        }
     }
 
     public void recordPonDownlinkEnqueue(Packet packet, int sfuId) {
@@ -403,10 +523,28 @@ public final class SimulationContext {
     }
 
     private void sampleApTraffic(long endNs) {
+        if (causalChannelSampling && channelObservation != null) {
+            channelObservation.advanceThrough(endNs);
+        }
         apObservers.forEach((sfuId, observer) -> {
             ApActivity.Airtime airtime = apActivities.get(sfuId).airtimeAt(endNs);
-            for (ApTrafficObserver.Observation observation : observer.sample(endNs, airtime.txNs(), airtime.rxNs())) {
+            List<ApTrafficObserver.Observation> sample = observer.sample(endNs, airtime.txNs(), airtime.rxNs());
+            for (ApTrafficObserver.Observation observation : sample) {
                 trace.recordApTrafficObservation(sfuId, observation);
+            }
+            if (qosLedger != null) {
+                qosLedger.markQueueSample(sfuId, sample);
+            }
+            PredictionTrack track = apPredictors.get(sfuId);
+            if (track != null && endNs < Long.MAX_VALUE) {
+                ApCapabilityMode mode = apActivities.get(sfuId).mode();
+                double[] busy = track.sampleCca(endNs);
+                List<ApModePredictor.Forecast> forecasts = track.predictor.predict(endNs, mode, sample,
+                        track.sfu::candidateChannelReport, busy[0], busy[1]);
+                latestForecasts.put(sfuId, forecasts);
+                for (ApModePredictor.Forecast forecast : forecasts) {
+                    trace.recordApPrediction(sfuId, forecast);
+                }
             }
         });
         lastApSampleNs = endNs;
@@ -456,6 +594,9 @@ public final class SimulationContext {
     private void traceApQueue(int sfuId, ApTrafficObserver.QueueEvent event) {
         if (event != null) {
             trace.recordApQueueEvent(sfuId, event);
+            if (qosLedger != null) {
+                qosLedger.queueChanged(sfuId, event);
+            }
         }
     }
 
@@ -511,6 +652,13 @@ public final class SimulationContext {
         trace.recordWifiDataEnd(packet, sfuId, nowTicks);
     }
 
+    public void recordWifiMpduDecode(Packet head, Packet packet, int sfuId, long startNs, int attempt, int mcs,
+                                     int mpduBytes, ChannelSample sample, int frequencyBlocks,
+                                     SinrPerModel.Decision decision) {
+        trace.recordWifiMpduDecode(nowNanoseconds(), startNs, head, packet, sfuId, attempt, mcs, mpduBytes,
+                sample, frequencyBlocks, decision);
+    }
+
     public void recordAmpduEvent(String phase, Packet head, int sfuId, List<Packet> members, int bytes,
                                  long ppduNs, long sifsNs, long baNs, long bitmap) {
         trace.recordAmpduEvent(nowTicks, phase, head, sfuId, members, bytes, ppduNs, sifsNs, baNs, bitmap);
@@ -521,7 +669,7 @@ public final class SimulationContext {
     }
 
     /** 一个聚合交换只释放一次占用，逐 MPDU 的服务日志不改变全局忙时。 */
-    public void recordWifiAggregateEnd() {
+    public void recordWifiExchangeEnd() {
         recordWifiEnd();
     }
 
@@ -598,6 +746,9 @@ public final class SimulationContext {
     public void recordWifiMacAttempt(Packet packet, int sfuId, int retries) {
         if (retries > 0) {
             wifiRetransmissions++;
+            if (channelObservation != null && !packet.isUplink()) {
+                channelObservation.recordMacObservation(sfuId, 0, 1, 0);
+            }
         }
         trace.recordMacRetryPacket(packet, sfuId, nowTicks, "WIFI_MAC_ATTEMPT", retries);
     }
@@ -629,6 +780,12 @@ public final class SimulationContext {
     }
 
     private void observeApDrop(Packet packet, int sfuId) {
+        if (qosLedger != null) {
+            qosLedger.dropped(packet);
+        }
+        if (channelObservation != null && !packet.isUplink()) {
+            channelObservation.recordMacObservation(sfuId, 0, 0, 1);
+        }
         ApTrafficObserver observer = apObservers.get(sfuId);
         if (observer != null) {
             traceApQueue(sfuId, observer.drop(packet, observationTimeNs(nowTicks)));
@@ -642,6 +799,9 @@ public final class SimulationContext {
 
     public void recordWifiMacSuccess(Packet packet, int sfuId, int retries) {
         trace.recordMacRetryPacket(packet, sfuId, nowTicks, "WIFI_MAC_SUCCESS", retries);
+        if (channelObservation != null && !packet.isUplink()) {
+            channelObservation.recordMacObservation(sfuId, 1, 0, 0);
+        }
     }
 
     public void recordWifiCollisionEnd(int sfuId) {
@@ -658,6 +818,10 @@ public final class SimulationContext {
 
     public void recordEnqueue(Packet packet, int sfuId, int queueDepth) {
         trace.recordEnqueue(packet, nowTicks, sfuId, queueDepth);
+        PredictionTrack track = apPredictors.get(sfuId);
+        if (track != null && !packet.isUplink()) {
+            track.predictor.observeDownlinkIngress(packet, nowNanoseconds());
+        }
         ApTrafficObserver observer = apObservers.get(sfuId);
         if (observer != null) {
             traceApQueue(sfuId, observer.enqueue(packet, observationTimeNs(nowTicks)));
@@ -808,6 +972,62 @@ public final class SimulationContext {
 
         double averageDelayUs() {
             return count == 0 ? 0.0 : delaySumUs / count;
+        }
+    }
+
+    /** 仅累计 AP 正在侦听的带宽。次信道扫描只有完成且未过期后才可补充。 */
+    private static final class PredictionTrack {
+        private final Sfu sfu;
+        private final ApModePredictor predictor;
+        private final boolean passive;
+        private long startNs, previousNs, primaryBusyNs, wideBusyNs, wideObservedNs;
+        private int accessMask, busyMask;
+
+        private PredictionTrack(Sfu sfu, ApModePredictor predictor, boolean passive, int bandwidthMhz) {
+            this.sfu = sfu;
+            this.predictor = predictor;
+            this.passive = passive;
+            accessMask = (1 << (bandwidthMhz / 20)) - 1;
+        }
+
+        private void advanceCca(long timeNs) {
+            long delta = timeNs - previousNs;
+            if ((busyMask & 1) != 0) {
+                primaryBusyNs += delta;
+            }
+            if (accessMask == 15) {
+                wideObservedNs += delta;
+                if (busyMask != 0) {
+                    wideBusyNs += delta;
+                }
+            }
+            previousNs = timeNs;
+        }
+
+        private double[] sampleCca(long endNs) {
+            if (!passive) {
+                return new double[] {-1, -1};
+            }
+            advanceCca(endNs);
+            long duration = endNs - startNs;
+            double primary = (double) primaryBusyNs / duration;
+            double wide = wideObservedNs == duration ? (double) wideBusyNs / duration : estimatedWideBusy(endNs, primary);
+            startNs = endNs;
+            primaryBusyNs = wideBusyNs = wideObservedNs = 0;
+            return new double[] {primary, wide};
+        }
+
+        private double estimatedWideBusy(long endNs, double primary) {
+            // 不同时间的扫描无法直接求并集。候选宽带用独立占用近似，并以缺少扫描结果显式降级。
+            double idleFraction = 1 - primary;
+            for (int subchannel = 1; subchannel < 4; subchannel++) {
+                Optional<AuxChannelScan.Result> scan = sfu.auxChannelScan(subchannel, endNs);
+                if (scan.isEmpty()) {
+                    return -1;
+                }
+                idleFraction *= 1 - scan.get().busyFraction();
+            }
+            return 1 - idleFraction;
         }
     }
 

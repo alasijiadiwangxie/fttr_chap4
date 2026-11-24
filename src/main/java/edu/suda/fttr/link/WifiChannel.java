@@ -3,17 +3,18 @@ package edu.suda.fttr.link;
 import java.util.Objects;
 import java.util.function.Consumer;
 
-/** 单个 SFU 及其关联 STA 的接入资源。帧交换或 AP 重配置期间为忙。 */
+/** 单个 SFU 及其关联 STA 的接入资源。拥有者占用与外部 CCA 并联。 */
 public final class WifiChannel {
     public enum State {
         IDLE, BUSY
     }
 
-    private State state = State.IDLE;
+    private boolean occupied;
+    private boolean externalBusy;
     private Consumer<State> stateListener;
 
     public State state() {
-        return state;
+        return occupied || externalBusy ? State.BUSY : State.IDLE;
     }
 
     /** 每个信道由一个接入控制器处理忙闲变化。状态更新后同步通知。 */
@@ -25,23 +26,34 @@ public final class WifiChannel {
     }
 
     public void occupy() {
-        if (state == State.BUSY) {
+        if (state() == State.BUSY) {
             throw new IllegalStateException("Cannot start DATA on a busy Wi-Fi channel");
         }
-        changeState(State.BUSY);
+        occupied = true;
+        notifyChange(State.IDLE);
     }
 
     public void release() {
-        if (state == State.IDLE) {
-            throw new IllegalStateException("Cannot release an idle Wi-Fi channel");
+        if (!occupied) {
+            throw new IllegalStateException("Cannot release a Wi-Fi channel without an owner");
         }
-        changeState(State.IDLE);
+        occupied = false;
+        notifyChange(State.BUSY);
     }
 
-    private void changeState(State next) {
-        state = next;
-        if (stateListener != null) {
-            stateListener.accept(next);
+    /** 干扰在已有帧交换中出现时，不释放帧交换所持有的资源。 */
+    public void setExternalBusy(boolean busy) {
+        State before = state();
+        externalBusy = busy;
+        notifyChange(before);
+    }
+
+    public boolean externalBusy() { return externalBusy; }
+
+    private void notifyChange(State previous) {
+        State current = state();
+        if (stateListener != null && current != previous) {
+            stateListener.accept(current);
         }
     }
 }

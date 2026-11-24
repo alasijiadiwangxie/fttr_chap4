@@ -1,6 +1,8 @@
 package edu.suda.fttr.config;
 
+import edu.suda.fttr.channel.ExternalInterference;
 import edu.suda.fttr.dba.TcontTopology;
+import edu.suda.fttr.energy.ApAnalysisSettings;
 import edu.suda.fttr.entity.ApEnergyModel;
 import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.Packet;
@@ -10,6 +12,7 @@ import edu.suda.fttr.mac.EdcaParameters;
 import edu.suda.fttr.mac.WifiAccessMode;
 import edu.suda.fttr.mac.WifiRetryPolicy;
 import edu.suda.fttr.phy.ApCapabilityMode;
+import edu.suda.fttr.phy.DownlinkDecoder;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 
@@ -37,12 +40,15 @@ public final class SimulationConfig {
     private final ApModeSwitch.Settings apSwitching;
     private final long apObservationPeriodNs;
     private final double apObservationAlpha;
+    private final ApAnalysisSettings apAnalysis;
     private final ChannelObservationInput channelObservation;
     private final WifiFrameExchange wifiFrameExchange;
     private final EdcaParameters edcaParameters;
     private final WifiAccessMode wifiAccessMode;
     private final WifiRetryPolicy wifiRetryPolicy;
     private final AmpduConfig ampduConfig;
+    private final DownlinkDecoder downlinkDecoder;
+    private final ExternalInterference externalInterference;
     private final List<Long> downlinkTrafficWindowsUs;
     private final List<Long> uplinkTrafficWindowsUs;
     private final boolean uplinkEnabled;
@@ -59,10 +65,11 @@ public final class SimulationConfig {
                      Map<Integer, ApCapabilityMode> apCapabilityModes, Map<Integer, WirelessPhy> stationPhys,
                      Map<Integer, WirelessPhy> alternateStationPhys, boolean apActivityEnabled, long apActivityWindowNs,
                      ApEnergyModel apEnergyModel, ApModeSwitch.Settings apSwitching,
-                     long apObservationPeriodNs, double apObservationAlpha,
+                     long apObservationPeriodNs, double apObservationAlpha, ApAnalysisSettings apAnalysis,
                      ChannelObservationInput channelObservation,
                      WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters, WifiAccessMode wifiAccessMode,
-                     WifiRetryPolicy wifiRetryPolicy, AmpduConfig ampduConfig,
+                     WifiRetryPolicy wifiRetryPolicy, AmpduConfig ampduConfig, DownlinkDecoder downlinkDecoder,
+                     ExternalInterference externalInterference,
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled,
                      boolean demandLedgerEnabled, boolean dbaShadowEnabled, boolean dbaExecutionEnabled,
                      boolean dbaMultiGrantEnabled, boolean dbaGiantEnabled, boolean dbaGiantCompleteEnabled,
@@ -84,12 +91,15 @@ public final class SimulationConfig {
         this.apSwitching = apSwitching;
         this.apObservationPeriodNs = apObservationPeriodNs;
         this.apObservationAlpha = apObservationAlpha;
+        this.apAnalysis = apAnalysis;
         this.channelObservation = channelObservation;
         this.wifiFrameExchange = wifiFrameExchange;
         this.edcaParameters = edcaParameters;
         this.wifiAccessMode = wifiAccessMode;
         this.wifiRetryPolicy = wifiRetryPolicy;
         this.ampduConfig = ampduConfig;
+        this.downlinkDecoder = downlinkDecoder;
+        this.externalInterference = externalInterference;
         this.downlinkTrafficWindowsUs = List.copyOf(downlinkTrafficWindowsUs);
         this.uplinkTrafficWindowsUs = List.copyOf(uplinkTrafficWindowsUs);
         this.uplinkEnabled = uplinkEnabled;
@@ -155,7 +165,8 @@ public final class SimulationConfig {
 
     /** 共享光发送、HE SU 及精确的 AP 活动观察窗口使用整数纳秒时钟。 */
     public boolean usesNanosecondTicks() {
-        return wirelessPhy != null || ponDownlink != null || ponUplink != null || apActivityEnabled;
+        return wirelessPhy != null || ponDownlink != null || ponUplink != null || apActivityEnabled
+                || (channelObservation != null && channelObservation.usesTimedReceiver());
     }
 
     public long wifiDelayUs() {
@@ -204,6 +215,10 @@ public final class SimulationConfig {
         return apObservationAlpha;
     }
 
+    public ApAnalysisSettings apAnalysis() {
+        return apAnalysis;
+    }
+
     /** null 表示 C2a 关闭。该输入由仿真控制层消费。 */
     public ChannelObservationInput channelObservation() {
         return channelObservation;
@@ -247,6 +262,14 @@ public final class SimulationConfig {
     /** 非空时允许使用 A-MPDU 和压缩 Block ACK。 */
     public AmpduConfig ampduConfig() {
         return ampduConfig;
+    }
+
+    public DownlinkDecoder downlinkDecoder() {
+        return downlinkDecoder;
+    }
+
+    public ExternalInterference externalInterference() {
+        return externalInterference;
     }
 
     /** 各 SFU 的下行泊松生成窗口，按 ID 排列。手动模式或未开启下行时为空。 */

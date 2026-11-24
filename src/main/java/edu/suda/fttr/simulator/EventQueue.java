@@ -13,6 +13,10 @@ final class EventQueue {
 
     private static int accessPriority(Event event) {
         EventType type = event.type();
+        if (type == EventType.WIFI_EXTERNAL_CCA_EDGE) {
+            // [start,end) 的外部 CCA 在同刻任何新的接入或收发动作之前生效。
+            return -3;
+        }
         if (type == EventType.WIFI_AP_SWITCH_REQUEST) {
             // 先登记同刻请求。已占用的交换照常完成，尚未开始的新竞争需等切换完成。
             return -2;
@@ -26,6 +30,7 @@ final class EventQueue {
         }
         // 一包恰好在光帧边界发完时，先释放前一帧资源，再执行本帧的授权。
         return type == EventType.WIFI_SELECT_NEXT || type == EventType.WIFI_ACCESS_TIMER
+                || type == EventType.WIFI_CHANNEL_MANAGEMENT_START
                 || type == EventType.PON_UPLINK_FRAME || type == EventType.PON_DBA_SLOT_END ? 1 : 0;
     }
 

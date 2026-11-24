@@ -2,6 +2,7 @@ package edu.suda.fttr.entity;
 
 import edu.suda.fttr.channel.ApChannelObservations;
 import edu.suda.fttr.channel.ApChannelObservations.LocalReception;
+import edu.suda.fttr.channel.AuxChannelScan;
 import edu.suda.fttr.channel.ChannelReport;
 import edu.suda.fttr.link.AmpduConfig;
 import edu.suda.fttr.link.PonUplink;
@@ -26,6 +27,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 
 /** 每台 SFU 统一协调本信道上的下行和关联 STA 的上行。 */
@@ -34,8 +36,11 @@ public final class Sfu {
     private WifiLink wifi;
     private ApModeSwitch modeSwitch;
     private ApChannelObservations channelObservations;
+    private final AuxChannelScan channelScans = new AuxChannelScan();
     private int initialVisibleSubchannels;
     private final WifiChannel channel = new WifiChannel();
+    private int externalCcaSubchannels;
+    private int externalCcaMask;
     private final Map<Integer, Sta> stations;
     private final EdcaState edcaState;
     private final EdcaParameters edcaParameters;
@@ -47,7 +52,7 @@ public final class Sfu {
     private final Map<EdcaState.AcState, Deque<QueuedPacket>> deviceQueues = new HashMap<>();
     // 同一次碰撞中仍在发射 DATA 的报文。最后一条结束时才释放公共信道。
     private final Set<Packet> collidedData = new HashSet<>();
-    private final Set<Packet> awaitingAck = new HashSet<>();
+    private final Map<Packet, MissingResponse> awaitingAck = new HashMap<>();
     private AmpduConfig ampduConfig;
     private AmpduAttempt activeAggregate;
     private final Map<Packet, AmpduAttempt> collidedAggregates = new HashMap<>();
@@ -57,6 +62,7 @@ public final class Sfu {
     private final Deque<QueuedPacket> bkQueue = new ArrayDeque<>();
     private QueuedPacket active;
     private Txop txop;
+    private Event txopContinuationEvent;
     private boolean selectionPending;
     private long txStartTicks;
     private long dataEndTicks;
@@ -115,6 +121,44 @@ public final class Sfu {
         ampduConfig = config;
     }
 
+    public void configureExternalCca(int subchannels) {
+        externalCcaSubchannels = subchannels;
+    }
+
+    /** AP 检测到的外部忙碌能量，每位对应一个 20 MHz 子信道。 */
+    public void receiveExternalCca(int mask, SimulationContext context) {
+        externalCcaMask = mask;
+        applyExternalCca(context);
+        if (channel.externalBusy() && txopContinuationEvent != null) {
+            // 只取消尚未发射的 TXOP 后继帧；已开始的交换自然完成。
+            context.cancel(txopContinuationEvent);
+            txopContinuationEvent = null;
+            EdcaState.AcState ac = senderAc(active.packet);
+            context.recordWifiTxopEnd(txop.firstPacket, id, txop.startTicks, txop.limitNs, txop.packetCount);
+            txop = null;
+            active = null;
+            channel.release();
+            context.recordWifiExchangeEnd();
+            startDeviceQueueHead(ac, context);
+        }
+        if (channel.state() == WifiChannel.State.IDLE) {
+            tryStartModeSwitch(context);
+            if (!multiAc) {
+                requestSelection(context);
+            }
+        }
+    }
+
+    private void applyExternalCca(SimulationContext context) {
+        if (externalCcaSubchannels != 0) {
+            int width = modeSwitch == null ? externalCcaSubchannels : modeSwitch.mode().bandwidthMhz() / 20;
+            int accessMask = (1 << width) - 1;
+            boolean busy = (externalCcaMask & accessMask) != 0;
+            channel.setExternalBusy(busy);
+            context.recordExternalCca(id, externalCcaMask, accessMask, busy);
+        }
+    }
+
     public void configureChannelObservation(int apBandwidthMhz) {
         channelObservations = new ApChannelObservations(id, stations.keySet());
         initialVisibleSubchannels = Math.min(ChannelReport.SUBCHANNEL_COUNT, apBandwidthMhz / 20);
@@ -128,6 +172,46 @@ public final class Sfu {
     public Optional<ChannelReport> channelReport(int staId, int subchannel, long nowNs) {
         return channelObservations == null ? Optional.empty()
                 : channelObservations.latest(staId, subchannel, visibleSubchannels(), nowNs);
+    }
+
+    /** 假设候选模式时仍只能使用已到达的 STA 反馈。辅助扫描从独立接口读取。 */
+    public Optional<ChannelReport> candidateChannelReport(int staId, int subchannel, long nowNs) {
+        return channelObservations == null ? Optional.empty()
+                : channelObservations.latest(staId, subchannel, ChannelReport.SUBCHANNEL_COUNT, nowNs);
+    }
+
+    public Optional<AuxChannelScan.Result> auxChannelScan(int subchannel, long nowNs) {
+        return channelScans.latest(subchannel, nowNs);
+    }
+
+    public boolean canStartAuxScan() {
+        return visibleSubchannels() == 1;
+    }
+
+    public int observedExternalMask() {
+        return externalCcaMask & ((1 << visibleSubchannels()) - 1);
+    }
+
+    public void completeAuxScan(int subchannel, long startNs, long endNs, long busyNs, long expiryNs) {
+        channelScans.complete(subchannel, startNs, endNs, busyNs, expiryNs);
+    }
+
+    public boolean beginChannelFeedback(SimulationContext context) {
+        if (ccaState() != WifiChannel.State.IDLE) {
+            return false;
+        }
+        channel.occupy();
+        context.recordChannelFeedbackActivity(id, true);
+        return true;
+    }
+
+    public void endChannelFeedback(SimulationContext context) {
+        context.recordChannelFeedbackActivity(id, false);
+        channel.release();
+        tryStartModeSwitch(context);
+        if (!multiAc) {
+            requestSelection(context);
+        }
     }
 
     public ApChannelObservations.Visibility channelVisibility(int staId, int subchannel, long nowNs) {
@@ -160,6 +244,7 @@ public final class Sfu {
     public void finishModeSwitch(SimulationContext context) {
         // 新能力必须在释放接入资源之前生效。切换独占资源，但不计入已有 DATA/ACK 忙时。
         wifi = modeSwitch.finish(context);
+        applyExternalCca(context);
         channel.release();
         tryStartModeSwitch(context);
         if (!multiAc) {
@@ -266,6 +351,7 @@ public final class Sfu {
     }
 
     public void transmitWithinTxop(Packet packet, SimulationContext context) {
+        txopContinuationEvent = null;
         checkActive(packet);
         if (txop == null || ccaState() != WifiChannel.State.BUSY) {
             throw new IllegalStateException("No active TXOP for packet " + packet.id());
@@ -284,6 +370,7 @@ public final class Sfu {
         }
         context.recordApDataBoundary(packet, id, true);
         context.recordApDownlinkAttempt(packet, id, null);
+        wifi.beginDownlinkDecode(packet, id, active.retries, false, context);
         wifi.transmit(packet, id, context);
     }
 
@@ -291,6 +378,10 @@ public final class Sfu {
         checkActive(packet);
         dataEndTicks = context.nowTicks();
         context.recordApDataBoundary(packet, id, false);
+        if (wifi.finishDownlinkDecode(packet, id, context).orElse(1) == 0) {
+            awaitFailedDownlinkResponse(packet, null, context);
+            return;
+        }
         boolean ackPending = wifi.scheduleAck(packet, id, context);
         if (ackPending && edcaAccess != null) {
             publishMacDuration(packet, false, announcedNavEndTicks - dataEndTicks, context);
@@ -348,7 +439,8 @@ public final class Sfu {
             queue.removeFirst();
             next = queue.peekFirst();
         }
-        boolean continues = txop != null && next != null && txopContinuationNs(next.packet, context.nowTicks()) > 0;
+        boolean continues = txop != null && next != null && !channel.externalBusy()
+                && txopContinuationNs(next.packet, context.nowTicks()) > 0;
         if (!continues) {
             channel.release();
         }
@@ -365,7 +457,8 @@ public final class Sfu {
             txop.packetCount++;
             if (continues) {
                 active = next;
-                context.scheduleAfterNanoseconds(wifi.sifsNs(), EventType.WIFI_TXOP_DATA_START, next.packet, id);
+                txopContinuationEvent = context.scheduleAfterTicks(wifi.sifsNs(), EventType.WIFI_TXOP_DATA_START,
+                        next.packet, id);
                 return;
             }
             context.recordWifiTxopEnd(txop.firstPacket, id, txop.startTicks, txop.limitNs, txop.packetCount);
@@ -424,6 +517,10 @@ public final class Sfu {
         for (QueuedPacket queued : attempt.members) {
             context.recordWifiMacAttempt(queued.packet, id, queued.retries);
         }
+        if (wifi.modelsDownlinkErrors(head)) {
+            wifi.beginDownlinkDecode(head, id, attempt.packets, index -> attempt.members.get(index).retries,
+                    endEvent == EventType.WIFI_COLLISION_DATA_END, context);
+        }
         context.scheduleAfterNanoseconds(attempt.ppduNs, endEvent, head, id);
     }
 
@@ -432,14 +529,23 @@ public final class Sfu {
         AmpduAttempt attempt = activeAggregate;
         dataEndTicks = context.nowTicks();
         context.recordApDataBoundary(head, id, false);
-        for (int i = 0; i < attempt.members.size(); i++) {
-            QueuedPacket queued = attempt.members.get(i);
-            if (queued.retries == 0 && ampduConfig.failsFirstAttempt(queued.packet.id())) {
-                continue; // 可复核的 MPDU 解码失败注入，只作用于被聚合的首次发送。
+        OptionalLong decoded = wifi.finishDownlinkDecode(head, id, context);
+        if (decoded.isPresent()) {
+            attempt.bitmap = decoded.getAsLong();
+        } else {
+            for (int i = 0; i < attempt.members.size(); i++) {
+                QueuedPacket queued = attempt.members.get(i);
+                if (queued.retries == 0 && ampduConfig.failsFirstAttempt(queued.packet.id())) {
+                    continue; // B6 兼容路径只对指定成员的首次聚合发送注入失败。
+                }
+                attempt.bitmap |= 1L << i;
             }
-            attempt.bitmap |= 1L << i;
         }
         traceAggregate("DATA_END", head, attempt, context);
+        if (decoded.isPresent() && attempt.bitmap == 0) {
+            awaitFailedDownlinkResponse(head, attempt, context);
+            return;
+        }
         if (head.isUplink() && attempt.bitmap != 0) {
             Packet firstDecoded = attempt.packets.get(Long.numberOfTrailingZeros(attempt.bitmap));
             observeLocalReception(firstDecoded, LocalReception.UL_DATA, Long.bitCount(attempt.bitmap), context);
@@ -470,11 +576,11 @@ public final class Sfu {
             observeLocalReception(head, LocalReception.DL_BLOCK_ACK, Long.bitCount(activeAggregate.bitmap), context);
         }
         traceAggregate("BA_END", head, activeAggregate, context);
-        settleAggregate(head, activeAggregate, true, context);
+        settleAggregate(head, activeAggregate, true, false, context);
         activeAggregate = null;
         active = null;
         channel.release();
-        context.recordWifiAggregateEnd();
+        context.recordWifiExchangeEnd();
         tryStartModeSwitch(context);
         startDeviceQueueHead(senderAc(head), context);
     }
@@ -485,7 +591,8 @@ public final class Sfu {
     }
 
     /** BA bitmap only removes acknowledged members; retry survivors keep the FIFO prefix order. */
-    private void settleAggregate(Packet head, AmpduAttempt attempt, boolean blockAckReceived, SimulationContext context) {
+    private void settleAggregate(Packet head, AmpduAttempt attempt, boolean blockAckReceived, boolean collision,
+                                 SimulationContext context) {
         EdcaState.AcState ac = senderAc(head);
         Deque<QueuedPacket> queue = deviceQueues.get(ac);
         List<QueuedPacket> survivors = new ArrayList<>();
@@ -504,7 +611,7 @@ public final class Sfu {
             if (queued.retries < retryPolicy.maxRetries()) {
                 survivors.add(queued);
             } else {
-                context.recordWifiRetryLimitDrop(queued.packet, id, queued.retries, !blockAckReceived);
+                context.recordWifiRetryLimitDrop(queued.packet, id, queued.retries, collision);
                 context.recordAmpduMpdu(head, queued.packet, id, "DROPPED", queued.retries);
             }
         }
@@ -577,8 +684,8 @@ public final class Sfu {
 
     public void selectNext(SimulationContext context) {
         selectionPending = false;
-        if (modeSwitch != null && ccaState() == WifiChannel.State.BUSY) {
-            return; // 同刻请求先封锁接入，切换结束后可重新安排选队。
+        if (ccaState() == WifiChannel.State.BUSY) {
+            return; // 同刻的管理收发或模式切换结束后可重新选队。
         }
         Deque<QueuedPacket> queue = highestPriorityQueue();
         context.recordQueueSelection(queue.getFirst().packet, id,
@@ -614,7 +721,9 @@ public final class Sfu {
                 if (retryPolicy != null) {
                     edcaAccess.suspendSender(packet);
                     if (attempt == null) {
-                        context.recordWifiMacAttempt(packet, id, deviceQueues.get(senderAc(packet)).getFirst().retries);
+                        int retries = deviceQueues.get(senderAc(packet)).getFirst().retries;
+                        context.recordWifiMacAttempt(packet, id, retries);
+                        wifi.beginDownlinkDecode(packet, id, retries, true, context);
                     }
                 }
                 if (attempt == null) {
@@ -641,20 +750,19 @@ public final class Sfu {
             throw new IllegalStateException("No collided DATA pending for packet " + packet.id());
         }
         context.recordApCollisionDataEnd(packet, id);
+        wifi.finishDownlinkDecode(packet, id, context);
         if (retryPolicy == null) {
             context.recordWifiCollisionDrop(packet, id);
             EdcaState.AcState ac = senderAc(packet);
             ac.clearBackoff();
             advanceDeviceQueue(ac, context);
         } else {
-            // ACK 从本设备的 DATA 结束起等待。射频占用和发送设备的等待状态分别管理。
-            awaitingAck.add(packet);
             context.recordWifiCollisionDataEnd(packet, id);
-            AmpduAttempt attempt = collidedAggregates.get(packet);
+            AmpduAttempt attempt = collidedAggregates.remove(packet);
             if (attempt != null) {
                 traceAggregate("COLLISION_DATA_END", packet, attempt, context);
             }
-            context.scheduleAfter(retryPolicy.ackTimeoutUs(), EventType.WIFI_ACK_TIMEOUT, packet, id);
+            awaitResponseTimeout(packet, attempt, true, context);
         }
         if (collidedData.isEmpty()) {
             channel.release();
@@ -663,17 +771,38 @@ public final class Sfu {
         }
     }
 
+    private void awaitFailedDownlinkResponse(Packet packet, AmpduAttempt aggregate, SimulationContext context) {
+        // DATA 发完立即释放实体信道。仅发送设备冻结到超时，期间没有 ACK/BA 接收能耗。
+        edcaAccess.suspendSender(packet);
+        awaitResponseTimeout(packet, aggregate, false, context);
+        if (txop != null) {
+            context.recordWifiTxopEnd(txop.firstPacket, id, txop.startTicks, txop.limitNs, txop.packetCount);
+            txop = null;
+        }
+        active = null;
+        activeAggregate = null;
+        channel.release();
+        context.recordWifiExchangeEnd();
+    }
+
+    private void awaitResponseTimeout(Packet packet, AmpduAttempt aggregate, boolean collision,
+                                      SimulationContext context) {
+        awaitingAck.put(packet, new MissingResponse(aggregate, collision));
+        context.scheduleAfter(retryPolicy.ackTimeoutUs(), EventType.WIFI_ACK_TIMEOUT, packet, id);
+    }
+
     public void onAckTimeout(Packet packet, SimulationContext context) {
-        if (!awaitingAck.remove(packet)) {
+        MissingResponse failure = awaitingAck.remove(packet);
+        if (failure == null) {
             throw new IllegalStateException("No ACK pending for packet " + packet.id());
         }
         EdcaState.AcState ac = senderAc(packet);
         QueuedPacket queued = deviceQueues.get(ac).getFirst();
         context.recordWifiAckTimeout(packet, id, queued.retries);
-        AmpduAttempt attempt = collidedAggregates.remove(packet);
+        AmpduAttempt attempt = failure.aggregate;
         if (attempt != null) {
             traceAggregate("BA_TIMEOUT", packet, attempt, context);
-            settleAggregate(packet, attempt, false, context);
+            settleAggregate(packet, attempt, false, failure.collision, context);
             startDeviceQueueHead(ac, context);
         } else if (queued.retries < retryPolicy.maxRetries()) {
             int cwBefore = ac.currentCw();
@@ -684,7 +813,7 @@ public final class Sfu {
             // 继续使用同一个队首报文和原入队时间。恢复发送端后，计时器按 CCA 等待 AIFS。
             edcaAccess.start(packet, ac, context);
         } else {
-            context.recordWifiRetryLimitDrop(packet, id, queued.retries);
+            context.recordWifiRetryLimitDrop(packet, id, queued.retries, failure.collision);
             ac.resetContentionWindow();
             queued.retries = 0;
             advanceDeviceQueue(ac, context);
@@ -782,6 +911,16 @@ public final class Sfu {
 
         private boolean acknowledged(int index) {
             return (bitmap & (1L << index)) != 0;
+        }
+    }
+
+    private static final class MissingResponse {
+        private final AmpduAttempt aggregate;
+        private final boolean collision;
+
+        private MissingResponse(AmpduAttempt aggregate, boolean collision) {
+            this.aggregate = aggregate;
+            this.collision = collision;
         }
     }
 

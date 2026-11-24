@@ -2,9 +2,11 @@ package edu.suda.fttr.config;
 
 import edu.suda.fttr.channel.ChannelReport;
 import edu.suda.fttr.channel.ChannelTruth;
+import edu.suda.fttr.channel.ExternalInterference;
 import edu.suda.fttr.dba.GiantSlaAdmission;
 import edu.suda.fttr.dba.TcontProfile;
 import edu.suda.fttr.dba.TcontTopology;
+import edu.suda.fttr.energy.ApAnalysisSettings;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApEnergyModel;
 import edu.suda.fttr.entity.ApModeSwitch;
@@ -18,6 +20,8 @@ import edu.suda.fttr.mac.EdcaParameters.AcParameters;
 import edu.suda.fttr.mac.WifiAccessMode;
 import edu.suda.fttr.mac.WifiRetryPolicy;
 import edu.suda.fttr.phy.ApCapabilityMode;
+import edu.suda.fttr.phy.DownlinkDecoder;
+import edu.suda.fttr.phy.SinrPerModel;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.Event;
 import edu.suda.fttr.traffic.TrafficGenerator;
@@ -80,10 +84,29 @@ public final class ConfigLoader {
     private static final String AP_OBSERVATION_ENABLED = "wifi.ap.observation.enabled";
     private static final String AP_OBSERVATION_PERIOD_US = "wifi.ap.observation.period.us";
     private static final String AP_OBSERVATION_EWMA_ALPHA = "wifi.ap.observation.ewma.alpha";
+    private static final String AP_PREDICTION_ENABLED = "wifi.ap.prediction.enabled";
+    private static final String AP_PREDICTION_WINDOW_US = "wifi.ap.prediction.window.us";
+    private static final String AP_PREDICTION_ALPHA = "wifi.ap.prediction.alpha";
+    private static final String AP_QOS_ENABLED = "wifi.ap.qos.enabled";
+    private static final Pattern AP_QOS_AC_KEY = Pattern.compile("wifi\\.ap\\.qos\\.(VO|VI|BE|BK)\\.(deadline\\.us|min-on-time)");
     private static final String CHANNEL_OBSERVATION_ENABLED = "wifi.channel.observation.enabled";
     private static final String CHANNEL_TRUTH = "wifi.channel.truth";
     private static final String CHANNEL_FEEDBACK = "wifi.channel.feedback";
     private static final String CHANNEL_READ_TIMES = "wifi.channel.observe.us";
+    private static final String CHANNEL_PASSIVE = "wifi.channel.passive.enabled";
+    private static final String CHANNEL_FEEDBACK_AIRTIME = "wifi.channel.feedback.airtime.us";
+    private static final String CHANNEL_SCAN_SCHEDULE = "wifi.channel.scan.schedule";
+    private static final String CHANNEL_SCAN_POWER = "wifi.channel.scan.power.w";
+    private static final String PHY_PER_ENABLED = "wifi.phy.per.enabled";
+    private static final String PHY_PER_SEED = "wifi.phy.per.seed";
+    private static final String PHY_PER_REFERENCE_BYTES = "wifi.phy.per.reference.mpdu.bytes";
+    private static final String PHY_PER_CURVES = "wifi.phy.per.curves";
+    private static final String PHY_PER_SOURCE = "wifi.phy.per.source";
+    private static final String PHY_PER_FREQUENCY_MODEL = "wifi.phy.per.frequency.model";
+    private static final String PHY_PER_SUBCHANNEL_WEIGHTS = "wifi.phy.per.subchannel.weights";
+    private static final String INTERFERENCE_ENABLED = "wifi.channel.interference.enabled";
+    private static final String INTERFERENCE_TIMELINE = "wifi.channel.interference.timeline";
+    private static final String EXTERNAL_CCA_THRESHOLD = "wifi.channel.interference.cca.threshold.dbm";
     private static final String AP_ENERGY = "wifi.ap.energy.";
     private static final String AP_ENERGY_ENABLED = AP_ENERGY + "enabled";
     private static final String LCM_POWER = AP_ENERGY + "lcm.";
@@ -103,7 +126,12 @@ public final class ConfigLoader {
             MAC_MAX_RETRIES, AMPDU_ENABLED, AMPDU_MAX_MPDUS, AMPDU_MAX_BYTES, AMPDU_FIRST_ATTEMPT_ERRORS,
             EDCA_SEED, AP_ACTIVITY_ENABLED, AP_ACTIVITY_WINDOW_US, AP_ENERGY_ENABLED,
             AP_OBSERVATION_ENABLED, AP_OBSERVATION_PERIOD_US, AP_OBSERVATION_EWMA_ALPHA,
+            AP_PREDICTION_ENABLED, AP_PREDICTION_WINDOW_US, AP_PREDICTION_ALPHA, AP_QOS_ENABLED,
             CHANNEL_OBSERVATION_ENABLED, CHANNEL_TRUTH, CHANNEL_FEEDBACK, CHANNEL_READ_TIMES,
+            CHANNEL_PASSIVE, CHANNEL_FEEDBACK_AIRTIME, CHANNEL_SCAN_SCHEDULE, CHANNEL_SCAN_POWER,
+            PHY_PER_ENABLED, PHY_PER_SEED, PHY_PER_REFERENCE_BYTES, PHY_PER_CURVES, PHY_PER_SOURCE,
+            PHY_PER_FREQUENCY_MODEL, PHY_PER_SUBCHANNEL_WEIGHTS,
+            INTERFERENCE_ENABLED, INTERFERENCE_TIMELINE, EXTERNAL_CCA_THRESHOLD,
             LCM_POWER + "idle.w", LCM_POWER + "tx.w", LCM_POWER + "rx.w",
             HCM_POWER + "idle.w", HCM_POWER + "tx.w", HCM_POWER + "rx.w",
             AP_SWITCH_ENABLED, LCM_TO_HCM + "delay.us", LCM_TO_HCM + "power.w",
@@ -212,17 +240,25 @@ public final class ConfigLoader {
                 ? readDurationNs(properties, AP_ACTIVITY_WINDOW_US, "0", true) : -1;
         long apObservationPeriodNs = readApObservationPeriod(properties);
         double apObservationAlpha = readApObservationAlpha(properties);
-        ChannelObservationInput channelObservation = readChannelObservation(properties, staSfuIds);
+        ChannelTruth channelTruth = readChannelTruth(properties, staSfuIds);
+        ChannelObservationInput channelObservation = readChannelObservation(properties, sfuCount, staSfuIds, channelTruth);
         ApEnergyModel apEnergyModel = readApEnergyModel(properties, apActivityEnabled);
         ApModeSwitch.Settings apSwitching = readApSwitching(properties, sfuCount, apCapabilityModes, apEnergyModel);
+        ApAnalysisSettings apAnalysis = readApAnalysisSettings(properties, apObservationPeriodNs,
+                apEnergyModel, apCapabilityModes.size() == sfuCount);
         Map<Integer, WirelessPhy> alternateStationPhys = new HashMap<>();
         Map<Integer, WirelessPhy> stationPhys = readStationPhys(properties, staSfuIds, apCapabilityModes,
-                apSwitching, alternateStationPhys);
+                apSwitching, apAnalysis != null && apAnalysis.predictionEnabled(), alternateStationPhys);
         EdcaParameters edcaParameters = readEdcaParameters(properties);
         WifiAccessMode accessMode = readWifiAccessMode(properties);
         WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy, edcaParameters.sifsUs());
+        if (apAnalysis != null && apAnalysis.predictionEnabled() && frameExchange == null) {
+            throw new IllegalArgumentException(AP_PREDICTION_ENABLED + " requires data-sifs-ack");
+        }
         WifiRetryPolicy retryPolicy = readWifiRetryPolicy(properties, accessMode, frameExchange, edcaParameters);
         AmpduConfig ampduConfig = readAmpduConfig(properties, accessMode, frameExchange, edcaParameters);
+        ExternalInterference externalInterference = readExternalInterference(properties, sfuCount);
+        DownlinkDecoder downlinkDecoder = readDownlinkDecoder(properties, retryPolicy, channelTruth, externalInterference);
         long wifiUs = wirelessPhy == null ? readNonNegativeLong(properties, "wifi.delay.us") : 0;
         long durationUs = poisson ? readPositiveDuration(properties, "traffic.duration.us") : 0;
         PoissonTraffic downlink = poisson && directionMode.allows(Packet.Direction.DL)
@@ -248,8 +284,8 @@ public final class ConfigLoader {
                 apActivityEnabled || apObservationPeriodNs > 0 || channelObservation != null);
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
                 apCapabilityModes, stationPhys, alternateStationPhys, apActivityEnabled, apActivityWindowNs,
-                apEnergyModel, apSwitching, apObservationPeriodNs, apObservationAlpha, channelObservation,
-                frameExchange, edcaParameters, accessMode, retryPolicy, ampduConfig,
+                apEnergyModel, apSwitching, apObservationPeriodNs, apObservationAlpha, apAnalysis, channelObservation,
+                frameExchange, edcaParameters, accessMode, retryPolicy, ampduConfig, downlinkDecoder, externalInterference,
                 downlink.windowsUs, uplink.windowsUs,
                 directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled,
                 dbaMultiGrantEnabled, dbaGiantEnabled, dbaGiantCompleteEnabled, tcontTopology);
@@ -722,26 +758,75 @@ public final class ConfigLoader {
         return alpha;
     }
 
-    private static ChannelObservationInput readChannelObservation(Properties properties, List<Integer> staSfuIds) {
-        boolean enabled = channelBoolean(properties.getProperty(CHANNEL_OBSERVATION_ENABLED, "false").strip(),
-                CHANNEL_OBSERVATION_ENABLED);
+    private static ApAnalysisSettings readApAnalysisSettings(Properties properties, long c1PeriodNs,
+                                                              ApEnergyModel energyModel, boolean allApModes) {
+        boolean predict = channelBoolean(properties.getProperty(AP_PREDICTION_ENABLED, "false").strip(),
+                AP_PREDICTION_ENABLED);
+        boolean qos = channelBoolean(properties.getProperty(AP_QOS_ENABLED, "false").strip(), AP_QOS_ENABLED);
+        if (!predict && !qos) {
+            return null;
+        }
+        if (c1PeriodNs == 0 || (predict && (energyModel == null || !allApModes))) {
+            throw new IllegalArgumentException("AP analysis requires C1; C3 also requires B3 and explicit AP modes");
+        }
+        EnumMap<AccessCategory, ApAnalysisSettings.Requirement> requirements = new EnumMap<>(AccessCategory.class);
+        long[] defaultDeadlineUs = {10_000, 30_000, 100_000, 200_000};
+        double[] defaultMinOnTime = {0.99, 0.98, 0.95, 0.90};
+        for (AccessCategory ac : AccessCategory.values()) {
+            String prefix = "wifi.ap.qos." + ac + ".";
+            long deadline = readDurationNs(properties, prefix + "deadline.us",
+                    Long.toString(defaultDeadlineUs[ac.ordinal()]), true);
+            double minOnTime = readAnalysisFraction(properties, prefix + "min-on-time", defaultMinOnTime[ac.ordinal()]);
+            requirements.put(ac, new ApAnalysisSettings.Requirement(deadline, minOnTime));
+        }
+        return new ApAnalysisSettings(predict, readDurationNs(properties, AP_PREDICTION_WINDOW_US, "1000", true),
+                readAnalysisFraction(properties, AP_PREDICTION_ALPHA, 0.25), requirements);
+    }
+
+    private static double readAnalysisFraction(Properties properties, String key, double fallback) {
+        double value;
+        try {
+            value = Double.parseDouble(properties.getProperty(key, Double.toString(fallback)).strip());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(key + " requires a fraction in [0,1]", e);
+        }
+        if (!(value >= 0 && value <= 1)) {
+            throw new IllegalArgumentException(key + " requires a fraction in [0,1]");
+        }
+        return value;
+    }
+
+    private static ChannelTruth readChannelTruth(Properties properties, List<Integer> staSfuIds) {
         List<ChannelTruth.Change> changes = new ArrayList<>();
         for (String row : channelRows(properties, CHANNEL_TRUTH, ";")) {
-            String[] fields = channelFields(row, CHANNEL_TRUTH, 7, staSfuIds);
+            String[] fields = channelFields(row, CHANNEL_TRUTH, 7, 8, staSfuIds);
+            double noiseDbm = fields.length == 8 ? finiteDb(fields[7], CHANNEL_TRUTH + " noiseDbm")
+                    : ChannelTruth.DEFAULT_NOISE_DBM;
             changes.add(new ChannelTruth.Change(Integer.parseInt(fields[0]), Integer.parseInt(fields[1]),
                     Integer.parseInt(fields[2]), parseDurationNs(fields[3], CHANNEL_TRUTH, false),
                     channelSinr(fields[4]), channelInt(fields[5], CHANNEL_TRUTH),
-                    channelBoolean(fields[6], CHANNEL_TRUTH + " interfered")));
+                    channelBoolean(fields[6], CHANNEL_TRUTH + " interfered"), noiseDbm));
         }
-        ChannelTruth truth = new ChannelTruth(changes);
+        return new ChannelTruth(changes);
+    }
+
+    private static ChannelObservationInput readChannelObservation(Properties properties, int sfuCount,
+                                                                   List<Integer> staSfuIds,
+                                                                   ChannelTruth truth) {
+        boolean enabled = channelBoolean(properties.getProperty(CHANNEL_OBSERVATION_ENABLED, "false").strip(),
+                CHANNEL_OBSERVATION_ENABLED);
         List<ChannelObservationInput.Feedback> feedback = new ArrayList<>();
+        long airtimeNs = readDurationNs(properties, CHANNEL_FEEDBACK_AIRTIME, "0", false);
         for (String row : channelRows(properties, CHANNEL_FEEDBACK, ";")) {
-            String[] fields = channelFields(row, CHANNEL_FEEDBACK, 6, staSfuIds);
+            String[] parts = row.split(",", -1);
+            boolean lost = parts.length == 7 && parts[6].strip().equals("drop");
+            String fieldsWithoutStatus = lost ? row.substring(0, row.lastIndexOf(',')) : row;
+            String[] fields = channelFields(fieldsWithoutStatus, CHANNEL_FEEDBACK, 6, staSfuIds);
             feedback.add(new ChannelObservationInput.Feedback(feedback.size() + 1, Integer.parseInt(fields[0]),
                     Integer.parseInt(fields[1]), Integer.parseInt(fields[2]),
                     parseDurationNs(fields[3], CHANNEL_FEEDBACK, false),
                     parseDurationNs(fields[4], CHANNEL_FEEDBACK, false),
-                    parseDurationNs(fields[5], CHANNEL_FEEDBACK, true)));
+                    parseDurationNs(fields[5], CHANNEL_FEEDBACK, true), airtimeNs, lost));
         }
         List<Long> reads = new ArrayList<>();
         Set<Long> seenReads = new HashSet<>();
@@ -752,7 +837,136 @@ public final class ConfigLoader {
             }
             reads.add(timeNs);
         }
-        return enabled ? new ChannelObservationInput(truth, feedback, reads) : null;
+        boolean passive = channelBoolean(properties.getProperty(CHANNEL_PASSIVE, "false").strip(), CHANNEL_PASSIVE);
+        BigDecimal scanPower = readPowerWatts(properties, CHANNEL_SCAN_POWER, new BigDecimal("0.5"));
+        List<ChannelObservationInput.Scan> scans = readAuxiliaryScans(properties, sfuCount);
+        return enabled ? new ChannelObservationInput(truth, feedback, reads, scans, passive, scanPower) : null;
+    }
+
+    private static List<ChannelObservationInput.Scan> readAuxiliaryScans(Properties properties, int sfuCount) {
+        List<ChannelObservationInput.Scan> scans = new ArrayList<>();
+        for (String row : channelRows(properties, CHANNEL_SCAN_SCHEDULE, ";")) {
+            String[] fields = row.split(",", -1);
+            if (fields.length != 5) {
+                throw new IllegalArgumentException(CHANNEL_SCAN_SCHEDULE + " requires sfu,subchannel,startUs,durationUs,validUs");
+            }
+            int sfu = channelInt(fields[0].strip(), CHANNEL_SCAN_SCHEDULE);
+            int subchannel = channelInt(fields[1].strip(), CHANNEL_SCAN_SCHEDULE);
+            if (sfu < 1 || sfu > sfuCount || subchannel < 1 || subchannel >= ChannelReport.SUBCHANNEL_COUNT) {
+                throw new IllegalArgumentException(CHANNEL_SCAN_SCHEDULE + " requires an existing SFU and secondary subchannel");
+            }
+            scans.add(new ChannelObservationInput.Scan(sfu, subchannel,
+                    parseDurationNs(fields[2], CHANNEL_SCAN_SCHEDULE, false),
+                    parseDurationNs(fields[3], CHANNEL_SCAN_SCHEDULE, true),
+                    parseDurationNs(fields[4], CHANNEL_SCAN_SCHEDULE, true)));
+        }
+        scans.sort(Comparator.comparingInt(ChannelObservationInput.Scan::sfuId)
+                .thenComparingLong(ChannelObservationInput.Scan::startNs));
+        for (int i = 1; i < scans.size(); i++) {
+            ChannelObservationInput.Scan prior = scans.get(i - 1);
+            ChannelObservationInput.Scan next = scans.get(i);
+            if (next.sfuId() == prior.sfuId() && next.startNs() < prior.endNs()) {
+                throw new IllegalArgumentException(CHANNEL_SCAN_SCHEDULE + " overlaps a scan on the same auxiliary radio");
+            }
+        }
+        return scans;
+    }
+
+    private static DownlinkDecoder readDownlinkDecoder(Properties properties, WifiRetryPolicy retryPolicy,
+                                                        ChannelTruth truth, ExternalInterference interference) {
+        if (!channelBoolean(properties.getProperty(PHY_PER_ENABLED, "false").strip(), PHY_PER_ENABLED)) {
+            if (interference != null) {
+                throw new IllegalArgumentException(INTERFERENCE_ENABLED + " requires " + PHY_PER_ENABLED);
+            }
+            return null;
+        }
+        if (retryPolicy == null) {
+            throw new IllegalArgumentException(PHY_PER_ENABLED + " requires HE SU, edca-multi-ac and data-sifs-ack");
+        }
+        if (!properties.getProperty(AMPDU_FIRST_ATTEMPT_ERRORS, "").isBlank()) {
+            throw new IllegalArgumentException(PHY_PER_ENABLED + " cannot be combined with " + AMPDU_FIRST_ATTEMPT_ERRORS);
+        }
+        if (readOptionalNonNegativeInt(properties, "wifi.phy.mac.overhead.bytes", 34) < 4) {
+            throw new IllegalArgumentException(PHY_PER_ENABLED + " requires MAC overhead including the 4-byte delimiter");
+        }
+        if (properties.getProperty(PHY_PER_SOURCE, "").isBlank()) {
+            throw new IllegalArgumentException(PHY_PER_SOURCE + " must identify the source of the configured curves");
+        }
+        Map<Integer, List<SinrPerModel.Knot>> curves = new HashMap<>();
+        for (String row : channelRows(properties, PHY_PER_CURVES, ";")) {
+            String[] fields = row.split(",", -1);
+            if (fields.length != 3) {
+                throw new IllegalArgumentException(PHY_PER_CURVES + " requires rows of mcs,sinrDb,per");
+            }
+            try {
+                int mcs = Integer.parseInt(fields[0].strip());
+                SinrPerModel.Knot knot = new SinrPerModel.Knot(Double.parseDouble(fields[1].strip()),
+                        Double.parseDouble(fields[2].strip()));
+                curves.computeIfAbsent(mcs, key -> new ArrayList<>()).add(knot);
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(PHY_PER_CURVES + " has an invalid number in " + row, e);
+            }
+        }
+        long seed = properties.containsKey(PHY_PER_SEED) ? readSeed(properties, PHY_PER_SEED) : 1L;
+        int referenceBytes = readOptionalNonNegativeInt(properties, PHY_PER_REFERENCE_BYTES, 1530);
+        SinrPerModel model = new SinrPerModel(seed, referenceBytes, curves);
+        String frequencyModel = properties.getProperty(PHY_PER_FREQUENCY_MODEL, "flat").strip();
+        switch (frequencyModel) {
+            case "flat":
+                if (interference != null) {
+                    throw new IllegalArgumentException(INTERFERENCE_ENABLED + " requires subchannel-blocks PER");
+                }
+                return new DownlinkDecoder(truth, model);
+            case "subchannel-blocks":
+                return new DownlinkDecoder(truth, model, readPerSubchannelWeights(properties), interference);
+            default:
+                throw new IllegalArgumentException(PHY_PER_FREQUENCY_MODEL + " must be flat or subchannel-blocks");
+        }
+    }
+
+    private static ExternalInterference readExternalInterference(Properties properties, int sfuCount) {
+        if (!channelBoolean(properties.getProperty(INTERFERENCE_ENABLED, "false").strip(), INTERFERENCE_ENABLED)) {
+            return null;
+        }
+        double thresholdDbm = finiteDb(properties.getProperty(EXTERNAL_CCA_THRESHOLD, "-82"), EXTERNAL_CCA_THRESHOLD);
+        List<ExternalInterference.Activity> activities = new ArrayList<>();
+        for (String row : channelRows(properties, INTERFERENCE_TIMELINE, ";")) {
+            String[] values = row.split(",", -1);
+            if (values.length != 6) {
+                throw new IllegalArgumentException(INTERFERENCE_TIMELINE
+                        + " requires sfu,subchannel,startUs,endUs,apPowerDbm,staPowerDbm");
+            }
+            int sfuId = channelInt(values[0].strip(), INTERFERENCE_TIMELINE);
+            if (sfuId < 1 || sfuId > sfuCount) {
+                throw new IllegalArgumentException(INTERFERENCE_TIMELINE + " contains an unknown SFU " + sfuId);
+            }
+            activities.add(new ExternalInterference.Activity(sfuId, channelInt(values[1].strip(), INTERFERENCE_TIMELINE),
+                    parseDurationNs(values[2], INTERFERENCE_TIMELINE, false),
+                    parseDurationNs(values[3], INTERFERENCE_TIMELINE, true),
+                    finiteDb(values[4], INTERFERENCE_TIMELINE + " apPowerDbm"),
+                    finiteDb(values[5], INTERFERENCE_TIMELINE + " staPowerDbm")));
+        }
+        return new ExternalInterference(thresholdDbm, activities);
+    }
+
+    private static double[] readPerSubchannelWeights(Properties properties) {
+        String[] fields = properties.getProperty(PHY_PER_SUBCHANNEL_WEIGHTS, "1,1,1,1").split(",", -1);
+        String error = PHY_PER_SUBCHANNEL_WEIGHTS + " requires four positive finite weights (subchannels 0..3)";
+        if (fields.length != ChannelReport.SUBCHANNEL_COUNT) {
+            throw new IllegalArgumentException(error);
+        }
+        double[] weights = new double[fields.length];
+        try {
+            for (int index = 0; index < weights.length; index++) {
+                weights[index] = Double.parseDouble(fields[index].strip());
+                if (!Double.isFinite(weights[index]) || weights[index] <= 0) {
+                    throw new IllegalArgumentException(error);
+                }
+            }
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(error, e);
+        }
+        return weights;
     }
 
     private static String[] channelRows(Properties properties, String key, String separator) {
@@ -761,9 +975,14 @@ public final class ConfigLoader {
     }
 
     private static String[] channelFields(String row, String key, int length, List<Integer> staSfuIds) {
+        return channelFields(row, key, length, length, staSfuIds);
+    }
+
+    private static String[] channelFields(String row, String key, int minimum, int maximum, List<Integer> staSfuIds) {
         String[] fields = row.split(",", -1);
-        if (fields.length != length) {
-            throw new IllegalArgumentException(key + " requires " + length + " fields per row: " + row);
+        if (fields.length < minimum || fields.length > maximum) {
+            String range = minimum == maximum ? Integer.toString(minimum) : minimum + " to " + maximum;
+            throw new IllegalArgumentException(key + " requires " + range + " fields per row: " + row);
         }
         for (int i = 0; i < fields.length; i++) {
             fields[i] = fields[i].strip();
@@ -789,15 +1008,19 @@ public final class ConfigLoader {
     }
 
     private static double channelSinr(String value) {
+        return finiteDb(value, CHANNEL_TRUTH + " SINR");
+    }
+
+    private static double finiteDb(String value, String label) {
         try {
             double sinr = Double.parseDouble(value);
             if (Double.isFinite(sinr)) {
                 return sinr;
             }
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException(CHANNEL_TRUTH + " requires a finite SINR in dB: " + value, e);
+            throw new IllegalArgumentException(label + " requires a finite dB value: " + value, e);
         }
-        throw new IllegalArgumentException(CHANNEL_TRUTH + " requires a finite SINR in dB: " + value);
+        throw new IllegalArgumentException(label + " requires a finite dB value: " + value);
     }
 
     private static boolean channelBoolean(String value, String key) {
@@ -911,7 +1134,7 @@ public final class ConfigLoader {
 
     private static Map<Integer, WirelessPhy> readStationPhys(Properties properties, List<Integer> staSfuIds,
                                                             Map<Integer, ApCapabilityMode> apModes,
-                                                            ApModeSwitch.Settings switching,
+                                                            ApModeSwitch.Settings switching, boolean predictBoth,
                                                             Map<Integer, WirelessPhy> alternateStationPhys) {
         Map<Integer, WirelessPhy> stationPhys = new HashMap<>();
         for (int staIndex = 0; staIndex < staSfuIds.size(); staIndex++) {
@@ -937,7 +1160,7 @@ public final class ConfigLoader {
             }
             // 带宽和空间流数分别取两端的能力交集；同一模型用于 STA 的两个 DATA 方向。
             stationPhys.put(staId, buildStationPhy(properties, mode, maxBandwidthMhz, maxNss));
-            if (switching != null && !switching.requestsFor(sfuId).isEmpty()) {
+            if (predictBoth || (switching != null && !switching.requestsFor(sfuId).isEmpty())) {
                 alternateStationPhys.put(staId, buildStationPhy(properties, ApModeSwitch.otherMode(mode),
                         maxBandwidthMhz, maxNss));
             }
@@ -1077,7 +1300,8 @@ public final class ConfigLoader {
                                      boolean poisson, DirectionMode directionMode) {
         // 模式间的字段不能混用，防止手填报文或流量源的设置被忽略。
         for (String key : properties.stringPropertyNames()) {
-            if (KEYS.contains(key) || PHY_KEYS.contains(key) || EDCA_AC_KEY.matcher(key).matches()
+            if (KEYS.contains(key) || PHY_KEYS.contains(key) || AP_QOS_AC_KEY.matcher(key).matches()
+                    || EDCA_AC_KEY.matcher(key).matches()
                     || TCONT_ALLOCATION_KEY.matcher(key).matches()) {
                 continue;
             }

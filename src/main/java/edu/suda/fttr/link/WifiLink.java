@@ -1,13 +1,20 @@
 package edu.suda.fttr.link;
 
 import edu.suda.fttr.entity.Packet;
+import edu.suda.fttr.phy.DownlinkDecoder;
+import edu.suda.fttr.phy.DownlinkDecoder.ChannelSample;
+import edu.suda.fttr.phy.SinrPerModel;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalLong;
+import java.util.function.IntUnaryOperator;
 
 /** SFU 和关联 STA 之间的无线链路。上下行使用相同的传输时间模型。 */
 public final class WifiLink {
@@ -15,12 +22,16 @@ public final class WifiLink {
     private final WirelessPhy wirelessPhy;
     private final WifiFrameExchange frameExchange;
     private final Map<Integer, WirelessPhy> stationPhys;
+    private final DownlinkDecoder decoder;
+    private final Map<Packet, DecodeAttempt> downlinkAttempts;
 
     public WifiLink(LinkDelayModel delayModel) {
         this.delayModel = Objects.requireNonNull(delayModel);
         this.wirelessPhy = null;
         this.frameExchange = null;
         this.stationPhys = Map.of();
+        this.decoder = null;
+        this.downlinkAttempts = Map.of();
     }
 
     public WifiLink(WirelessPhy wirelessPhy) {
@@ -33,10 +44,73 @@ public final class WifiLink {
 
     /** 有静态 AP 模式时，每个关联 STA 使用已经校验的实际 DATA PHY。 */
     public WifiLink(WirelessPhy wirelessPhy, WifiFrameExchange frameExchange, Map<Integer, WirelessPhy> stationPhys) {
+        this(wirelessPhy, frameExchange, stationPhys, null);
+    }
+
+    public WifiLink(WirelessPhy wirelessPhy, WifiFrameExchange frameExchange, Map<Integer, WirelessPhy> stationPhys,
+                    DownlinkDecoder decoder) {
         this.delayModel = null;
         this.wirelessPhy = Objects.requireNonNull(wirelessPhy);
         this.frameExchange = frameExchange;
         this.stationPhys = Map.copyOf(stationPhys);
+        this.decoder = decoder;
+        this.downlinkAttempts = decoder == null ? Map.of() : new HashMap<>();
+    }
+
+    public boolean modelsDownlinkErrors(Packet head) {
+        return decoder != null && !head.isUplink();
+    }
+
+    public void beginDownlinkDecode(Packet packet, int sfuId, int retries, boolean collision,
+                                    SimulationContext context) {
+        if (modelsDownlinkErrors(packet)) {
+            beginDownlinkDecode(packet, sfuId, List.of(packet), index -> retries, collision, context);
+        }
+    }
+
+    /** PHY 在 PPDU 起点冻结快照。SFU 只能在 DATA 结束时收到解码位图。 */
+    public void beginDownlinkDecode(Packet head, int sfuId, List<Packet> members, IntUnaryOperator retries,
+                                    boolean collision, SimulationContext context) {
+        WirelessPhy phy = dataPhy(head);
+        long startNs = context.nowNanoseconds();
+        int bandwidthMhz = phy.bandwidthMhz();
+        ChannelSample sample = collision ? null : decoder.snapshotAtStart(sfuId, head.staId(), startNs, bandwidthMhz);
+        int frequencyBlocks = decoder.frequencyBlocks()
+                ? DownlinkDecoder.subchannelCountForBandwidth(bandwidthMhz) : 0;
+        List<DecodeMember> results = new ArrayList<>(members.size());
+        for (int index = 0; index < members.size(); index++) {
+            Packet packet = members.get(index);
+            int attempt = retries.applyAsInt(index);
+            int mpduBytes = phy.mpduBytes(packet.bytes());
+            SinrPerModel.Decision decision = collision ? null : decoder.evaluate(phy.mcs(), sample, mpduBytes,
+                    sfuId, packet.staId(), packet.id(), attempt);
+            results.add(new DecodeMember(packet, attempt, mpduBytes, decision));
+        }
+        DecodeAttempt pending = new DecodeAttempt(startNs, phy.mcs(), sample, frequencyBlocks, results);
+        if (downlinkAttempts.putIfAbsent(head, pending) != null) {
+            throw new IllegalStateException("DATA PPDU already pending for packet " + head.id());
+        }
+    }
+
+    /** 空值表示现有无模型分支，0 表示这次 PPDU 没有可交付的成员。 */
+    public OptionalLong finishDownlinkDecode(Packet head, int sfuId, SimulationContext context) {
+        if (!modelsDownlinkErrors(head)) {
+            return OptionalLong.empty();
+        }
+        DecodeAttempt attempt = downlinkAttempts.remove(head);
+        if (attempt == null) {
+            throw new IllegalStateException("No DATA PPDU pending for packet " + head.id());
+        }
+        long bitmap = 0;
+        for (int index = 0; index < attempt.members.size(); index++) {
+            DecodeMember member = attempt.members.get(index);
+            context.recordWifiMpduDecode(head, member.packet, sfuId, attempt.startNs, member.attempt,
+                    attempt.mcs, member.mpduBytes, attempt.sample, attempt.frequencyBlocks, member.decision);
+            if (member.decision != null && member.decision.decoded()) {
+                bitmap |= 1L << index;
+            }
+        }
+        return OptionalLong.of(bitmap);
     }
 
     public boolean hasAckExchange() {
@@ -128,5 +202,36 @@ public final class WifiLink {
 
     public void transmitAck(Packet packet, int sfuId, SimulationContext context) {
         context.scheduleAfterNanoseconds(frameExchange.ackNs(), EventType.WIFI_ACK_END, packet, sfuId);
+    }
+
+    private static final class DecodeAttempt {
+        private final long startNs;
+        private final int mcs;
+        private final ChannelSample sample;
+        private final int frequencyBlocks;
+        private final List<DecodeMember> members;
+
+        private DecodeAttempt(long startNs, int mcs, ChannelSample sample, int frequencyBlocks,
+                              List<DecodeMember> members) {
+            this.startNs = startNs;
+            this.mcs = mcs;
+            this.sample = sample;
+            this.frequencyBlocks = frequencyBlocks;
+            this.members = members;
+        }
+    }
+
+    private static final class DecodeMember {
+        private final Packet packet;
+        private final int attempt;
+        private final int mpduBytes;
+        private final SinrPerModel.Decision decision;
+
+        private DecodeMember(Packet packet, int attempt, int mpduBytes, SinrPerModel.Decision decision) {
+            this.packet = packet;
+            this.attempt = attempt;
+            this.mpduBytes = mpduBytes;
+            this.decision = decision;
+        }
     }
 }

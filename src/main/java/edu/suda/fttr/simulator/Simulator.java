@@ -1,5 +1,6 @@
 package edu.suda.fttr.simulator;
 
+import edu.suda.fttr.channel.ExternalInterference;
 import edu.suda.fttr.config.SimulationConfig;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApModeSwitch;
@@ -15,6 +16,7 @@ import edu.suda.fttr.link.PonUplink;
 import edu.suda.fttr.link.WifiLink;
 import edu.suda.fttr.mac.WifiRetryPolicy;
 import edu.suda.fttr.phy.ApCapabilityMode;
+import edu.suda.fttr.phy.DownlinkDecoder;
 import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.trace.TraceLogger;
 
@@ -33,6 +35,7 @@ public final class Simulator {
         List<Long> uplinkWindowsUs = config.uplinkTrafficWindowsUs();
         boolean runSummary = config.uplinkEnabled() || !downlinkWindowsUs.isEmpty() || config.inputEvents().size() > 1;
         WirelessPhy wirelessPhy = config.wirelessPhy();
+        ExternalInterference interference = config.externalInterference();
         WifiRetryPolicy retryPolicy = config.wifiRetryPolicy();
         SimulationConfig.PonLink downlinkConfig = config.ponDownlink();
         SimulationConfig.PonLink uplinkConfig = config.ponUplink();
@@ -72,7 +75,7 @@ public final class Simulator {
         FixedDelayModel fiberDelay = new FixedDelayModel(config.fiberDelayUs());
         // 旧场景共用全局链路时长。启用静态能力的 SFU 各自持有关联 STA 的实际 PHY。
         WifiLink legacyWifi = wirelessPhy == null ? new WifiLink(new FixedDelayModel(config.wifiDelayUs()))
-                : new WifiLink(wirelessPhy, config.wifiFrameExchange());
+                : new WifiLink(wirelessPhy, config.wifiFrameExchange(), Map.of(), config.downlinkDecoder());
         List<FiberLink> fibers = new ArrayList<>(config.sfuCount());
         List<Sfu> sfus = new ArrayList<>(config.sfuCount());
         for (int i = 0; i < config.sfuCount(); i++) {
@@ -86,12 +89,16 @@ public final class Simulator {
                 for (int staId : associated.keySet()) {
                     stationPhys.put(staId, config.wirelessPhyForSta(staId));
                 }
-                wifi = new WifiLink(wirelessPhy, config.wifiFrameExchange(), stationPhys);
+                wifi = new WifiLink(wirelessPhy, config.wifiFrameExchange(), stationPhys, config.downlinkDecoder());
             }
             PonUplink.Port uplinkPort = ponUplink == null ? null : ponUplink.attachSfu(sfuId);
             Sfu sfu = new Sfu(sfuId, wifi, associated, config.edcaParameters(), config.wifiAccessMode(),
                     retryPolicy, uplinkPort);
             sfu.configureAmpdu(config.ampduConfig());
+            if (interference != null) {
+                int width = mode != null ? mode.bandwidthMhz() : wirelessPhy.bandwidthMhz();
+                sfu.configureExternalCca(DownlinkDecoder.subchannelCountForBandwidth(width));
+            }
             if (config.channelObservation() != null) {
                 int bandwidthMhz = mode != null ? mode.bandwidthMhz()
                         : wirelessPhy != null ? wirelessPhy.bandwidthMhz() : 20;
@@ -110,7 +117,8 @@ public final class Simulator {
                 for (int staId : associated.keySet()) {
                     alternatePhys.put(staId, config.alternateWirelessPhyForSta(staId));
                 }
-                WifiLink alternate = new WifiLink(wirelessPhy, config.wifiFrameExchange(), alternatePhys);
+                WifiLink alternate = new WifiLink(wirelessPhy, config.wifiFrameExchange(), alternatePhys,
+                        config.downlinkDecoder());
                 sfu.configureModeSwitch(new ApModeSwitch(sfuId, switching, mode, wifi, alternate));
                 for (ApModeSwitch.Request request : switching.requestsFor(sfuId)) {
                     context.scheduleAfterNanoseconds(request.timeNs(), EventType.WIFI_AP_SWITCH_REQUEST, null, sfuId);
@@ -118,9 +126,18 @@ public final class Simulator {
             }
         }
         if (config.channelObservation() != null) {
-            context.trackChannelObservation(config.channelObservation(), sfus, stations);
+            context.trackChannelObservation(config.channelObservation(), sfus, stations, interference,
+                    config.apEnergyModel());
+        }
+        if (config.apAnalysis() != null) {
+            context.trackApAnalysis(config, sfus);
         }
         // 输入事件只提供报文和生成时间，实际路径由仿真器和设备根据关联表决定。
+        if (interference != null) {
+            for (ExternalInterference.Edge edge : interference.edges()) {
+                context.scheduleAfterNanoseconds(edge.timeNs(), EventType.WIFI_EXTERNAL_CCA_EDGE, null, edge.sfuId());
+            }
+        }
         for (Event input : config.inputEvents()) {
             context.scheduleInputEvent(input);
         }
@@ -133,6 +150,7 @@ public final class Simulator {
             switch (event.type()) {
                 case PACKET_GENERATED:
                     Packet packet = event.packet();
+                    context.recordQosGeneration(packet, config.staSfuIds().get(packet.staId() - 1));
                     if (packet.isUplink()) {
                         Sta source = stations.get(packet.staId() - 1);
                         sfus.get(source.sfuId() - 1).enqueueForWifi(packet, context);
@@ -255,6 +273,14 @@ public final class Simulator {
                     break;
                 case WIFI_AP_SWITCH_END:
                     sfus.get(event.sfuId() - 1).finishModeSwitch(context);
+                    break;
+                case WIFI_EXTERNAL_CCA_EDGE:
+                    sfus.get(event.sfuId() - 1).receiveExternalCca(
+                            interference.apBusyMask(event.sfuId(), context.nowNanoseconds()), context);
+                    break;
+                case WIFI_CHANNEL_MANAGEMENT_START:
+                case WIFI_CHANNEL_MANAGEMENT_END:
+                    context.executeChannelManagement(event);
                     break;
                 default:
                     throw new IllegalStateException("Unhandled event: " + event.type());
