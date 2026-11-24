@@ -85,6 +85,7 @@ public final class ConfigLoader {
     private static final String AP_OBSERVATION_PERIOD_US = "wifi.ap.observation.period.us";
     private static final String AP_OBSERVATION_EWMA_ALPHA = "wifi.ap.observation.ewma.alpha";
     private static final String AP_PREDICTION_ENABLED = "wifi.ap.prediction.enabled";
+    private static final String AP_PREDICTION_MODEL = "wifi.ap.prediction.model";
     private static final String AP_PREDICTION_WINDOW_US = "wifi.ap.prediction.window.us";
     private static final String AP_PREDICTION_ALPHA = "wifi.ap.prediction.alpha";
     private static final String AP_QOS_ENABLED = "wifi.ap.qos.enabled";
@@ -126,7 +127,7 @@ public final class ConfigLoader {
             MAC_MAX_RETRIES, AMPDU_ENABLED, AMPDU_MAX_MPDUS, AMPDU_MAX_BYTES, AMPDU_FIRST_ATTEMPT_ERRORS,
             EDCA_SEED, AP_ACTIVITY_ENABLED, AP_ACTIVITY_WINDOW_US, AP_ENERGY_ENABLED,
             AP_OBSERVATION_ENABLED, AP_OBSERVATION_PERIOD_US, AP_OBSERVATION_EWMA_ALPHA,
-            AP_PREDICTION_ENABLED, AP_PREDICTION_WINDOW_US, AP_PREDICTION_ALPHA, AP_QOS_ENABLED,
+            AP_PREDICTION_ENABLED, AP_PREDICTION_MODEL, AP_PREDICTION_WINDOW_US, AP_PREDICTION_ALPHA, AP_QOS_ENABLED,
             CHANNEL_OBSERVATION_ENABLED, CHANNEL_TRUTH, CHANNEL_FEEDBACK, CHANNEL_READ_TIMES,
             CHANNEL_PASSIVE, CHANNEL_FEEDBACK_AIRTIME, CHANNEL_SCAN_SCHEDULE, CHANNEL_SCAN_POWER,
             PHY_PER_ENABLED, PHY_PER_SEED, PHY_PER_REFERENCE_BYTES, PHY_PER_CURVES, PHY_PER_SOURCE,
@@ -779,7 +780,12 @@ public final class ConfigLoader {
             double minOnTime = readAnalysisFraction(properties, prefix + "min-on-time", defaultMinOnTime[ac.ordinal()]);
             requirements.put(ac, new ApAnalysisSettings.Requirement(deadline, minOnTime));
         }
-        return new ApAnalysisSettings(predict, readDurationNs(properties, AP_PREDICTION_WINDOW_US, "1000", true),
+        String model = properties.getProperty(AP_PREDICTION_MODEL, "legacy").strip();
+        if (!model.equals("legacy") && !model.equals("revised")) {
+            throw new IllegalArgumentException(AP_PREDICTION_MODEL + " must be legacy or revised");
+        }
+        return new ApAnalysisSettings(predict, model.equals("revised"),
+                readDurationNs(properties, AP_PREDICTION_WINDOW_US, "1000", true),
                 readAnalysisFraction(properties, AP_PREDICTION_ALPHA, 0.25), requirements);
     }
 

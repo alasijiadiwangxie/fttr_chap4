@@ -779,24 +779,57 @@ public final class TraceLogger {
     }
 
     public void recordApPrediction(int sfuId, ApModePredictor.Forecast forecast) {
+        String revised = forecast.revised ? String.format(Locale.ROOT,
+                " prediction_model=revised phy_mbps=%.12g mac_mbps=%.12g conservative_mbps=%.12g"
+                        + " optimistic_mbps=%.12g incremental_energy_uj=%.12g input_mbps=%.12g",
+                forecast.phyMbps, forecast.macMbps, forecast.conservativeMbps, forecast.optimisticMbps,
+                forecast.incrementalEnergyUj, forecast.inputMbps) : "";
         output.printf(Locale.ROOT, "event=WIFI_AP_PREDICTION t_ns=%d window_end_ns=%d sfu_id=%d current_mode=%s "
                         + "mode=%s confidence=%s busy_fraction=%.12g service_mbps=%.12g success_mbps=%.12g "
                         + "agg_depth=%.12g retry_fraction=%.12g queue_packets=%.12g ending_queue_packets=%.12g "
                         + "workload_ns=%.12g tx_ns=%.12g rx_ns=%.12g idle_ns=%.12g tx_uj=%.12g rx_uj=%.12g "
-                        + "idle_uj=%.12g energy_uj=%.12g energy_per_bit_uj=%.12g switch_ns=%d switch_uj=%.12g%n",
+                        + "idle_uj=%.12g energy_uj=%.12g energy_per_bit_uj=%.12g switch_ns=%d switch_uj=%.12g%s%n",
                 forecast.startNs, forecast.endNs, sfuId, forecast.currentMode, forecast.mode, forecast.confidence,
                 forecast.busyFraction, forecast.serviceMbps, forecast.successMbps, forecast.aggDepth,
                 forecast.retryFraction, forecast.queuePackets, forecast.endingQueuePackets, forecast.workloadNs,
                 forecast.txNs, forecast.rxNs, forecast.idleNs, forecast.txUj, forecast.rxUj, forecast.idleUj,
-                forecast.energyUj, forecast.energyPerBitUj, forecast.switchNs, forecast.switchUj);
+                forecast.energyUj, forecast.energyPerBitUj, forecast.switchNs, forecast.switchUj, revised);
         for (ApModePredictor.QosForecast qos : forecast.qos) {
             output.printf(Locale.ROOT, "event=WIFI_AP_QOS_FEASIBILITY t_ns=%d window_end_ns=%d sfu_id=%d "
                             + "mode=%s ac=%s status=%s waiting_ns=%.12g service_ns=%.12g e2e_ns=%.12g "
-                            + "success_probability=%.12g deadline_ns=%d min_on_time=%.12g%n",
+                            + "success_probability=%.12g deadline_ns=%d min_on_time=%.12g%s%n",
                     forecast.startNs, forecast.endNs, sfuId, forecast.mode, qos.ac, qos.status, qos.waitingNs,
                     qos.serviceNs, qos.e2eNs, qos.successProbability, qos.requirement.deadlineNs(),
-                    qos.requirement.minOnTime());
+                    qos.requirement.minOnTime(), forecast.revised ? " conservative_status=" + qos.conservativeStatus
+                            + " optimistic_status=" + qos.optimisticStatus : "");
         }
+    }
+
+    public void recordApMacEvidence(int sfuId, long nowNs, ApModePredictor.Evidence evidence, long aifsNs,
+                                    long backoffNs, long frozenNs, List<ApTrafficObserver.Observation> traffic) {
+        long[] ppdus = new long[2];
+        long[] attempts = new long[2];
+        long[] confirmations = new long[2];
+        long[] dataNs = new long[2];
+        long[] responseNs = new long[2];
+        for (ApModePredictor.Transmission ppdu : evidence.completedPpdus()) {
+            int direction = ppdu.direction().ordinal();
+            ppdus[direction]++;
+            attempts[direction] += ppdu.attemptedMpdus();
+            confirmations[direction] += ppdu.confirmedMpdus();
+            dataNs[direction] += ppdu.dataNs();
+            responseNs[direction] += ppdu.responseNs();
+        }
+        double ingressMbps = traffic.stream().mapToDouble(ApTrafficObserver.Observation::arrivalMbps).sum();
+        output.printf(Locale.ROOT, "event=WIFI_AP_MAC_EVIDENCE t_ns=%d sfu_id=%d eligible_ns=%d occupied_ns=%d "
+                        + "blocked_ns=%d aifs_ns=%d backoff_ns=%d frozen_ns=%d ppdus=%d dl_ppdus=%d ul_ppdus=%d "
+                        + "dl_attempted=%d dl_confirmed=%d dl_depth=%.12g ul_depth=%.12g arrival_mbps=%.12g "
+                        + "dl_data_ns=%d ul_data_ns=%d dl_response_ns=%d ul_response_ns=%d%n",
+                nowNs, sfuId, evidence.eligibleNs(), evidence.occupiedNs(), evidence.blockedNs(), aifsNs,
+                backoffNs, frozenNs, ppdus[0] + ppdus[1], ppdus[0], ppdus[1], attempts[0], confirmations[0],
+                ppdus[0] == 0 ? 0 : (double) attempts[0] / ppdus[0],
+                ppdus[1] == 0 ? 0 : (double) attempts[1] / ppdus[1], ingressMbps, dataNs[0], dataNs[1],
+                responseNs[0], responseNs[1]);
     }
 
     public void recordApQos(ApQosLedger.Snapshot qos) {

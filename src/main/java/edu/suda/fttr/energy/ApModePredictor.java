@@ -44,6 +44,7 @@ public final class ApModePredictor {
     private final WifiRetryPolicy retry;
     private final AmpduConfig ampdu;
     private final ObservedPerCurve observedPer;
+    private final ObservedServicePrediction revised;
     private final Map<ApCapabilityMode, EnumMap<AccessCategory, History>> histories = new EnumMap<>(ApCapabilityMode.class);
     private final Map<AccessCategory, Double> opticalDelayNs = new EnumMap<>(AccessCategory.class);
     private ApCapabilityMode previousMode;
@@ -62,6 +63,8 @@ public final class ApModePredictor {
         this.retry = retry;
         this.ampdu = ampdu;
         this.observedPer = observedPer;
+        this.revised = new ObservedServicePrediction(settings, this.profiles, energyModel, switching,
+                exchange, edca, retry, ampdu, observedPer);
         for (ApCapabilityMode mode : ApCapabilityMode.values()) {
             EnumMap<AccessCategory, History> classes = new EnumMap<>(AccessCategory.class);
             for (AccessCategory ac : AccessCategory.values()) {
@@ -86,6 +89,70 @@ public final class ApModePredictor {
         previousMode = currentMode;
         return List.of(predictMode(nowNs, currentMode, ApCapabilityMode.LCM, observations, feedback, primaryBusy),
                 predictMode(nowNs, currentMode, ApCapabilityMode.HCM, observations, feedback, wideBusy));
+    }
+
+    public List<Forecast> predictRevised(long nowNs, ApCapabilityMode currentMode,
+                                         List<ApTrafficObserver.Observation> observations, FeedbackLookup feedback,
+                                         double primaryBusy, double wideBusy, Evidence evidence) {
+        return revised.predict(nowNs, currentMode, observations, feedback, primaryBusy, wideBusy, evidence,
+                opticalDelayNs);
+    }
+
+    /** 采样时刻前已处理的发送事件与 AP 持有的 FIFO。上行没有待发队列。 */
+    public static final class Evidence {
+        final List<Packet> waitingDlFifo;
+        final List<Transmission> completedPpdus;
+        final long eligibleNs, occupiedNs, blockedNs;
+
+        public Evidence(List<Packet> waitingDlFifo, List<Transmission> completedPpdus,
+                        long eligibleNs, long occupiedNs, long blockedNs) {
+            if (eligibleNs < 0 || occupiedNs < 0 || blockedNs < 0
+                    || blockedNs > eligibleNs || occupiedNs > eligibleNs - blockedNs) {
+                throw new IllegalArgumentException("Observable service intervals must be disjoint and bounded");
+            }
+            this.waitingDlFifo = List.copyOf(waitingDlFifo);
+            this.completedPpdus = List.copyOf(completedPpdus);
+            this.eligibleNs = eligibleNs;
+            this.occupiedNs = occupiedNs;
+            this.blockedNs = blockedNs;
+        }
+
+        public long eligibleNs() { return eligibleNs; }
+        public long occupiedNs() { return occupiedNs; }
+        public long blockedNs() { return blockedNs; }
+        public List<Transmission> completedPpdus() { return completedPpdus; }
+    }
+
+    /** 下行包含已发 MPDU 数和已确认数。上行仅记录 AP 成功解码的 MPDU。 */
+    public static final class Transmission {
+        final Packet.Direction direction;
+        final AccessCategory ac;
+        final int staId, attemptedMpdus, confirmedMpdus;
+        final long payloadBytes, dataNs, responseNs, mediumNs;
+
+        public Transmission(Packet.Direction direction, AccessCategory ac, int staId, int attemptedMpdus,
+                            int confirmedMpdus, long payloadBytes, long dataNs, long responseNs, long mediumNs) {
+            if (direction == null || ac == null || staId <= 0 || confirmedMpdus < 0
+                    || attemptedMpdus < confirmedMpdus || payloadBytes < 0 || dataNs < 0
+                    || responseNs < 0 || mediumNs < dataNs || mediumNs - dataNs < responseNs) {
+                throw new IllegalArgumentException("Invalid observed PPDU counts or timing");
+            }
+            this.direction = direction;
+            this.ac = ac;
+            this.staId = staId;
+            this.attemptedMpdus = attemptedMpdus;
+            this.confirmedMpdus = confirmedMpdus;
+            this.payloadBytes = payloadBytes;
+            this.dataNs = dataNs;
+            this.responseNs = responseNs;
+            this.mediumNs = mediumNs;
+        }
+
+        public Packet.Direction direction() { return direction; }
+        public int attemptedMpdus() { return attemptedMpdus; }
+        public int confirmedMpdus() { return confirmedMpdus; }
+        public long dataNs() { return dataNs; }
+        public long responseNs() { return responseNs; }
     }
 
     private double update(double previous, double sample) {
@@ -343,8 +410,10 @@ public final class ApModePredictor {
                 endingQueuePackets, workloadNs, txNs, rxNs, idleNs, txUj, rxUj, idleUj, energyUj,
                 energyPerBitUj, switchUj;
         public final List<QosForecast> qos;
+        public final boolean revised;
+        public final double phyMbps, macMbps, conservativeMbps, optimisticMbps, incrementalEnergyUj, inputMbps;
 
-        private Forecast(long startNs, long endNs, ApCapabilityMode currentMode, ApCapabilityMode mode,
+        Forecast(long startNs, long endNs, ApCapabilityMode currentMode, ApCapabilityMode mode,
                          Confidence confidence, double busyFraction, double serviceMbps, double successMbps,
                          double aggDepth, double retryFraction, double queuePackets, double endingQueuePackets,
                          double workloadNs, double txNs, double rxNs, double idleNs, double txUj, double rxUj,
@@ -374,24 +443,75 @@ public final class ApModePredictor {
             this.switchNs = switchNs;
             this.switchUj = switchUj;
             this.qos = List.copyOf(qos);
+            revised = false;
+            phyMbps = macMbps = conservativeMbps = optimisticMbps = incrementalEnergyUj = inputMbps = -1;
+        }
+
+        Forecast(Forecast expected, double phyMbps, double macMbps, double conservativeMbps,
+                 double optimisticMbps, double incrementalEnergyUj, double inputMbps, List<QosForecast> qos) {
+            startNs = expected.startNs;
+            endNs = expected.endNs;
+            currentMode = expected.currentMode;
+            mode = expected.mode;
+            confidence = expected.confidence;
+            busyFraction = expected.busyFraction;
+            serviceMbps = expected.serviceMbps;
+            successMbps = expected.successMbps;
+            aggDepth = expected.aggDepth;
+            retryFraction = expected.retryFraction;
+            queuePackets = expected.queuePackets;
+            endingQueuePackets = expected.endingQueuePackets;
+            workloadNs = expected.workloadNs;
+            txNs = expected.txNs;
+            rxNs = expected.rxNs;
+            idleNs = expected.idleNs;
+            txUj = expected.txUj;
+            rxUj = expected.rxUj;
+            idleUj = expected.idleUj;
+            energyUj = expected.energyUj;
+            energyPerBitUj = expected.energyPerBitUj;
+            switchNs = expected.switchNs;
+            switchUj = expected.switchUj;
+            this.qos = List.copyOf(qos);
+            revised = true;
+            this.phyMbps = phyMbps;
+            this.macMbps = macMbps;
+            this.conservativeMbps = Math.min(conservativeMbps, expected.successMbps);
+            this.optimisticMbps = Math.max(optimisticMbps, expected.successMbps);
+            this.incrementalEnergyUj = incrementalEnergyUj;
+            this.inputMbps = inputMbps;
         }
     }
 
     public static final class QosForecast {
         public final AccessCategory ac;
         public final Feasibility status;
+        public final Feasibility conservativeStatus, optimisticStatus;
         public final double waitingNs, serviceNs, e2eNs, successProbability;
         public final ApAnalysisSettings.Requirement requirement;
 
-        private QosForecast(AccessCategory ac, Feasibility status, double waitingNs, double serviceNs, double e2eNs,
+        QosForecast(AccessCategory ac, Feasibility status, double waitingNs, double serviceNs, double e2eNs,
                             double successProbability, ApAnalysisSettings.Requirement requirement) {
             this.ac = ac;
             this.status = status;
+            conservativeStatus = optimisticStatus = status;
             this.waitingNs = waitingNs;
             this.serviceNs = serviceNs;
             this.e2eNs = e2eNs;
             this.successProbability = successProbability;
             this.requirement = requirement;
+        }
+
+        QosForecast(QosForecast expected, Feasibility conservative, Feasibility optimistic) {
+            ac = expected.ac;
+            status = expected.status;
+            conservativeStatus = conservative;
+            optimisticStatus = optimistic;
+            waitingNs = expected.waitingNs;
+            serviceNs = expected.serviceNs;
+            e2eNs = expected.e2eNs;
+            successProbability = expected.successProbability;
+            requirement = expected.requirement;
         }
     }
 }

@@ -282,6 +282,14 @@ public final class Sfu {
         return channel.state();
     }
 
+    public EdcaAccess.ApPhase observedApContentionPhase() {
+        return edcaAccess == null ? EdcaAccess.ApPhase.NONE : edcaAccess.apPhase();
+    }
+
+    public boolean hasLocalChannelOwner() {
+        return channel.hasLocalOwner();
+    }
+
     /** 设备键 0 表示本 SFU，正数表示关联 STA。返回该设备最近的 NAV 到期刻度。 */
     public long navUntilTicks(int listenerKey) {
         return edcaAccess == null ? 0 : edcaAccess.navUntilTicks(listenerKey);
@@ -445,6 +453,8 @@ public final class Sfu {
             channel.release();
         }
         // 逐包服务时长止于自己的 ACK。全局忙时跨过 TXOP 内的帧间 SIFS，直到最终释放。
+        context.recordPredictionExchange(packet, id, null, 1, txStartTicks, dataEndTicks,
+                wifi.hasAckExchange() ? context.nowTicks() - dataEndTicks - wifi.sifsNs() : 0);
         context.recordWifiService(packet, id, active.arrivalTicks, txStartTicks, dataEndTicks, !continues);
         if (retryPolicy != null) {
             context.recordWifiMacSuccess(packet, id, active.retries);
@@ -576,6 +586,8 @@ public final class Sfu {
             observeLocalReception(head, LocalReception.DL_BLOCK_ACK, Long.bitCount(activeAggregate.bitmap), context);
         }
         traceAggregate("BA_END", head, activeAggregate, context);
+        context.recordPredictionExchange(head, id, activeAggregate.packets, activeAggregate.bitmap,
+                activeAggregate.startTicks, dataEndTicks, wifi.blockAckNs());
         settleAggregate(head, activeAggregate, true, false, context);
         activeAggregate = null;
         active = null;
@@ -751,6 +763,9 @@ public final class Sfu {
         }
         context.recordApCollisionDataEnd(packet, id);
         wifi.finishDownlinkDecode(packet, id, context);
+        AmpduAttempt collided = collidedAggregates.get(packet);
+        context.recordPredictionExchange(packet, id, collided == null ? null : collided.packets,
+                0, -1, context.nowTicks(), 0);
         if (retryPolicy == null) {
             context.recordWifiCollisionDrop(packet, id);
             EdcaState.AcState ac = senderAc(packet);
@@ -773,6 +788,8 @@ public final class Sfu {
 
     private void awaitFailedDownlinkResponse(Packet packet, AmpduAttempt aggregate, SimulationContext context) {
         // DATA 发完立即释放实体信道。仅发送设备冻结到超时，期间没有 ACK/BA 接收能耗。
+        context.recordPredictionExchange(packet, id, aggregate == null ? null : aggregate.packets, 0,
+                aggregate == null ? txStartTicks : aggregate.startTicks, context.nowTicks(), 0);
         edcaAccess.suspendSender(packet);
         awaitResponseTimeout(packet, aggregate, false, context);
         if (txop != null) {

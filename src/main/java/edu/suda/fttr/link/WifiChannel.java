@@ -50,6 +50,9 @@ public final class WifiChannel {
 
     public boolean externalBusy() { return externalBusy; }
 
+    /** 仅本地帧交换、管理收发或重配置持有资源期间为真。 */
+    public boolean hasLocalOwner() { return occupied; }
+
     private void notifyChange(State previous) {
         State current = state();
         if (stateListener != null && current != previous) {

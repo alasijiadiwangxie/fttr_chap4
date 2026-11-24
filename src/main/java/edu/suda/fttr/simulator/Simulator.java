@@ -285,6 +285,7 @@ public final class Simulator {
                 default:
                     throw new IllegalStateException("Unhandled event: " + event.type());
             }
+            context.observeApMediumAfterEvent(event.sfuId());
         }
         if (!downlinkWindowsUs.isEmpty()) {
             recordGeneratedTraffic(config, trace, downlinkWindowsUs, false);

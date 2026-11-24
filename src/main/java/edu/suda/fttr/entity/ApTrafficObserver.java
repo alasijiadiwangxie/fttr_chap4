@@ -52,6 +52,17 @@ public final class ApTrafficObserver {
     /** 最近一次已经结算的快照，窗口中的后续事件不会修改它。 */
     public List<Observation> latest() { return latest; }
 
+    /** 当前 AP 可见的下行待发 FIFO。每个 AC 内保留实际队首顺序，在途成员不在此列。 */
+    public List<Packet> waitingDownlinkPackets() {
+        List<Packet> packets = new ArrayList<>();
+        for (Traffic local : traffic.get(Packet.Direction.DL).values()) {
+            for (Entry entry : local.waiting.values()) {
+                packets.add(entry.packet);
+            }
+        }
+        return List.copyOf(packets);
+    }
+
     public QueueEvent enqueue(Packet packet, long nowNs) {
         if (packet.isUplink()) {
             return null; // STA 的发送请求不是 AP 接收到的用户数据。

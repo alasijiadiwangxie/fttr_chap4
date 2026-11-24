@@ -17,6 +17,7 @@ import java.util.Set;
 
 /** 为同一 SFU 信道上的各发送请求维护接入计时。 */
 public final class EdcaAccess {
+    public enum ApPhase { NONE, AIFS, BACKOFF, FROZEN }
     // 按设备分组并依照 AC 优先级仲裁，每组的获胜 AC 都参与本次发送。
     private static final Comparator<Attempt> READY_ORDER = Comparator.comparingInt(Attempt::senderKey)
             .thenComparing(attempt -> attempt.packet.type());
@@ -59,6 +60,26 @@ public final class EdcaAccess {
 
     public boolean isWaiting() {
         return !pending.isEmpty();
+    }
+
+    /** AP 自己的 EDCA 计时状态。多个 AC 同时活动时只记一份时间。 */
+    public ApPhase apPhase() {
+        ApPhase phase = ApPhase.NONE;
+        for (Attempt attempt : pending.values()) {
+            if (attempt.senderKey() != 0) {
+                continue;
+            }
+            if (attempt.timer != null) {
+                if (!attempt.waitingForAifs) {
+                    return ApPhase.BACKOFF;
+                }
+                phase = ApPhase.AIFS;
+            } else if (phase == ApPhase.NONE
+                    && (channel.state() == WifiChannel.State.BUSY || suspendedSenders.contains(0))) {
+                phase = ApPhase.FROZEN;
+            }
+        }
+        return phase;
     }
 
     /** 设备键 0 表示 SFU，其余设备键为关联 STA 的 ID。 */

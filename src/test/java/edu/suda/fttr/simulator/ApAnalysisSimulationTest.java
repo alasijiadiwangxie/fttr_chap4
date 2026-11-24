@@ -27,6 +27,32 @@ final class ApAnalysisSimulationTest {
             "wifi.ap.observation.enabled=true", "wifi.ap.observation.period.us=50");
 
     @Test
+    void revisedMacObservationDoesNotAlterProtocolAndIgnoresFutureTraffic(@TempDir Path folder) throws IOException {
+        String enabled = "wifi.ap.prediction.enabled=true";
+        String model = "wifi.ap.prediction.model=revised";
+        List<String> before = run(folder.resolve("legacy.properties"), enabled, "wifi.ap.prediction.model=legacy");
+        List<String> after = run(folder.resolve("revised.properties"), enabled, model);
+        assertEquals(protocol(before), protocol(after));
+        assertTrue(after.stream().anyMatch(line -> line.startsWith("event=WIFI_AP_MAC_EVIDENCE t_ns=50000 ")
+                && line.contains("eligible_ns=50000 occupied_ns=7000 blocked_ns=0 aifs_ns=43000")));
+        List<String> differentFuture = run(folder.resolve("future.properties"), enabled, model,
+                "packet.arrival.us=0,71,189,225");
+        assertEquals(firstForecasts(after), firstForecasts(differentFuture));
+        assertEquals(2, firstForecasts(after).size());
+    }
+
+    private static List<String> protocol(List<String> trace) {
+        return trace.stream().filter(line -> !line.startsWith("event=WIFI_AP_PREDICTION ")
+                && !line.startsWith("event=WIFI_AP_QOS_FEASIBILITY ")
+                && !line.startsWith("event=WIFI_AP_MAC_EVIDENCE ")).collect(java.util.stream.Collectors.toList());
+    }
+
+    private static List<String> firstForecasts(List<String> trace) {
+        return trace.stream().filter(line -> line.startsWith("event=WIFI_AP_PREDICTION t_ns=50000 "))
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    @Test
     void emitsBothCandidateModesWithoutChangingUnderlyingEventsAndFreezesQosAtCutoff(@TempDir Path folder)
             throws IOException {
         List<String> before = run(folder.resolve("before.properties"));

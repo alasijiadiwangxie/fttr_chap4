@@ -12,6 +12,7 @@ import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.ApEnergyModel;
 import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.ApTrafficObserver;
+import edu.suda.fttr.mac.EdcaAccess.ApPhase;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.entity.PonDemandLedger;
@@ -319,7 +320,24 @@ public final class SimulationContext {
                     config.edcaParameters(), config.wifiRetryPolicy(), config.ampduConfig(),
                     config.downlinkDecoder() == null ? null : config.downlinkDecoder().observedPerCurve());
             boolean passive = config.channelObservation() != null && config.channelObservation().passive();
-            apPredictors.put(sfu.id(), new PredictionTrack(sfu, predictor, passive, mode.bandwidthMhz()));
+            apPredictors.put(sfu.id(), new PredictionTrack(sfu, predictor, passive, mode.bandwidthMhz(),
+                    config.apAnalysis().revisedPrediction()));
+        }
+    }
+
+    void observeApMediumAfterEvent(int sfuId) {
+        PredictionTrack track = apPredictors.get(sfuId);
+        if (track != null && track.mac != null) {
+            track.mac.mediumChanged(nowNanoseconds(), track.sfu.hasLocalChannelOwner(),
+                    track.passive && track.sfu.observedExternalMask() != 0, track.sfu.observedApContentionPhase());
+        }
+    }
+
+    public void recordPredictionExchange(Packet head, int sfuId, List<Packet> members, long bitmap,
+                                         long startTicks, long dataEndTicks, long responseNs) {
+        PredictionTrack track = apPredictors.get(sfuId);
+        if (track != null && track.mac != null) {
+            track.mac.complete(head, members, bitmap, startTicks, dataEndTicks, responseNs, nowNanoseconds());
         }
     }
 
@@ -539,8 +557,18 @@ public final class SimulationContext {
             if (track != null && endNs < Long.MAX_VALUE) {
                 ApCapabilityMode mode = apActivities.get(sfuId).mode();
                 double[] busy = track.sampleCca(endNs);
-                List<ApModePredictor.Forecast> forecasts = track.predictor.predict(endNs, mode, sample,
-                        track.sfu::candidateChannelReport, busy[0], busy[1]);
+                List<ApModePredictor.Forecast> forecasts;
+                if (track.mac == null) {
+                    forecasts = track.predictor.predict(endNs, mode, sample, track.sfu::candidateChannelReport,
+                            busy[0], busy[1]);
+                } else {
+                    ApModePredictor.Evidence evidence = track.mac.snapshot(endNs, observer.waitingDownlinkPackets());
+                    trace.recordApMacEvidence(sfuId, endNs, evidence, track.mac.phaseNs(ApPhase.AIFS),
+                            track.mac.phaseNs(ApPhase.BACKOFF), track.mac.phaseNs(ApPhase.FROZEN), sample);
+                    forecasts = track.predictor.predictRevised(endNs, mode, sample, track.sfu::candidateChannelReport,
+                            busy[0], busy[1], evidence);
+                    track.mac.resetWindow();
+                }
                 latestForecasts.put(sfuId, forecasts);
                 for (ApModePredictor.Forecast forecast : forecasts) {
                     trace.recordApPrediction(sfuId, forecast);
@@ -561,6 +589,10 @@ public final class SimulationContext {
             return;
         }
         long timeNs = observationTimeNs(nowTicks);
+        PredictionTrack track = apPredictors.get(sfuId);
+        if (track != null && track.mac != null) {
+            track.mac.downlinkStarted(timeNs);
+        }
         if (aggregate == null) {
             traceApQueue(sfuId, observer.start(head, timeNs));
         } else {
@@ -596,6 +628,10 @@ public final class SimulationContext {
             trace.recordApQueueEvent(sfuId, event);
             if (qosLedger != null) {
                 qosLedger.queueChanged(sfuId, event);
+            }
+            PredictionTrack track = apPredictors.get(sfuId);
+            if (track != null && track.mac != null && !event.packet().isUplink()) {
+                track.mac.queueChanged(event);
             }
         }
     }
@@ -980,13 +1016,15 @@ public final class SimulationContext {
         private final Sfu sfu;
         private final ApModePredictor predictor;
         private final boolean passive;
+        private final ApMacEvidence mac;
         private long startNs, previousNs, primaryBusyNs, wideBusyNs, wideObservedNs;
         private int accessMask, busyMask;
 
-        private PredictionTrack(Sfu sfu, ApModePredictor predictor, boolean passive, int bandwidthMhz) {
+        private PredictionTrack(Sfu sfu, ApModePredictor predictor, boolean passive, int bandwidthMhz, boolean revised) {
             this.sfu = sfu;
             this.predictor = predictor;
             this.passive = passive;
+            this.mac = revised ? new ApMacEvidence() : null;
             accessMask = (1 << (bandwidthMhz / 20)) - 1;
         }
 
