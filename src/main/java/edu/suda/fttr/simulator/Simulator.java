@@ -3,6 +3,7 @@ package edu.suda.fttr.simulator;
 import edu.suda.fttr.channel.ExternalInterference;
 import edu.suda.fttr.config.SimulationConfig;
 import edu.suda.fttr.entity.AccessCategory;
+import edu.suda.fttr.entity.ApModeController;
 import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.Mfu;
 import edu.suda.fttr.entity.Packet;
@@ -22,6 +23,7 @@ import edu.suda.fttr.trace.TraceLogger;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -78,10 +80,13 @@ public final class Simulator {
                 : new WifiLink(wirelessPhy, config.wifiFrameExchange(), Map.of(), config.downlinkDecoder());
         List<FiberLink> fibers = new ArrayList<>(config.sfuCount());
         List<Sfu> sfus = new ArrayList<>(config.sfuCount());
+        Map<Integer, ApModeController> controllers = new LinkedHashMap<>();
         for (int i = 0; i < config.sfuCount(); i++) {
             fibers.add(new FiberLink(fiberDelay));
             int sfuId = i + 1;
             ApCapabilityMode mode = config.apCapabilityMode(sfuId);
+            ApModeController.Policy control = config.apControl().policyFor(sfuId);
+            boolean fixedThreshold = control == ApModeController.Policy.FIXED_THRESHOLD;
             Map<Integer, Sta> associated = stationsBySfu.get(i);
             WifiLink wifi = legacyWifi;
             if (mode != null) {
@@ -111,8 +116,14 @@ public final class Simulator {
             if (config.apObservationPeriodNs() > 0) {
                 context.trackApTraffic(sfuId, mode, config.apObservationPeriodNs(), config.apObservationAlpha());
             }
+            if (control != ApModeController.Policy.OFF) {
+                context.recordInitialApMode(sfuId, control, mode);
+            }
+            if (fixedThreshold) {
+                controllers.put(sfuId, new ApModeController(config.apControl()));
+            }
             ApModeSwitch.Settings switching = config.apSwitching();
-            if (switching != null && !switching.requestsFor(sfuId).isEmpty()) {
+            if (fixedThreshold || (switching != null && !switching.requestsFor(sfuId).isEmpty())) {
                 Map<Integer, WirelessPhy> alternatePhys = new HashMap<>();
                 for (int staId : associated.keySet()) {
                     alternatePhys.put(staId, config.alternateWirelessPhyForSta(staId));
@@ -124,6 +135,9 @@ public final class Simulator {
                     context.scheduleAfterNanoseconds(request.timeNs(), EventType.WIFI_AP_SWITCH_REQUEST, null, sfuId);
                 }
             }
+        }
+        if (!controllers.isEmpty()) {
+            context.trackApModeControl(config.apControl().periodNs(), config.apActivityWindowNs());
         }
         if (config.channelObservation() != null) {
             context.trackChannelObservation(config.channelObservation(), sfus, stations, interference,
@@ -273,6 +287,14 @@ public final class Simulator {
                     break;
                 case WIFI_AP_SWITCH_END:
                     sfus.get(event.sfuId() - 1).finishModeSwitch(context);
+                    break;
+                case WIFI_AP_MODE_DECISION:
+                    controllers.forEach((sfuId, controller) -> {
+                        ApModeController.Decision decision = controller.decide(context.nowTicks(),
+                                context.apDownlinkArrivalBytes(sfuId));
+                        sfus.get(sfuId - 1).applyModeDecision(decision, context);
+                        context.observeApMediumAfterEvent(sfuId);
+                    });
                     break;
                 case WIFI_EXTERNAL_CCA_EDGE:
                     sfus.get(event.sfuId() - 1).receiveExternalCca(

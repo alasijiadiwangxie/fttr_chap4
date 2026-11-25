@@ -4,6 +4,7 @@ import edu.suda.fttr.channel.ExternalInterference;
 import edu.suda.fttr.dba.TcontTopology;
 import edu.suda.fttr.energy.ApAnalysisSettings;
 import edu.suda.fttr.entity.ApEnergyModel;
+import edu.suda.fttr.entity.ApModeController;
 import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.link.AmpduConfig;
@@ -38,6 +39,7 @@ public final class SimulationConfig {
     private final long apActivityWindowNs;
     private final ApEnergyModel apEnergyModel;
     private final ApModeSwitch.Settings apSwitching;
+    private final ApModeController.Settings apControl;
     private final long apObservationPeriodNs;
     private final double apObservationAlpha;
     private final ApAnalysisSettings apAnalysis;
@@ -64,7 +66,7 @@ public final class SimulationConfig {
                      PonLink ponDownlink, PonLink ponUplink, long wifiDelayUs, WirelessPhy wirelessPhy,
                      Map<Integer, ApCapabilityMode> apCapabilityModes, Map<Integer, WirelessPhy> stationPhys,
                      Map<Integer, WirelessPhy> alternateStationPhys, boolean apActivityEnabled, long apActivityWindowNs,
-                     ApEnergyModel apEnergyModel, ApModeSwitch.Settings apSwitching,
+                     ApEnergyModel apEnergyModel, ApModeSwitch.Settings apSwitching, ApModeController.Settings apControl,
                      long apObservationPeriodNs, double apObservationAlpha, ApAnalysisSettings apAnalysis,
                      ChannelObservationInput channelObservation,
                      WifiFrameExchange wifiFrameExchange, EdcaParameters edcaParameters, WifiAccessMode wifiAccessMode,
@@ -89,6 +91,7 @@ public final class SimulationConfig {
         this.apActivityWindowNs = apActivityWindowNs;
         this.apEnergyModel = apEnergyModel;
         this.apSwitching = apSwitching;
+        this.apControl = apControl;
         this.apObservationPeriodNs = apObservationPeriodNs;
         this.apObservationAlpha = apObservationAlpha;
         this.apAnalysis = apAnalysis;
@@ -229,13 +232,17 @@ public final class SimulationConfig {
         return apEnergyModel;
     }
 
-    /** 同一终端在备用 AP 模式下的有效 PHY，仅为配置了切换请求的 SFU 构造。 */
+    /** 同一终端在备用 AP 模式下的有效 PHY，供模式切换和双模式预测使用。 */
     public WirelessPhy alternateWirelessPhyForSta(int staId) {
         return alternateStationPhys.get(staId);
     }
 
     public ApModeSwitch.Settings apSwitching() {
         return apSwitching;
+    }
+
+    public ApModeController.Settings apControl() {
+        return apControl;
     }
 
     /** 启用立即 ACK 时的响应时序。旧场景只计算 DATA，返回 null。 */

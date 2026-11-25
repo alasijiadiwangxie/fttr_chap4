@@ -24,9 +24,12 @@ final class EventQueue {
         if (type == EventType.FIBER_TX_END && event.dbaGrant() != null) {
             return -1; // 真实DATA在半开窗口末先释放资源，下一帧控制/装载可在同刻启动。
         }
-        // 先处理报文与忙闲边界，再推进所有计时器，最后合并同刻归零的候选。
-        if (type == EventType.WIFI_ACCESS_RESOLVE) {
+        // 入口和计时器先结算。在线切换可以在发射仲裁前安全冻结接入。
+        if (type == EventType.WIFI_AP_MODE_DECISION) {
             return 2;
+        }
+        if (type == EventType.WIFI_ACCESS_RESOLVE) {
+            return 3;
         }
         // 一包恰好在光帧边界发完时，先释放前一帧资源，再执行本帧的授权。
         return type == EventType.WIFI_SELECT_NEXT || type == EventType.WIFI_ACCESS_TIMER
@@ -46,6 +49,11 @@ final class EventQueue {
 
     Event poll() {
         Entry entry = pending.poll();
+        return entry == null ? null : entry.event;
+    }
+
+    Event peek() {
+        Entry entry = pending.peek();
         return entry == null ? null : entry.event;
     }
 

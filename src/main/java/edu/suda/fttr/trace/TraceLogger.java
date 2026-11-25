@@ -9,6 +9,7 @@ import edu.suda.fttr.energy.ApQosLedger;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.ApEnergyModel;
+import edu.suda.fttr.entity.ApModeController;
 import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.ApTrafficObserver;
 import edu.suda.fttr.entity.Mfu;
@@ -129,6 +130,7 @@ public final class TraceLogger {
             case WIFI_ACK_TIMEOUT:
             case WIFI_AP_SWITCH_REQUEST:
             case WIFI_AP_SWITCH_END:
+            case WIFI_AP_MODE_DECISION:
             case WIFI_EXTERNAL_CCA_EDGE:
             case WIFI_CHANNEL_MANAGEMENT_START:
             case WIFI_CHANNEL_MANAGEMENT_END:
@@ -857,17 +859,43 @@ public final class TraceLogger {
                 sfuId, mode, totals.observationEndNs(), totals.idleNs(), totals.txNs(), totals.rxNs(), switchField);
     }
 
+    public void recordInitialApMode(int sfuId, ApModeController.Policy policy, ApCapabilityMode mode) {
+        output.printf(Locale.ROOT, "t_us=0 t_ns=0 node=SFU event=WIFI_AP_MODE_INITIAL sfu_id=%d policy=%s "
+                + "current_mode=%s target_mode=%s%n", sfuId, policy.key(), mode, mode);
+    }
+
+    public void recordApModeDecision(int sfuId, ApCapabilityMode current, ApModeController.Decision decision,
+                                     ApModeSwitch.Outcome outcome) {
+        output.printf(Locale.ROOT, "t_us=%s t_ns=%d node=SFU event=WIFI_AP_MODE_DECISION sfu_id=%d policy=%s "
+                        + "window_start_ns=%d arrival_bytes=%d arrival_mbps=%s ewma_mbps=%s current_mode=%s "
+                        + "target_mode=%s action=%s switch_id=%d%n",
+                formatMicroseconds(decision.timeNs()), decision.timeNs(), sfuId,
+                ApModeController.Policy.FIXED_THRESHOLD.key(), decision.windowStartNs(), decision.arrivedBytes(),
+                decision.arrivalMbps(), decision.estimateMbps(), current, decision.target(), outcome.action(),
+                outcome.requestId());
+    }
+
     public void recordApSwitchEvent(long timeNs, String event, int sfuId, ApModeSwitch.Request request,
-                                    ApCapabilityMode from, ApModeSwitch.Profile profile, long observedNs,
+                                    ApCapabilityMode from, ApModeSwitch.Profile profile, long startNs, long observedNs,
                                     BigDecimal energyUj) {
         String duration = profile == null ? "" : " duration_ns=" + profile.delayNs()
                 + " power_w=" + profile.powerW().toPlainString();
         String accounting = energyUj == null ? "" : " observed_ns=" + observedNs
                 + " switch_energy_uj=" + energyUj.toPlainString();
+        String online = "";
+        if (request.online()) {
+            online = " policy=fixed-threshold";
+            if (startNs >= 0) {
+                online += " switch_start_ns=" + startNs + " wait_ns=" + (startNs - request.timeNs());
+            }
+            if (energyUj != null) {
+                online += " switch_end_ns=" + timeNs;
+            }
+        }
         output.printf(Locale.ROOT, "t_us=%s t_ns=%d node=SFU event=%s sfu_id=%d switch_id=%d from_mode=%s to_mode=%s "
-                        + "request_ns=%d%s%s%n",
+                        + "request_ns=%d%s%s%s%n",
                 formatMicroseconds(timeNs), timeNs, event, sfuId, request.id(), from, request.target(),
-                request.timeNs(), duration, accounting);
+                request.timeNs(), duration, accounting, online);
     }
 
     public void recordApEnergy(int sfuId, ApCapabilityMode mode, long observationEndNs, ApEnergyModel.Power power,

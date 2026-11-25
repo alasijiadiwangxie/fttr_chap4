@@ -10,6 +10,7 @@ import edu.suda.fttr.energy.ApQosLedger;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.ApEnergyModel;
+import edu.suda.fttr.entity.ApModeController;
 import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.ApTrafficObserver;
 import edu.suda.fttr.mac.EdcaAccess.ApPhase;
@@ -60,6 +61,9 @@ public final class SimulationContext {
     private boolean apActivityTraceEnabled;
     private long apObservationPeriodNs;
     private long lastApSampleNs;
+    private long modeDecisionPeriodNs;
+    private long nextModeDecisionNs;
+    private long modeDecisionEndNs;
     private ChannelObservationRuntime channelObservation;
     private boolean causalChannelSampling;
     private long nowTicks;
@@ -210,6 +214,7 @@ public final class SimulationContext {
     }
 
     Event nextEvent() {
+        scheduleModeDecision();
         Event event = events.poll();
         finishQosAtBoundary(event);
         if (!causalChannelSampling) {
@@ -234,6 +239,27 @@ public final class SimulationContext {
             trace.recordEvent(event);
         }
         return event;
+    }
+
+    void trackApModeControl(long periodNs, long observationEndNs) {
+        modeDecisionPeriodNs = periodNs;
+        nextModeDecisionNs = periodNs;
+        modeDecisionEndNs = observationEndNs;
+    }
+
+    private void scheduleModeDecision() {
+        long decisionNs = nextModeDecisionNs;
+        if (decisionNs == 0 || (modeDecisionEndNs > 0 && decisionNs >= modeDecisionEndNs)) {
+            return;
+        }
+        Event next = events.peek();
+        // 自然窗口只在有实际事件覆盖时推进决策；固定窗口则可观察尾部空载。
+        if (next == null ? modeDecisionEndNs < 0 : next.timeTicks() < decisionNs) {
+            return;
+        }
+        events.add(Event.atTicks(decisionNs, nanosecondClock, EventType.WIFI_AP_MODE_DECISION, null, 0));
+        nextModeDecisionNs = decisionNs <= Long.MAX_VALUE - modeDecisionPeriodNs
+                ? decisionNs + modeDecisionPeriodNs : 0;
     }
 
     private void advanceChannelObservation(Event event) {
@@ -540,6 +566,19 @@ public final class SimulationContext {
         return observer == null ? List.of() : observer.latest();
     }
 
+    long apDownlinkArrivalBytes(int sfuId) {
+        return apObservers.get(sfuId).downlinkArrivalBytes();
+    }
+
+    void recordInitialApMode(int sfuId, ApModeController.Policy policy, ApCapabilityMode mode) {
+        trace.recordInitialApMode(sfuId, policy, mode);
+    }
+
+    public void recordApModeDecision(int sfuId, ApCapabilityMode current, ApModeController.Decision decision,
+                                     ApModeSwitch.Outcome outcome) {
+        trace.recordApModeDecision(sfuId, current, decision, outcome);
+    }
+
     private void sampleApTraffic(long endNs) {
         if (causalChannelSampling && channelObservation != null) {
             channelObservation.advanceThrough(endNs);
@@ -637,8 +676,8 @@ public final class SimulationContext {
     }
 
     public void recordApSwitchEvent(String event, int sfuId, ApModeSwitch.Request request, ApCapabilityMode from,
-                                    ApModeSwitch.Profile profile, long observedNs, BigDecimal energyUj) {
-        trace.recordApSwitchEvent(nowTicks, event, sfuId, request, from, profile, observedNs, energyUj);
+                                    ApModeSwitch.Profile profile, long startNs, long observedNs, BigDecimal energyUj) {
+        trace.recordApSwitchEvent(nowTicks, event, sfuId, request, from, profile, startNs, observedNs, energyUj);
     }
 
     public void startApModeSwitch(int sfuId, ApCapabilityMode target) {

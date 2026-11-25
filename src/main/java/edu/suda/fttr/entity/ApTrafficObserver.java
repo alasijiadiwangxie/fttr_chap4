@@ -29,6 +29,7 @@ public final class ApTrafficObserver {
     private long lastEventNs;
     private long previousTxNs;
     private long previousRxNs;
+    private long downlinkArrivalBytes;
     private boolean sampled;
     private List<Observation> latest = List.of();
 
@@ -51,6 +52,9 @@ public final class ApTrafficObserver {
 
     /** 最近一次已经结算的快照，窗口中的后续事件不会修改它。 */
     public List<Observation> latest() { return latest; }
+
+    /** 与 C1 采样周期无关的累计下行入口字节数。每个新报文在首次入队时计入。 */
+    public long downlinkArrivalBytes() { return downlinkArrivalBytes; }
 
     /** 当前 AP 可见的下行待发 FIFO。每个 AC 内保留实际队首顺序，在途成员不在此列。 */
     public List<Packet> waitingDownlinkPackets() {
@@ -77,6 +81,7 @@ public final class ApTrafficObserver {
         returnToQueue(local, entry);
         local.window.arrivalPackets++;
         local.window.arrivalBytes += packet.bytes();
+        downlinkArrivalBytes = Math.addExact(downlinkArrivalBytes, packet.bytes());
         return event(packet, nowNs, Kind.ENQUEUED, local);
     }
 
@@ -192,7 +197,7 @@ public final class ApTrafficObserver {
                 Traffic local = traffic.get(direction).get(category);
                 Window window = local.window;
                 double arrivalPps = pps(window.arrivalPackets, durationNs);
-                double arrivalMbps = mbps(window.arrivalBytes, durationNs);
+                double arrivalMbps = megabitsPerSecond(window.arrivalBytes, durationNs);
                 local.ewmaPps = updateEwma(local.ewmaPps, arrivalPps);
                 local.ewmaMbps = updateEwma(local.ewmaMbps, arrivalMbps);
                 rows.add(new Observation(windowStartNs, endNs, direction, category, local, txNs, rxNs));
@@ -208,7 +213,11 @@ public final class ApTrafficObserver {
     }
 
     private double updateEwma(double previous, double rate) {
-        return sampled ? ewmaAlpha * rate + (1.0 - ewmaAlpha) * previous : rate;
+        return sampled ? smooth(previous, rate, ewmaAlpha) : rate;
+    }
+
+    static double smooth(double previous, double rate, double alpha) {
+        return alpha * rate + (1.0 - alpha) * previous;
     }
 
     private Traffic trafficFor(Packet packet) {
@@ -251,7 +260,7 @@ public final class ApTrafficObserver {
     }
 
     private static double pps(long packets, long durationNs) { return packets * 1_000_000_000.0 / durationNs; }
-    private static double mbps(long bytes, long durationNs) { return bytes * 8_000.0 / durationNs; }
+    static double megabitsPerSecond(long bytes, long durationNs) { return bytes * 8_000.0 / durationNs; }
 
     private static final class Entry {
         private final Packet packet;
@@ -387,9 +396,9 @@ public final class ApTrafficObserver {
         public long ppduMembers() { return window.ppduMembers; }
         public double averageDepth() { return window.dataPpdus == 0 ? 0.0 : (double) window.ppduMembers / window.dataPpdus; }
         public double arrivalPps() { return pps(window.arrivalPackets, endNs - startNs); }
-        public double arrivalMbps() { return mbps(window.arrivalBytes, endNs - startNs); }
+        public double arrivalMbps() { return megabitsPerSecond(window.arrivalBytes, endNs - startNs); }
         public double deliveredPps() { return pps(window.deliveredPackets, endNs - startNs); }
-        public double deliveredMbps() { return mbps(window.deliveredBytes, endNs - startNs); }
+        public double deliveredMbps() { return megabitsPerSecond(window.deliveredBytes, endNs - startNs); }
         /** 当前窗口内已结算下行业务的成功比例。没有结算样本或上行时返回 -1。 */
         public double deliverySuccessRatio() {
             long terminal = window.confirmedPackets + window.droppedPackets;

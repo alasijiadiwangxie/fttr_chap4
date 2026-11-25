@@ -241,6 +241,12 @@ public final class Sfu {
         tryStartModeSwitch(context);
     }
 
+    public void applyModeDecision(ApModeController.Decision decision, SimulationContext context) {
+        ApModeSwitch.Outcome outcome = modeSwitch.requestOnline(decision.target(), context);
+        context.recordApModeDecision(id, modeSwitch.mode(), decision, outcome);
+        tryStartModeSwitch(context);
+    }
+
     public void finishModeSwitch(SimulationContext context) {
         // 新能力必须在释放接入资源之前生效。切换独占资源，但不计入已有 DATA/ACK 忙时。
         wifi = modeSwitch.finish(context);

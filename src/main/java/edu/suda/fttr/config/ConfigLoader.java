@@ -9,6 +9,7 @@ import edu.suda.fttr.dba.TcontTopology;
 import edu.suda.fttr.energy.ApAnalysisSettings;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApEnergyModel;
+import edu.suda.fttr.entity.ApModeController;
 import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.ApTrafficObserver;
 import edu.suda.fttr.entity.Packet;
@@ -116,6 +117,10 @@ public final class ConfigLoader {
     private static final String AP_SWITCH_ENABLED = AP_SWITCH + "enabled";
     private static final String LCM_TO_HCM = AP_SWITCH + "lcm-to-hcm.";
     private static final String HCM_TO_LCM = AP_SWITCH + "hcm-to-lcm.";
+    private static final String AP_CONTROL_POLICY = "wifi.ap.control.policy";
+    private static final String AP_CONTROL_PERIOD_US = "wifi.ap.control.period.us";
+    private static final String AP_CONTROL_ALPHA = "wifi.ap.control.ewma.alpha";
+    private static final String AP_CONTROL_THRESHOLD = "wifi.ap.control.threshold.mbps";
     private static final Set<String> KEYS = Set.of(
             FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", DOWNLINK_PROPAGATION_US,
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
@@ -135,6 +140,7 @@ public final class ConfigLoader {
             INTERFERENCE_ENABLED, INTERFERENCE_TIMELINE, EXTERNAL_CCA_THRESHOLD,
             LCM_POWER + "idle.w", LCM_POWER + "tx.w", LCM_POWER + "rx.w",
             HCM_POWER + "idle.w", HCM_POWER + "tx.w", HCM_POWER + "rx.w",
+            AP_CONTROL_POLICY, AP_CONTROL_PERIOD_US, AP_CONTROL_ALPHA, AP_CONTROL_THRESHOLD,
             AP_SWITCH_ENABLED, LCM_TO_HCM + "delay.us", LCM_TO_HCM + "power.w",
             HCM_TO_LCM + "delay.us", HCM_TO_LCM + "power.w");
     private static final Set<String> PHY_KEYS = Set.of(
@@ -144,7 +150,8 @@ public final class ConfigLoader {
     private static final Pattern PACKET_OVERRIDE = Pattern.compile("packet\\.([1-9][0-9]*)\\.(bytes|type|sta\\.id|direction)");
     private static final Pattern STA_KEY = Pattern.compile(
             "sta\\.([1-9][0-9]*)\\.(?:sfu\\.id|wifi\\.max\\.(?:bandwidth\\.mhz|nss))");
-    private static final Pattern SFU_AP_MODE_KEY = Pattern.compile("sfu\\.([1-9][0-9]*)\\.wifi\\.ap\\.mode");
+    private static final Pattern SFU_AP_MODE_KEY =
+            Pattern.compile("sfu\\.([1-9][0-9]*)\\.wifi\\.ap\\.(?:mode|control\\.policy)");
     private static final Pattern SFU_AP_SWITCH_KEY =
             Pattern.compile("sfu\\.([1-9][0-9]*)\\.wifi\\.ap\\.switch\\.requests");
     private static final Pattern EDCA_AC_KEY = Pattern.compile(
@@ -235,21 +242,25 @@ public final class ConfigLoader {
         long fiberUs = hasFixedDelay || (ponDownlink == null && ponUplink == null)
                 ? readNonNegativeLong(properties, FIBER_DELAY_US) : 0;
         WirelessPhy wirelessPhy = readWirelessPhy(properties);
-        Map<Integer, ApCapabilityMode> apCapabilityModes = readApCapabilityModes(properties, sfuCount, wirelessPhy);
+        ApModeController.Settings apControl = readApControl(properties, sfuCount);
+        Map<Integer, ApCapabilityMode> apCapabilityModes = readApCapabilityModes(properties, sfuCount, wirelessPhy,
+                apControl);
         boolean apActivityEnabled = readApActivityEnabled(properties);
         long apActivityWindowNs = properties.containsKey(AP_ACTIVITY_WINDOW_US)
                 ? readDurationNs(properties, AP_ACTIVITY_WINDOW_US, "0", true) : -1;
-        long apObservationPeriodNs = readApObservationPeriod(properties);
+        // 控制器复用 C1 的下行入口账本，决策周期独立于 C1 的统计采样周期。
+        long apObservationPeriodNs = readApObservationPeriod(properties, apControl.hasFixedThreshold());
         double apObservationAlpha = readApObservationAlpha(properties);
         ChannelTruth channelTruth = readChannelTruth(properties, staSfuIds);
         ChannelObservationInput channelObservation = readChannelObservation(properties, sfuCount, staSfuIds, channelTruth);
         ApEnergyModel apEnergyModel = readApEnergyModel(properties, apActivityEnabled);
         ApModeSwitch.Settings apSwitching = readApSwitching(properties, sfuCount, apCapabilityModes, apEnergyModel);
+        validateApControl(apControl, apSwitching);
         ApAnalysisSettings apAnalysis = readApAnalysisSettings(properties, apObservationPeriodNs,
                 apEnergyModel, apCapabilityModes.size() == sfuCount);
         Map<Integer, WirelessPhy> alternateStationPhys = new HashMap<>();
         Map<Integer, WirelessPhy> stationPhys = readStationPhys(properties, staSfuIds, apCapabilityModes,
-                apSwitching, apAnalysis != null && apAnalysis.predictionEnabled(), alternateStationPhys);
+                apSwitching, apControl, apAnalysis != null && apAnalysis.predictionEnabled(), alternateStationPhys);
         EdcaParameters edcaParameters = readEdcaParameters(properties);
         WifiAccessMode accessMode = readWifiAccessMode(properties);
         WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy, edcaParameters.sifsUs());
@@ -285,7 +296,8 @@ public final class ConfigLoader {
                 apActivityEnabled || apObservationPeriodNs > 0 || channelObservation != null);
         return new SimulationConfig(inputEvents, sfuCount, staSfuIds, fiberUs, ponDownlink, ponUplink, wifiUs, wirelessPhy,
                 apCapabilityModes, stationPhys, alternateStationPhys, apActivityEnabled, apActivityWindowNs,
-                apEnergyModel, apSwitching, apObservationPeriodNs, apObservationAlpha, apAnalysis, channelObservation,
+                apEnergyModel, apSwitching, apControl, apObservationPeriodNs, apObservationAlpha, apAnalysis,
+                channelObservation,
                 frameExchange, edcaParameters, accessMode, retryPolicy, ampduConfig, downlinkDecoder, externalInterference,
                 downlink.windowsUs, uplink.windowsUs,
                 directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled,
@@ -703,22 +715,75 @@ public final class ConfigLoader {
                 readOptionalNonNegativeInt(properties, "wifi.phy.nominal.packet.padding.us", 0));
     }
 
+    private static ApModeController.Settings readApControl(Properties properties, int sfuCount) {
+        ApModeController.Policy fallback = readApPolicy(properties, AP_CONTROL_POLICY, "off");
+        Map<Integer, ApModeController.Policy> policies = new HashMap<>();
+        for (int sfuId = 1; sfuId <= sfuCount; sfuId++) {
+            ApModeController.Policy policy = readApPolicy(properties, "sfu." + sfuId + "." + AP_CONTROL_POLICY,
+                    fallback.key());
+            if (policy != ApModeController.Policy.OFF) {
+                policies.put(sfuId, policy);
+            }
+        }
+        long periodNs = readDurationNs(properties, AP_CONTROL_PERIOD_US,
+                Long.toString(ApModeController.DEFAULT_PERIOD_NS / 1_000), true);
+        double alpha = parseNonNegativeDouble(properties.getProperty(AP_CONTROL_ALPHA,
+                Double.toString(ApModeController.DEFAULT_ALPHA)), AP_CONTROL_ALPHA);
+        if (!(alpha > 0 && alpha <= 1)) {
+            throw new IllegalArgumentException(AP_CONTROL_ALPHA + " must be in (0, 1]");
+        }
+        double threshold = parseNonNegativeDouble(properties.getProperty(AP_CONTROL_THRESHOLD,
+                Double.toString(ApModeController.DEFAULT_THRESHOLD_MBPS)), AP_CONTROL_THRESHOLD);
+        return new ApModeController.Settings(policies, periodNs, alpha, threshold);
+    }
+
+    private static ApModeController.Policy readApPolicy(Properties properties, String key, String fallback) {
+        String value = properties.getProperty(key, fallback).strip();
+        for (ApModeController.Policy policy : ApModeController.Policy.values()) {
+            if (policy.key().equals(value)) {
+                return policy;
+            }
+        }
+        throw new IllegalArgumentException(key + " must be off, always-lcm, always-hcm or fixed-threshold");
+    }
+
+    private static void validateApControl(ApModeController.Settings control, ApModeSwitch.Settings switching) {
+        if (control.hasFixedThreshold() && (switching == null || switching.profileFrom(ApCapabilityMode.LCM) == null
+                || switching.profileFrom(ApCapabilityMode.HCM) == null)) {
+            throw new IllegalArgumentException("fixed-threshold requires enabled B4 switching and both direction profiles");
+        }
+        if (switching != null) {
+            for (int sfuId : control.policies().keySet()) {
+                if (!switching.requestsFor(sfuId).isEmpty()) {
+                    throw new IllegalArgumentException("SFU " + sfuId + " cannot combine mode control and manual switches");
+                }
+            }
+        }
+    }
+
     private static Map<Integer, ApCapabilityMode> readApCapabilityModes(Properties properties, int sfuCount,
-                                                                      WirelessPhy wirelessPhy) {
+                                                                       WirelessPhy wirelessPhy,
+                                                                       ApModeController.Settings control) {
         Map<Integer, ApCapabilityMode> modes = new HashMap<>();
         for (int sfuId = 1; sfuId <= sfuCount; sfuId++) {
             String key = "sfu." + sfuId + ".wifi.ap.mode";
-            if (!properties.containsKey(key)) {
+            ApModeController.Policy policy = control.policyFor(sfuId);
+            if (!properties.containsKey(key) && policy == ApModeController.Policy.OFF) {
                 continue;
             }
             if (wirelessPhy == null) {
                 throw new IllegalArgumentException(key + " requires wifi.model=he-su");
             }
+            ApCapabilityMode pinned = policy.staticMode();
+            String fallback = pinned == null ? "LCM" : pinned.name();
+            ApCapabilityMode configured;
             try {
-                modes.put(sfuId, ApCapabilityMode.valueOf(properties.getProperty(key).strip()));
+                configured = ApCapabilityMode.valueOf(properties.getProperty(key, fallback).strip());
             } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException(key + " must be LCM or HCM", e);
             }
+            // Always 策略直接选定启动能力，启动不经过切换，因此没有虚假的切换开销。
+            modes.put(sfuId, pinned == null ? configured : pinned);
         }
         return modes;
     }
@@ -734,14 +799,14 @@ public final class ConfigLoader {
         return value.equals("true");
     }
 
-    private static long readApObservationPeriod(Properties properties) {
+    private static long readApObservationPeriod(Properties properties, boolean requiredByControl) {
         String enabled = properties.getProperty(AP_OBSERVATION_ENABLED, "false").strip();
         if (!enabled.equals("true") && !enabled.equals("false")) {
             throw new IllegalArgumentException(AP_OBSERVATION_ENABLED + " must be true or false");
         }
         String defaultUs = Long.toString(ApTrafficObserver.DEFAULT_PERIOD_NS / 1_000);
         long periodNs = readDurationNs(properties, AP_OBSERVATION_PERIOD_US, defaultUs, true);
-        return enabled.equals("true") ? periodNs : 0;
+        return enabled.equals("true") || requiredByControl ? periodNs : 0;
     }
 
     private static double readApObservationAlpha(Properties properties) {
@@ -1140,7 +1205,8 @@ public final class ConfigLoader {
 
     private static Map<Integer, WirelessPhy> readStationPhys(Properties properties, List<Integer> staSfuIds,
                                                             Map<Integer, ApCapabilityMode> apModes,
-                                                            ApModeSwitch.Settings switching, boolean predictBoth,
+                                                            ApModeSwitch.Settings switching, ApModeController.Settings control,
+                                                            boolean predictBoth,
                                                             Map<Integer, WirelessPhy> alternateStationPhys) {
         Map<Integer, WirelessPhy> stationPhys = new HashMap<>();
         for (int staIndex = 0; staIndex < staSfuIds.size(); staIndex++) {
@@ -1166,7 +1232,8 @@ public final class ConfigLoader {
             }
             // 带宽和空间流数分别取两端的能力交集；同一模型用于 STA 的两个 DATA 方向。
             stationPhys.put(staId, buildStationPhy(properties, mode, maxBandwidthMhz, maxNss));
-            if (predictBoth || (switching != null && !switching.requestsFor(sfuId).isEmpty())) {
+            if (predictBoth || control.policyFor(sfuId) == ApModeController.Policy.FIXED_THRESHOLD
+                    || (switching != null && !switching.requestsFor(sfuId).isEmpty())) {
                 alternateStationPhys.put(staId, buildStationPhy(properties, ApModeSwitch.otherMode(mode),
                         maxBandwidthMhz, maxNss));
             }
