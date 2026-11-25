@@ -123,7 +123,7 @@ public final class Simulator {
                 controllers.put(sfuId, new ApModeController(config.apControl()));
             }
             ApModeSwitch.Settings switching = config.apSwitching();
-            if (fixedThreshold || (switching != null && !switching.requestsFor(sfuId).isEmpty())) {
+            if (control.dynamic() || (switching != null && !switching.requestsFor(sfuId).isEmpty())) {
                 Map<Integer, WirelessPhy> alternatePhys = new HashMap<>();
                 for (int staId : associated.keySet()) {
                     alternatePhys.put(staId, config.alternateWirelessPhyForSta(staId));
@@ -136,7 +136,7 @@ public final class Simulator {
                 }
             }
         }
-        if (!controllers.isEmpty()) {
+        if (config.apControl().hasDynamicPolicy()) {
             context.trackApModeControl(config.apControl().periodNs(), config.apActivityWindowNs());
         }
         if (config.channelObservation() != null) {
@@ -295,6 +295,7 @@ public final class Simulator {
                         sfus.get(sfuId - 1).applyModeDecision(decision, context);
                         context.observeApMediumAfterEvent(sfuId);
                     });
+                    context.applyEnergyModeDecisions();
                     break;
                 case WIFI_EXTERNAL_CCA_EDGE:
                     sfus.get(event.sfuId() - 1).receiveExternalCca(

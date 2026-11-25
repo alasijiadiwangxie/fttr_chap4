@@ -4,6 +4,7 @@ import edu.suda.fttr.channel.ApChannelObservations.LocalReception;
 import edu.suda.fttr.channel.ChannelReport;
 import edu.suda.fttr.channel.ChannelTruth;
 import edu.suda.fttr.config.ChannelObservationInput;
+import edu.suda.fttr.energy.ApEnergyModePolicy;
 import edu.suda.fttr.energy.ApModePredictor;
 import edu.suda.fttr.energy.ApQosLedger;
 import edu.suda.fttr.entity.AccessCategory;
@@ -875,6 +876,54 @@ public final class TraceLogger {
                 outcome.requestId());
     }
 
+    /** 同一决策输出两行，t_ns 和 sfu_id 可与 B4 执行记录对账。 */
+    public void recordApEnergyModeDecision(long nowNs, int sfuId, ApModeController.Policy policy,
+                                           List<ApTrafficObserver.Observation> traffic,
+                                           ApEnergyModePolicy.Decision decision, ApModeSwitch.Outcome outcome,
+                                           boolean externalBusy) {
+        double arrival = 0;
+        double ewma = 0;
+        long queue = 0;
+        long inflight = 0;
+        for (ApTrafficObserver.Observation observation : traffic) {
+            if (observation.direction() == Packet.Direction.DL) {
+                arrival += observation.arrivalMbps();
+                ewma += observation.ewmaArrivalMbps();
+                queue += observation.queuePackets();
+                inflight += observation.inFlightPackets();
+            }
+        }
+        var ready = decision.readiness;
+        for (ApEnergyModePolicy.Candidate candidate : decision.candidates) {
+            var forecast = candidate.forecast;
+            var work = forecast.expected;
+            var cost = candidate.expected;
+            output.printf(Locale.ROOT, "event=WIFI_AP_ENERGY_MODE_DECISION t_ns=%d sfu_id=%d policy=%s "
+                            + "window_start_ns=%d horizon_ns=%d arrival_mbps=%s ewma_mbps=%s dl_queue=%d dl_inflight=%d "
+                            + "current_mode=%s projected_mode=%s candidate_mode=%s target_mode=%s reason=%s action=%s switch_id=%d "
+                            + "channel_confidence=%s channel_incomplete=%b observed_busy_fraction=%s expected_busy_fraction=%s "
+                            + "external_busy=%b mean_failure=%s ampdu_depth=%s margin_uj=%s "
+                            + "local_wait_ns=%d prefix_tx_ns=%d prefix_rx_ns=%d active_switch_ns=%d local_wait_uncertain=%b "
+                            + "cca_wait_ns=%s new_switch_ns=%s transition_fits=%b available_ns=%s "
+                            + "arrival_bits=%s demand_packets=%s demand_bits=%s full_work_ns=%s full_tx_ns=%s full_rx_ns=%s full_success_bits=%s "
+                            + "effective_service_mbps=%s success_bits=%s lower_success_bits=%s upper_success_bits=%s "
+                            + "unserved_bits=%s ending_queue_packets=%s tx_ns=%s rx_ns=%s idle_ns=%s "
+                            + "tx_uj=%s rx_uj=%s idle_uj=%s active_switch_uj=%s new_switch_uj=%s window_uj=%s "
+                            + "tail_ns=%s tail_uj=%s total_cost_uj=%s low_cost_uj=%s high_cost_uj=%s%n",
+                    nowNs, sfuId, policy.key(), traffic.get(0).startNs(), decision.horizonNs, arrival, ewma, queue, inflight,
+                    ready.sourceMode, ready.projectedMode, forecast.mode, decision.target, decision.reason,
+                    outcome.action(), outcome.requestId(), forecast.confidence, forecast.channelIncomplete,
+                    forecast.observedBusyFraction, work.busyFraction, externalBusy, work.meanFailure, work.ampduDepth,
+                    decision.marginUj, ready.waitNs, ready.txNs, ready.rxNs, ready.activeSwitchNs, ready.timingUncertain,
+                    cost.ccaWaitNs, cost.newSwitchNs, cost.transitionFits, cost.availableNs, work.arrivalBits, work.demandPackets,
+                    work.demandBits, work.workNs, work.txNs, work.rxNs, work.successBits, cost.effectiveServiceMbps,
+                    cost.successBits, candidate.lowerSuccessBits, candidate.upperSuccessBits, cost.unservedBits,
+                    cost.endingQueuePackets, cost.txNs, cost.rxNs, cost.idleNs, cost.txUj, cost.rxUj, cost.idleUj,
+                    cost.activeUj, cost.newSwitchUj, cost.windowUj, cost.tailNs, cost.tailUj, cost.totalUj,
+                    candidate.lowCostUj, candidate.highCostUj);
+        }
+    }
+
     public void recordApSwitchEvent(long timeNs, String event, int sfuId, ApModeSwitch.Request request,
                                     ApCapabilityMode from, ApModeSwitch.Profile profile, long startNs, long observedNs,
                                     BigDecimal energyUj) {
@@ -884,7 +933,7 @@ public final class TraceLogger {
                 + " switch_energy_uj=" + energyUj.toPlainString();
         String online = "";
         if (request.online()) {
-            online = " policy=fixed-threshold";
+            online = " policy=" + request.policy().key();
             if (startNs >= 0) {
                 online += " switch_start_ns=" + startNs + " wait_ns=" + (startNs - request.timeNs());
             }

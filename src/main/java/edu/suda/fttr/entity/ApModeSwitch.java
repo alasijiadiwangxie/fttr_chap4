@@ -43,7 +43,7 @@ public final class ApModeSwitch {
     }
 
     /** 在线决策只保留最新的未开始请求。正在执行的切换必须完整结束。 */
-    public Outcome requestOnline(ApCapabilityMode target, SimulationContext context) {
+    public Outcome requestOnline(ApCapabilityMode target, ApModeController.Policy policy, SimulationContext context) {
         if (!requests.isEmpty()) {
             throw new IllegalStateException("Cannot combine manual and online requests for SFU " + sfuId);
         }
@@ -56,9 +56,8 @@ public final class ApModeSwitch {
             context.recordApSwitchEvent("WIFI_AP_SWITCH_CANCELLED", sfuId, queued, mode, null, -1, 0, null);
         }
 
-        ApCapabilityMode projected = active == null ? mode : active.target;
-        if (target != projected) {
-            Request request = new Request(nextOnlineId++, context.nowTicks(), target, true);
+        if (target != projectedMode()) {
+            Request request = new Request(nextOnlineId++, context.nowTicks(), target, policy);
             pending.addLast(request);
             context.recordApSwitchEvent("WIFI_AP_SWITCH_REQUEST", sfuId, request, mode, null, -1, 0, null);
             return new Outcome(Action.REQUESTED, request.id);
@@ -106,11 +105,37 @@ public final class ApModeSwitch {
         return mode;
     }
 
+    public ApCapabilityMode projectedMode() {
+        return active == null ? mode : active.target;
+    }
+
+    public long remainingSwitchNs(long nowNs) {
+        return active == null ? 0 : settings.profileFrom(mode).delayNs - (nowNs - startNs);
+    }
+
     public static ApCapabilityMode otherMode(ApCapabilityMode mode) {
         return mode == ApCapabilityMode.LCM ? ApCapabilityMode.HCM : ApCapabilityMode.LCM;
     }
 
     public enum Action { HOLD, REQUESTED, PENDING, CANCELLED, SWITCHING }
+
+    /** 决策时已知、两种方案都必须经历的区间。时长已按当前预测窗口截取。 */
+    public static final class Readiness {
+        public final ApCapabilityMode sourceMode, projectedMode;
+        public final long waitNs, txNs, rxNs, activeSwitchNs;
+        public final boolean timingUncertain;
+
+        public Readiness(ApCapabilityMode sourceMode, ApCapabilityMode projectedMode, long waitNs,
+                         long txNs, long rxNs, long activeSwitchNs, boolean timingUncertain) {
+            this.sourceMode = sourceMode;
+            this.projectedMode = projectedMode;
+            this.waitNs = waitNs;
+            this.txNs = txNs;
+            this.rxNs = rxNs;
+            this.activeSwitchNs = activeSwitchNs;
+            this.timingUncertain = timingUncertain;
+        }
+    }
 
     /** 用同一请求 ID 关联策略决策、等待、开始和完成。0 表示没有切换请求。 */
     public static final class Outcome {
@@ -130,23 +155,24 @@ public final class ApModeSwitch {
         private final int id;
         private final long timeNs;
         private final ApCapabilityMode target;
-        private final boolean online;
+        private final ApModeController.Policy policy;
 
         public Request(int id, long timeNs, ApCapabilityMode target) {
-            this(id, timeNs, target, false);
+            this(id, timeNs, target, null);
         }
 
-        private Request(int id, long timeNs, ApCapabilityMode target, boolean online) {
+        private Request(int id, long timeNs, ApCapabilityMode target, ApModeController.Policy policy) {
             this.id = id;
             this.timeNs = timeNs;
             this.target = target;
-            this.online = online;
+            this.policy = policy;
         }
 
         public int id() { return id; }
         public long timeNs() { return timeNs; }
         public ApCapabilityMode target() { return target; }
-        public boolean online() { return online; }
+        public boolean online() { return policy != null; }
+        public ApModeController.Policy policy() { return policy; }
     }
 
     public static final class Profile {

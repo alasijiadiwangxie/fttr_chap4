@@ -200,7 +200,8 @@ public final class ApTrafficObserver {
                 double arrivalMbps = megabitsPerSecond(window.arrivalBytes, durationNs);
                 local.ewmaPps = updateEwma(local.ewmaPps, arrivalPps);
                 local.ewmaMbps = updateEwma(local.ewmaMbps, arrivalMbps);
-                rows.add(new Observation(windowStartNs, endNs, direction, category, local, txNs, rxNs));
+                rows.add(new Observation(windowStartNs, endNs, direction, category, local, window,
+                        local.ewmaPps, local.ewmaMbps, txNs, rxNs));
                 local.window = new Window();
             }
         }
@@ -210,6 +211,33 @@ public final class ApTrafficObserver {
         sampled = true;
         latest = List.copyOf(rows);
         return latest;
+    }
+
+    /** 当前决策可见的 C1 快照。即使决策与采样不同步，也不会关闭或修改 C1 的窗口。 */
+    public List<Observation> preview(long nowNs, long totalTxNs, long totalRxNs) {
+        long durationNs = nowNs - windowStartNs;
+        long tx = totalTxNs - previousTxNs;
+        long rx = totalRxNs - previousRxNs;
+        if (nowNs < lastEventNs || durationNs <= 0 || durationNs > periodNs
+                || tx < 0 || rx < 0 || tx > durationNs - rx) {
+            throw new IllegalArgumentException("AP decision snapshot must be within the open C1 interval");
+        }
+        // 按已过时长缩放部分窗口的权重，避免刚过采样点的单包被当作整个周期的突发。
+        double weight = durationNs == periodNs ? ewmaAlpha
+                : -StrictMath.expm1(StrictMath.log1p(-ewmaAlpha) * ((double) durationNs / periodNs));
+        List<Observation> rows = new ArrayList<>();
+        for (Packet.Direction direction : Packet.Direction.values()) {
+            for (AccessCategory category : AccessCategory.values()) {
+                Traffic local = traffic.get(direction).get(category);
+                Window window = new Window(local.window);
+                double arrivalPps = pps(window.arrivalPackets, durationNs);
+                double arrivalMbps = megabitsPerSecond(window.arrivalBytes, durationNs);
+                rows.add(new Observation(windowStartNs, nowNs, direction, category, local, window,
+                        sampled ? smooth(local.ewmaPps, arrivalPps, weight) : arrivalPps,
+                        sampled ? smooth(local.ewmaMbps, arrivalMbps, weight) : arrivalMbps, tx, rx));
+            }
+        }
+        return List.copyOf(rows);
     }
 
     private double updateEwma(double previous, double rate) {
@@ -302,6 +330,24 @@ public final class ApTrafficObserver {
         private long droppedBytes;
         private long dataPpdus;
         private long ppduMembers;
+
+        private Window() { }
+
+        private Window(Window source) {
+            arrivalPackets = source.arrivalPackets;
+            arrivalBytes = source.arrivalBytes;
+            deliveredPackets = source.deliveredPackets;
+            deliveredBytes = source.deliveredBytes;
+            confirmedPackets = source.confirmedPackets;
+            confirmedBytes = source.confirmedBytes;
+            retriedPackets = source.retriedPackets;
+            retriedBytes = source.retriedBytes;
+            requeuedPackets = source.requeuedPackets;
+            droppedPackets = source.droppedPackets;
+            droppedBytes = source.droppedBytes;
+            dataPpdus = source.dataPpdus;
+            ppduMembers = source.ppduMembers;
+        }
     }
 
     private static final class QueueState {
@@ -357,16 +403,16 @@ public final class ApTrafficObserver {
         private final long rxNs;
 
         private Observation(long startNs, long endNs, Packet.Direction direction, AccessCategory category,
-                            Traffic local, long txNs, long rxNs) {
+                            Traffic local, Window window, double ewmaPps, double ewmaMbps, long txNs, long rxNs) {
             this.startNs = startNs;
             this.endNs = endNs;
             this.direction = direction;
             this.category = category;
             queue = new QueueState(local);
             headWaitNs = local.waiting.isEmpty() ? -1 : endNs - local.waiting.firstEntry().getValue().arrivalNs;
-            window = local.window;
-            ewmaArrivalPps = local.ewmaPps;
-            ewmaArrivalMbps = local.ewmaMbps;
+            this.window = window;
+            ewmaArrivalPps = ewmaPps;
+            ewmaArrivalMbps = ewmaMbps;
             this.txNs = txNs;
             this.rxNs = rxNs;
         }

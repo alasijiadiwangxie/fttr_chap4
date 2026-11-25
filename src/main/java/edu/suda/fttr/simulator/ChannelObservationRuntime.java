@@ -140,7 +140,7 @@ final class ChannelObservationRuntime {
             return; // 没有可测量的信道状态，已记录 NO_TRUTH。
         }
         Sfu sfu = sfus.get(request.sfuId() - 1);
-        if (!sfu.beginChannelFeedback(context)) {
+        if (!sfu.beginChannelFeedback(request.arrivalNs(), context)) {
             trace.recordChannelFeedback(request.txStartNs(), request, "CCA_BUSY_DROP", report);
             return;
         }

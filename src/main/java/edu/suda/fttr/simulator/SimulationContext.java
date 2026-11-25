@@ -5,6 +5,7 @@ import edu.suda.fttr.channel.ExternalInterference;
 import edu.suda.fttr.config.ChannelObservationInput;
 import edu.suda.fttr.config.SimulationConfig;
 import edu.suda.fttr.channel.AuxChannelScan;
+import edu.suda.fttr.energy.ApEnergyModePolicy;
 import edu.suda.fttr.energy.ApModePredictor;
 import edu.suda.fttr.energy.ApQosLedger;
 import edu.suda.fttr.entity.AccessCategory;
@@ -54,7 +55,7 @@ public final class SimulationContext {
     private final Map<Integer, UplinkStats> uplinkByStation = new HashMap<>();
     private final Map<Integer, ApActivity> apActivities = new HashMap<>();
     private final Map<Integer, ApTrafficObserver> apObservers = new LinkedHashMap<>();
-    private final Map<Integer, PredictionTrack> apPredictors = new HashMap<>();
+    private final Map<Integer, PredictionTrack> apPredictors = new LinkedHashMap<>();
     private final Map<Integer, List<ApModePredictor.Forecast>> latestForecasts = new HashMap<>();
     private ApQosLedger qosLedger;
     private long qosCutoffNs;
@@ -64,6 +65,8 @@ public final class SimulationContext {
     private long modeDecisionPeriodNs;
     private long nextModeDecisionNs;
     private long modeDecisionEndNs;
+    private ApEnergyModePolicy energyModePolicy;
+    private long energyPredictionWindowNs;
     private ChannelObservationRuntime channelObservation;
     private boolean causalChannelSampling;
     private long nowTicks;
@@ -316,7 +319,7 @@ public final class SimulationContext {
     public void recordExternalCca(int sfuId, int observedMask, int accessMask, boolean busy) {
         trace.recordExternalCca(nowNanoseconds(), sfuId, observedMask, accessMask, busy);
         PredictionTrack track = apPredictors.get(sfuId);
-        if (track != null && track.passive) {
+        if (track != null && track.passive && (!track.policy.usesPrediction() || track.predictChannel)) {
             track.advanceCca(nowNanoseconds());
             track.accessMask = accessMask;
             track.busyMask = observedMask & accessMask;
@@ -326,11 +329,20 @@ public final class SimulationContext {
     void trackApAnalysis(SimulationConfig config, List<Sfu> sfus) {
         qosLedger = new ApQosLedger(sfus.size(), config.apAnalysis());
         qosCutoffNs = config.apActivityWindowNs();
-        if (!config.apAnalysis().predictionEnabled()) {
+        if (config.apControl().needsPrediction()) {
+            energyModePolicy = new ApEnergyModePolicy(config.apEnergyModel(), config.apSwitching(),
+                    config.apControl().energyMarginUj());
+            energyPredictionWindowNs = config.apAnalysis().horizonNs();
+        }
+        if (!config.apAnalysis().predictionEnabled() && energyModePolicy == null) {
             return;
         }
         enableCausalChannelSampling();
         for (Sfu sfu : sfus) {
+            ApModeController.Policy policy = config.apControl().policyFor(sfu.id());
+            if (!policy.usesPrediction() && !config.apAnalysis().predictionEnabled()) {
+                continue;
+            }
             ApCapabilityMode mode = config.apCapabilityMode(sfu.id());
             Map<Integer, WirelessPhy> current = new TreeMap<>();
             Map<Integer, WirelessPhy> candidate = new TreeMap<>();
@@ -346,9 +358,43 @@ public final class SimulationContext {
                     config.edcaParameters(), config.wifiRetryPolicy(), config.ampduConfig(),
                     config.downlinkDecoder() == null ? null : config.downlinkDecoder().observedPerCurve());
             boolean passive = config.channelObservation() != null && config.channelObservation().passive();
+            boolean externalCca = config.externalInterference() != null;
+            boolean predictChannel = policy == ApModeController.Policy.EC_AWARE && config.downlinkDecoder() != null;
+            // D2 的本地 CCA 历史只累计本机实际侦听到的带宽。次信道仍须通过扫描或实际驻留获得。
+            passive |= policy.usesPrediction() && externalCca;
             apPredictors.put(sfu.id(), new PredictionTrack(sfu, predictor, passive, mode.bandwidthMhz(),
-                    config.apAnalysis().revisedPrediction()));
+                    config.apAnalysis().revisedPrediction() || policy.usesPrediction(), policy, predictChannel, externalCca));
         }
+    }
+
+    void applyEnergyModeDecisions() {
+        if (energyModePolicy == null) {
+            return;
+        }
+        long now = nowNanoseconds();
+        long horizon = Math.min(energyPredictionWindowNs, Long.MAX_VALUE - now);
+        apPredictors.forEach((sfuId, track) -> {
+            if (!track.policy.usesPrediction()) {
+                return;
+            }
+            ApTrafficObserver observer = apObservers.get(sfuId);
+            ApActivity.Airtime airtime = apActivities.get(sfuId).airtimeAt(now);
+            List<ApTrafficObserver.Observation> visible = observer.preview(now, airtime.txNs(), airtime.rxNs());
+            var evidence = track.mac.snapshot(now, observer.waitingDownlinkPackets());
+            var ready = track.sfu.modeSwitchReadiness(now, horizon);
+            boolean useCca = track.predictChannel && track.externalCca;
+            double[] busy = useCca ? track.sampleCca(now) : new double[] {0, 0};
+            int projectedMask = (1 << (ready.projectedMode.bandwidthMhz() / 20)) - 1;
+            boolean externalBusy = useCca && (track.sfu.observedExternalMask() & projectedMask) != 0;
+            var forecasts = track.predictor.predictControlWork(now, ready.sourceMode, visible,
+                    track.sfu::candidateChannelReport, busy[0], busy[1], evidence, track.predictChannel, track.mixedMode);
+            track.mac.resetWindow();
+            track.mixedMode = false;
+            var decision = energyModePolicy.choose(horizon, ready, externalBusy, forecasts);
+            var outcome = track.sfu.applyModeTarget(decision.target, track.policy, this);
+            trace.recordApEnergyModeDecision(now, sfuId, track.policy, visible, decision, outcome, externalBusy);
+            observeApMediumAfterEvent(sfuId);
+        });
     }
 
     void observeApMediumAfterEvent(int sfuId) {
@@ -593,7 +639,7 @@ public final class SimulationContext {
                 qosLedger.markQueueSample(sfuId, sample);
             }
             PredictionTrack track = apPredictors.get(sfuId);
-            if (track != null && endNs < Long.MAX_VALUE) {
+            if (track != null && !track.policy.usesPrediction() && endNs < Long.MAX_VALUE) {
                 ApCapabilityMode mode = apActivities.get(sfuId).mode();
                 double[] busy = track.sampleCca(endNs);
                 List<ApModePredictor.Forecast> forecasts;
@@ -688,6 +734,10 @@ public final class SimulationContext {
     public long finishApModeSwitch(int sfuId, long startNs) {
         ApActivity activity = apActivities.get(sfuId);
         logApActivity(sfuId, activity, activity.endSwitch(nowTicks), null, "SWITCH_END");
+        PredictionTrack track = apPredictors.get(sfuId);
+        if (track != null && track.policy.usesPrediction()) {
+            track.mixedMode = true;
+        }
         return activity.observedDurationNs(startNs, nowTicks);
     }
 
@@ -1056,14 +1106,21 @@ public final class SimulationContext {
         private final ApModePredictor predictor;
         private final boolean passive;
         private final ApMacEvidence mac;
+        private final ApModeController.Policy policy;
+        private final boolean predictChannel, externalCca;
+        private boolean mixedMode;
         private long startNs, previousNs, primaryBusyNs, wideBusyNs, wideObservedNs;
         private int accessMask, busyMask;
 
-        private PredictionTrack(Sfu sfu, ApModePredictor predictor, boolean passive, int bandwidthMhz, boolean revised) {
+        private PredictionTrack(Sfu sfu, ApModePredictor predictor, boolean passive, int bandwidthMhz, boolean revised,
+                                ApModeController.Policy policy, boolean predictChannel, boolean externalCca) {
             this.sfu = sfu;
             this.predictor = predictor;
             this.passive = passive;
             this.mac = revised ? new ApMacEvidence() : null;
+            this.policy = policy;
+            this.predictChannel = predictChannel;
+            this.externalCca = externalCca;
             accessMask = (1 << (bandwidthMhz / 20)) - 1;
         }
 

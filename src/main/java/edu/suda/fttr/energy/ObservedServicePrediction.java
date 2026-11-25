@@ -7,6 +7,8 @@ import edu.suda.fttr.energy.ApModePredictor.Feasibility;
 import edu.suda.fttr.energy.ApModePredictor.FeedbackLookup;
 import edu.suda.fttr.energy.ApModePredictor.Forecast;
 import edu.suda.fttr.energy.ApModePredictor.QosForecast;
+import edu.suda.fttr.energy.ApModePredictor.ServiceForecast;
+import edu.suda.fttr.energy.ApModePredictor.ServiceWork;
 import edu.suda.fttr.energy.ApModePredictor.Transmission;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApEnergyModel;
@@ -41,6 +43,7 @@ final class ObservedServicePrediction {
     private static final long MIN_EXCHANGES = 4;
 
     private enum Estimate { EXPECTED, CONSERVATIVE, OPTIMISTIC }
+    private enum Input { C3, CONTROL_ENERGY, CONTROL_CHANNEL }
 
     private final ApAnalysisSettings settings;
     private final Map<ApCapabilityMode, Map<Integer, WirelessPhy>> profiles;
@@ -81,16 +84,50 @@ final class ObservedServicePrediction {
             updateHistory(histories.get(current), evidence);
         }
         previousMode = current;
+        Map<AccessCategory, List<Packet>> queues = groupQueues(evidence);
+        return List.of(predictMode(nowNs, current, ApCapabilityMode.LCM, observations, feedback,
+                        primaryBusy, primaryBusy, queues, opticalDelayNs),
+                predictMode(nowNs, current, ApCapabilityMode.HCM, observations, feedback,
+                        wideBusy, primaryBusy, queues, opticalDelayNs));
+    }
+
+    List<ServiceForecast> controlWork(long nowNs, ApCapabilityMode current, List<Observation> observations,
+                                      FeedbackLookup feedback, double primaryBusy, double wideBusy, Evidence evidence,
+                                      boolean useChannel, boolean mixedMode) {
+        if (!mixedMode) {
+            updateHistory(histories.get(current), evidence);
+        }
+        Map<AccessCategory, List<Packet>> queues = groupQueues(evidence);
+        Input input = useChannel ? Input.CONTROL_CHANNEL : Input.CONTROL_ENERGY;
+        return List.of(controlMode(nowNs, current, ApCapabilityMode.LCM, observations, feedback,
+                        primaryBusy, primaryBusy, queues, input),
+                controlMode(nowNs, current, ApCapabilityMode.HCM, observations, feedback,
+                        wideBusy, primaryBusy, queues, input));
+    }
+
+    private ServiceForecast controlMode(long startNs, ApCapabilityMode current, ApCapabilityMode mode,
+                                        List<Observation> observations, FeedbackLookup feedback, double busy,
+                                        double primary, Map<AccessCategory, List<Packet>> queues, Input input) {
+        long horizon = Math.min(settings.horizonNs(), Long.MAX_VALUE - startNs);
+        Budget expected = budget(startNs, horizon, 0, current, mode, observations, queues, feedback,
+                busy, primary, Estimate.EXPECTED, input);
+        Budget conservative = budget(startNs, horizon, 0, current, mode, observations, queues, feedback,
+                busy, primary, Estimate.CONSERVATIVE, input);
+        Budget optimistic = budget(startNs, horizon, 0, current, mode, observations, queues, feedback,
+                busy, primary, Estimate.OPTIMISTIC, input);
+        boolean incomplete = expected.packets > 0 && (expected.unknownBusy || expected.missingFeedback);
+        return new ServiceForecast(mode, expected.confidence, busy, incomplete, expected.serviceWork(),
+                conservative.serviceWork(), optimistic.serviceWork());
+    }
+
+    private static Map<AccessCategory, List<Packet>> groupQueues(Evidence evidence) {
         Map<AccessCategory, List<Packet>> queues = new EnumMap<>(AccessCategory.class);
         for (Packet packet : evidence.waitingDlFifo) {
             if (!packet.isUplink()) {
                 queues.computeIfAbsent(packet.type(), unused -> new ArrayList<>()).add(packet);
             }
         }
-        return List.of(predictMode(nowNs, current, ApCapabilityMode.LCM, observations, feedback,
-                        primaryBusy, primaryBusy, queues, opticalDelayNs),
-                predictMode(nowNs, current, ApCapabilityMode.HCM, observations, feedback,
-                        wideBusy, primaryBusy, queues, opticalDelayNs));
+        return queues;
     }
 
     private void updateHistory(ModeHistory mode, Evidence evidence) {
@@ -130,11 +167,11 @@ final class ObservedServicePrediction {
                 : ApEnergyModel.switchEnergyUj(switchNs, transition.powerW()).doubleValue();
 
         Budget expected = budget(startNs, horizon, switchNs, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.EXPECTED);
+                busy, primary, Estimate.EXPECTED, Input.C3);
         Budget conservative = budget(startNs, horizon, switchNs, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.CONSERVATIVE);
+                busy, primary, Estimate.CONSERVATIVE, Input.C3);
         Budget optimistic = budget(startNs, horizon, switchNs, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.OPTIMISTIC);
+                busy, primary, Estimate.OPTIMISTIC, Input.C3);
         List<QosForecast> qos = new ArrayList<>();
         for (int index = 0; index < observations.size(); index++) {
             Observation observation = observations.get(index);
@@ -170,14 +207,14 @@ final class ObservedServicePrediction {
 
     private Budget budget(long startNs, long horizon, long switchNs, ApCapabilityMode current, ApCapabilityMode mode,
                           List<Observation> observations, Map<AccessCategory, List<Packet>> queues,
-                          FeedbackLookup feedback, double busy, double primary, Estimate estimate) {
+                          FeedbackLookup feedback, double busy, double primary, Estimate estimate, Input input) {
         ModeHistory prior = histories.get(mode);
         ModeHistory measured = histories.get(current);
-        Budget total = new Budget(horizon, (horizon - switchNs) * (1 - busyEstimate(busy, primary, estimate)),
-                busy < 0);
+        double blocked = busyEstimate(busy, primary, estimate);
+        Budget total = new Budget(horizon, (horizon - switchNs) * (1 - blocked), busy < 0, blocked);
         Map<Integer, WirelessPhy> stations = profiles.get(mode);
         for (Observation observation : observations) {
-            Flow flow = new Flow(observation, horizon);
+            Flow flow = new Flow(observation, horizon, input);
             total.flows.add(flow);
             if (flow.demand == 0 || stations.isEmpty()) {
                 continue;
@@ -200,13 +237,13 @@ final class ObservedServicePrediction {
                 }
                 Link link = new Link(Packet.Direction.DL, observation.category(), head.staId());
                 addBatch(flow, depth, (double) bytes, dataNs(phy, depth, bytes, aggregateBytes), depth,
-                        errorFor(startNs, feedback, phy, link, Math.max(1, bytes / depth), prior, measured, estimate),
+                        errorFor(startNs, feedback, phy, link, Math.max(1, bytes / depth), prior, measured, estimate, input),
                         prior, measured, estimate);
                 offset += depth;
             }
             double remaining = Math.max(0, flow.demand - local.size());
             if (remaining > 0) {
-                addPredictedArrivals(flow, remaining, stations, startNs, feedback, prior, measured, estimate);
+                addPredictedArrivals(flow, remaining, stations, startNs, feedback, prior, measured, estimate, input);
             }
             total.add(flow);
         }
@@ -215,7 +252,8 @@ final class ObservedServicePrediction {
     }
 
     private void addPredictedArrivals(Flow flow, double remaining, Map<Integer, WirelessPhy> stations, long startNs,
-                                      FeedbackLookup feedback, ModeHistory prior, ModeHistory measured, Estimate kind) {
+                                      FeedbackLookup feedback, ModeHistory prior, ModeHistory measured, Estimate kind,
+                                      Input input) {
         Packet.Direction direction = flow.observation.direction();
         AccessCategory ac = flow.observation.category();
         double shares = stations.keySet().stream().mapToDouble(sta -> flowWeight(measured, direction, ac, sta)).sum();
@@ -234,7 +272,7 @@ final class ObservedServicePrediction {
             depth = fittedDepth(phy, depth, bytes);
             int aggregateBytes = depth == 1 ? 0 : equalMpduBytes(phy, depth, bytes);
             addBatch(flow, depth, (double) depth * bytes, dataNs(phy, depth, bytes, aggregateBytes), count,
-                    errorFor(startNs, feedback, phy, link, bytes, prior, measured, kind), prior, measured, kind);
+                    errorFor(startNs, feedback, phy, link, bytes, prior, measured, kind, input), prior, measured, kind);
         }
     }
 
@@ -266,6 +304,7 @@ final class ObservedServicePrediction {
         flow.attemptedBits += count * bytes * 8 * attempts / depth;
         flow.success += count * bytes * 8 * deliveredProbability / depth;
         flow.successPackets += count * deliveredProbability;
+        flow.failedFirst += count * failure;
         flow.confidence = worse(flow.confidence, error.confidence);
     }
 
@@ -285,7 +324,10 @@ final class ObservedServicePrediction {
     }
 
     private ErrorEstimate errorFor(long nowNs, FeedbackLookup feedback, WirelessPhy phy, Link link, int bytes,
-                                   ModeHistory prior, ModeHistory measured, Estimate kind) {
+                                   ModeHistory prior, ModeHistory measured, Estimate kind, Input input) {
+        if (input == Input.CONTROL_ENERGY) {
+            return new ErrorEstimate(0, Confidence.NO_PHY_ERRORS);
+        }
         LinkHistory history = prior.links.get(link);
         double csi = link.direction == Packet.Direction.DL && observedPer != null
                 ? observedError(nowNs, feedback, phy, link.sta, bytes) : Double.NaN;
@@ -430,15 +472,19 @@ final class ObservedServicePrediction {
         private final long horizon;
         private final double available;
         private final boolean unknownBusy;
+        private final double busyFraction;
         private final List<Flow> flows = new ArrayList<>();
         private Confidence confidence = Confidence.IDLE;
         private double packets, queued, offeredBits, attemptedBits, arrivalBits, success, frames, attempts, work, tx, rx;
         private double served;
+        private double failedFirst;
+        private boolean missingFeedback;
 
-        private Budget(long horizon, double available, boolean unknownBusy) {
+        private Budget(long horizon, double available, boolean unknownBusy, double busyFraction) {
             this.horizon = horizon;
             this.available = available;
             this.unknownBusy = unknownBusy;
+            this.busyFraction = busyFraction;
         }
 
         private void add(Flow flow) {
@@ -454,6 +500,16 @@ final class ObservedServicePrediction {
             work += flow.work;
             tx += flow.tx;
             rx += flow.rx;
+            failedFirst += flow.failedFirst;
+            if (flow.observation.direction() == Packet.Direction.DL
+                    && (flow.confidence == Confidence.HISTORY_ONLY || flow.confidence == Confidence.CHANNEL_UNKNOWN)) {
+                missingFeedback = true;
+            }
+        }
+
+        private ServiceWork serviceWork() {
+            return new ServiceWork(offeredBits, packets, arrivalBits, success, work, tx, rx, busyFraction,
+                    packets == 0 ? 0 : failedFirst / packets, frames == 0 ? 0 : attempts / frames);
         }
 
         private double capacityMbps(double bits) {
@@ -470,11 +526,13 @@ final class ObservedServicePrediction {
         private final double queued, arriving, demand;
         private final int forecastBytes;
         private Confidence confidence = Confidence.IDLE;
-        private double offeredBits, attemptedBits, success, successPackets, frames, attempts, work, tx, rx;
+        private double offeredBits, attemptedBits, success, successPackets, frames, attempts, work, tx, rx, failedFirst;
 
-        private Flow(Observation observation, long horizon) {
+        private Flow(Observation observation, long horizon, Input input) {
             this.observation = observation;
-            queued = observation.queuePackets() + observation.inFlightPackets() - observation.awaitingConfirmPackets();
+            // D2 将已发出但尚未结算的事务归入两种方案共用的前缀；本轮仅预测新的调度工作。
+            queued = observation.queuePackets() + (input == Input.C3
+                    ? observation.inFlightPackets() - observation.awaitingConfirmPackets() : 0);
             arriving = observation.ewmaArrivalPps() * horizon / 1e9;
             demand = queued + arriving;
             forecastBytes = observation.ewmaArrivalPps() > 0 ? Math.max(1,

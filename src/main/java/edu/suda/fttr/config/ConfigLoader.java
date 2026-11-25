@@ -121,6 +121,7 @@ public final class ConfigLoader {
     private static final String AP_CONTROL_PERIOD_US = "wifi.ap.control.period.us";
     private static final String AP_CONTROL_ALPHA = "wifi.ap.control.ewma.alpha";
     private static final String AP_CONTROL_THRESHOLD = "wifi.ap.control.threshold.mbps";
+    private static final String AP_CONTROL_MARGIN = "wifi.ap.control.energy.margin.uj";
     private static final Set<String> KEYS = Set.of(
             FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", DOWNLINK_PROPAGATION_US,
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
@@ -140,7 +141,7 @@ public final class ConfigLoader {
             INTERFERENCE_ENABLED, INTERFERENCE_TIMELINE, EXTERNAL_CCA_THRESHOLD,
             LCM_POWER + "idle.w", LCM_POWER + "tx.w", LCM_POWER + "rx.w",
             HCM_POWER + "idle.w", HCM_POWER + "tx.w", HCM_POWER + "rx.w",
-            AP_CONTROL_POLICY, AP_CONTROL_PERIOD_US, AP_CONTROL_ALPHA, AP_CONTROL_THRESHOLD,
+            AP_CONTROL_POLICY, AP_CONTROL_PERIOD_US, AP_CONTROL_ALPHA, AP_CONTROL_THRESHOLD, AP_CONTROL_MARGIN,
             AP_SWITCH_ENABLED, LCM_TO_HCM + "delay.us", LCM_TO_HCM + "power.w",
             HCM_TO_LCM + "delay.us", HCM_TO_LCM + "power.w");
     private static final Set<String> PHY_KEYS = Set.of(
@@ -249,7 +250,7 @@ public final class ConfigLoader {
         long apActivityWindowNs = properties.containsKey(AP_ACTIVITY_WINDOW_US)
                 ? readDurationNs(properties, AP_ACTIVITY_WINDOW_US, "0", true) : -1;
         // 控制器复用 C1 的下行入口账本，决策周期独立于 C1 的统计采样周期。
-        long apObservationPeriodNs = readApObservationPeriod(properties, apControl.hasFixedThreshold());
+        long apObservationPeriodNs = readApObservationPeriod(properties, apControl);
         double apObservationAlpha = readApObservationAlpha(properties);
         ChannelTruth channelTruth = readChannelTruth(properties, staSfuIds);
         ChannelObservationInput channelObservation = readChannelObservation(properties, sfuCount, staSfuIds, channelTruth);
@@ -257,13 +258,16 @@ public final class ConfigLoader {
         ApModeSwitch.Settings apSwitching = readApSwitching(properties, sfuCount, apCapabilityModes, apEnergyModel);
         validateApControl(apControl, apSwitching);
         ApAnalysisSettings apAnalysis = readApAnalysisSettings(properties, apObservationPeriodNs,
-                apEnergyModel, apCapabilityModes.size() == sfuCount);
+                apEnergyModel, apCapabilityModes.size() == sfuCount, apControl.needsPrediction());
         Map<Integer, WirelessPhy> alternateStationPhys = new HashMap<>();
         Map<Integer, WirelessPhy> stationPhys = readStationPhys(properties, staSfuIds, apCapabilityModes,
                 apSwitching, apControl, apAnalysis != null && apAnalysis.predictionEnabled(), alternateStationPhys);
         EdcaParameters edcaParameters = readEdcaParameters(properties);
         WifiAccessMode accessMode = readWifiAccessMode(properties);
         WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy, edcaParameters.sifsUs());
+        if (apControl.needsPrediction() && (frameExchange == null || accessMode != WifiAccessMode.EDCA_MULTI_AC)) {
+            throw new IllegalArgumentException("e-aware and ec-aware require edca-multi-ac and data-sifs-ack");
+        }
         if (apAnalysis != null && apAnalysis.predictionEnabled() && frameExchange == null) {
             throw new IllegalArgumentException(AP_PREDICTION_ENABLED + " requires data-sifs-ack");
         }
@@ -734,7 +738,9 @@ public final class ConfigLoader {
         }
         double threshold = parseNonNegativeDouble(properties.getProperty(AP_CONTROL_THRESHOLD,
                 Double.toString(ApModeController.DEFAULT_THRESHOLD_MBPS)), AP_CONTROL_THRESHOLD);
-        return new ApModeController.Settings(policies, periodNs, alpha, threshold);
+        double margin = parseNonNegativeDouble(properties.getProperty(AP_CONTROL_MARGIN,
+                Double.toString(ApModeController.DEFAULT_ENERGY_MARGIN_UJ)), AP_CONTROL_MARGIN);
+        return new ApModeController.Settings(policies, periodNs, alpha, threshold, margin);
     }
 
     private static ApModeController.Policy readApPolicy(Properties properties, String key, String fallback) {
@@ -744,13 +750,13 @@ public final class ConfigLoader {
                 return policy;
             }
         }
-        throw new IllegalArgumentException(key + " must be off, always-lcm, always-hcm or fixed-threshold");
+        throw new IllegalArgumentException(key + " must be off, always-lcm, always-hcm, fixed-threshold, e-aware or ec-aware");
     }
 
     private static void validateApControl(ApModeController.Settings control, ApModeSwitch.Settings switching) {
-        if (control.hasFixedThreshold() && (switching == null || switching.profileFrom(ApCapabilityMode.LCM) == null
+        if (control.hasDynamicPolicy() && (switching == null || switching.profileFrom(ApCapabilityMode.LCM) == null
                 || switching.profileFrom(ApCapabilityMode.HCM) == null)) {
-            throw new IllegalArgumentException("fixed-threshold requires enabled B4 switching and both direction profiles");
+            throw new IllegalArgumentException("Dynamic AP control requires enabled B4 switching and both direction profiles");
         }
         if (switching != null) {
             for (int sfuId : control.policies().keySet()) {
@@ -799,14 +805,15 @@ public final class ConfigLoader {
         return value.equals("true");
     }
 
-    private static long readApObservationPeriod(Properties properties, boolean requiredByControl) {
+    private static long readApObservationPeriod(Properties properties, ApModeController.Settings control) {
         String enabled = properties.getProperty(AP_OBSERVATION_ENABLED, "false").strip();
         if (!enabled.equals("true") && !enabled.equals("false")) {
             throw new IllegalArgumentException(AP_OBSERVATION_ENABLED + " must be true or false");
         }
-        String defaultUs = Long.toString(ApTrafficObserver.DEFAULT_PERIOD_NS / 1_000);
+        long defaultNs = control.needsPrediction() ? ApModeController.DEFAULT_PERIOD_NS : ApTrafficObserver.DEFAULT_PERIOD_NS;
+        String defaultUs = Long.toString(defaultNs / 1_000);
         long periodNs = readDurationNs(properties, AP_OBSERVATION_PERIOD_US, defaultUs, true);
-        return enabled.equals("true") || requiredByControl ? periodNs : 0;
+        return enabled.equals("true") || control.hasDynamicPolicy() ? periodNs : 0;
     }
 
     private static double readApObservationAlpha(Properties properties) {
@@ -825,11 +832,12 @@ public final class ConfigLoader {
     }
 
     private static ApAnalysisSettings readApAnalysisSettings(Properties properties, long c1PeriodNs,
-                                                              ApEnergyModel energyModel, boolean allApModes) {
+                                                              ApEnergyModel energyModel, boolean allApModes,
+                                                              boolean controlPrediction) {
         boolean predict = channelBoolean(properties.getProperty(AP_PREDICTION_ENABLED, "false").strip(),
                 AP_PREDICTION_ENABLED);
         boolean qos = channelBoolean(properties.getProperty(AP_QOS_ENABLED, "false").strip(), AP_QOS_ENABLED);
-        if (!predict && !qos) {
+        if (!predict && !qos && !controlPrediction) {
             return null;
         }
         if (c1PeriodNs == 0 || (predict && (energyModel == null || !allApModes))) {
@@ -850,7 +858,7 @@ public final class ConfigLoader {
             throw new IllegalArgumentException(AP_PREDICTION_MODEL + " must be legacy or revised");
         }
         return new ApAnalysisSettings(predict, model.equals("revised"),
-                readDurationNs(properties, AP_PREDICTION_WINDOW_US, "1000", true),
+                readDurationNs(properties, AP_PREDICTION_WINDOW_US, controlPrediction ? "5000" : "1000", true),
                 readAnalysisFraction(properties, AP_PREDICTION_ALPHA, 0.25), requirements);
     }
 
@@ -1232,7 +1240,7 @@ public final class ConfigLoader {
             }
             // 带宽和空间流数分别取两端的能力交集；同一模型用于 STA 的两个 DATA 方向。
             stationPhys.put(staId, buildStationPhy(properties, mode, maxBandwidthMhz, maxNss));
-            if (predictBoth || control.policyFor(sfuId) == ApModeController.Policy.FIXED_THRESHOLD
+            if (predictBoth || control.policyFor(sfuId).dynamic()
                     || (switching != null && !switching.requestsFor(sfuId).isEmpty())) {
                 alternateStationPhys.put(staId, buildStationPhy(properties, ApModeSwitch.otherMode(mode),
                         maxBandwidthMhz, maxNss));

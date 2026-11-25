@@ -14,6 +14,7 @@ import edu.suda.fttr.mac.EdcaParameters;
 import edu.suda.fttr.mac.EdcaState;
 import edu.suda.fttr.mac.WifiAccessMode;
 import edu.suda.fttr.mac.WifiRetryPolicy;
+import edu.suda.fttr.phy.ApCapabilityMode;
 import edu.suda.fttr.simulator.Event;
 import edu.suda.fttr.simulator.EventType;
 import edu.suda.fttr.simulator.SimulationContext;
@@ -67,6 +68,7 @@ public final class Sfu {
     private long txStartTicks;
     private long dataEndTicks;
     private long announcedNavEndTicks;
+    private long feedbackEndsNs;
     private int sentPackets;
     private long sentBytes;
     private double queueWaitSumUs;
@@ -196,16 +198,18 @@ public final class Sfu {
         channelScans.complete(subchannel, startNs, endNs, busyNs, expiryNs);
     }
 
-    public boolean beginChannelFeedback(SimulationContext context) {
+    public boolean beginChannelFeedback(long endsNs, SimulationContext context) {
         if (ccaState() != WifiChannel.State.IDLE) {
             return false;
         }
         channel.occupy();
+        feedbackEndsNs = endsNs;
         context.recordChannelFeedbackActivity(id, true);
         return true;
     }
 
     public void endChannelFeedback(SimulationContext context) {
+        feedbackEndsNs = 0;
         context.recordChannelFeedbackActivity(id, false);
         channel.release();
         tryStartModeSwitch(context);
@@ -242,9 +246,63 @@ public final class Sfu {
     }
 
     public void applyModeDecision(ApModeController.Decision decision, SimulationContext context) {
-        ApModeSwitch.Outcome outcome = modeSwitch.requestOnline(decision.target(), context);
+        ApModeSwitch.Outcome outcome = modeSwitch.requestOnline(decision.target(), ApModeController.Policy.FIXED_THRESHOLD,
+                context);
         context.recordApModeDecision(id, modeSwitch.mode(), decision, outcome);
         tryStartModeSwitch(context);
+    }
+
+    public ApModeSwitch.Outcome applyModeTarget(ApCapabilityMode target, ApModeController.Policy policy,
+                                              SimulationContext context) {
+        ApModeSwitch.Outcome outcome = modeSwitch.requestOnline(target, policy, context);
+        tryStartModeSwitch(context);
+        return outcome;
+    }
+
+    /** 从当前已占有的交换估算就绪时间。未知的解码、干扰结束和后续发送不在本接口内。 */
+    public ApModeSwitch.Readiness modeSwitchReadiness(long nowNs, long horizonNs) {
+        ApCapabilityMode current = modeSwitch.mode();
+        long activeSwitch = Math.min(horizonNs, modeSwitch.remainingSwitchNs(nowNs));
+        if (activeSwitch > 0) {
+            return new ApModeSwitch.Readiness(current, modeSwitch.projectedMode(), 0, 0, 0, activeSwitch, false);
+        }
+
+        long endNs = nowNs + horizonNs;
+        long safeNs = nowNs;
+        for (MissingResponse missing : awaitingAck.values()) {
+            safeNs = Math.max(safeNs, missing.deadlineNs);
+        }
+        long txNs = 0;
+        long rxNs = 0;
+        boolean unknownOwner = false;
+        if (channel.hasLocalOwner()) {
+            if (feedbackEndsNs > nowNs) {
+                rxNs = Math.min(endNs, feedbackEndsNs) - nowNs;
+                safeNs = Math.max(safeNs, feedbackEndsNs);
+            } else if (active != null && txopContinuationEvent == null) {
+                Packet packet = active.packet;
+                long dataStart = activeAggregate == null ? txStartTicks : activeAggregate.startTicks;
+                long response = activeAggregate == null ? wifi.ackResponseDurationNs() : wifi.blockAckResponseDurationNs();
+                long data = activeAggregate == null ? wifi.exchangeDurationNs(packet) - response : activeAggregate.ppduNs;
+                long dataEnd = dataStart + data;
+                long exchangeEnd = dataEnd + response;
+                safeNs = Math.max(safeNs, exchangeEnd);
+                long dataLeft = overlap(dataStart, dataEnd, nowNs, endNs);
+                long ackLeft = overlap(dataEnd + wifi.sifsNs(), exchangeEnd, nowNs, endNs);
+                txNs = packet.isUplink() ? ackLeft : dataLeft;
+                rxNs = packet.isUplink() ? dataLeft : ackLeft;
+                // 本帧的 ACK 结束可估算，TXOP 后续帧是否继续占用另由现有 MAC 决定。
+                unknownOwner = txop != null;
+            } else {
+                unknownOwner = true;
+            }
+        }
+        return new ApModeSwitch.Readiness(current, current, Math.min(endNs, safeNs) - nowNs,
+                txNs, rxNs, 0, unknownOwner);
+    }
+
+    private static long overlap(long startNs, long endNs, long beginNs, long cutoffNs) {
+        return Math.max(0, Math.min(endNs, cutoffNs) - Math.max(startNs, beginNs));
     }
 
     public void finishModeSwitch(SimulationContext context) {
@@ -810,8 +868,8 @@ public final class Sfu {
 
     private void awaitResponseTimeout(Packet packet, AmpduAttempt aggregate, boolean collision,
                                       SimulationContext context) {
-        awaitingAck.put(packet, new MissingResponse(aggregate, collision));
-        context.scheduleAfter(retryPolicy.ackTimeoutUs(), EventType.WIFI_ACK_TIMEOUT, packet, id);
+        Event timeout = context.scheduleAfter(retryPolicy.ackTimeoutUs(), EventType.WIFI_ACK_TIMEOUT, packet, id);
+        awaitingAck.put(packet, new MissingResponse(aggregate, collision, timeout.timeTicks()));
     }
 
     public void onAckTimeout(Packet packet, SimulationContext context) {
@@ -940,10 +998,12 @@ public final class Sfu {
     private static final class MissingResponse {
         private final AmpduAttempt aggregate;
         private final boolean collision;
+        private final long deadlineNs;
 
-        private MissingResponse(AmpduAttempt aggregate, boolean collision) {
+        private MissingResponse(AmpduAttempt aggregate, boolean collision, long deadlineNs) {
             this.aggregate = aggregate;
             this.collision = collision;
+            this.deadlineNs = deadlineNs;
         }
     }
 

@@ -98,6 +98,55 @@ public final class ApModePredictor {
                 opticalDelayNs);
     }
 
+    /** D2 复用 revised 服务模型，切换和已在途的交换由控制器单独对账。 */
+    public List<ServiceForecast> predictControlWork(long nowNs, ApCapabilityMode currentMode,
+                                                    List<ApTrafficObserver.Observation> observations,
+                                                    FeedbackLookup feedback, double primaryBusy, double wideBusy,
+                                                    Evidence evidence, boolean useChannel, boolean mixedMode) {
+        return revised.controlWork(nowNs, currentMode, observations, feedback, primaryBusy, wideBusy,
+                evidence, useChannel, mixedMode);
+    }
+
+    public static final class ServiceForecast {
+        public final ApCapabilityMode mode;
+        public final Confidence confidence;
+        public final double observedBusyFraction;
+        public final boolean channelIncomplete;
+        public final ServiceWork expected, conservative, optimistic;
+
+        ServiceForecast(ApCapabilityMode mode, Confidence confidence, double observedBusyFraction,
+                        boolean channelIncomplete, ServiceWork expected, ServiceWork conservative,
+                        ServiceWork optimistic) {
+            this.mode = mode;
+            this.confidence = confidence;
+            this.observedBusyFraction = observedBusyFraction;
+            this.channelIncomplete = channelIncomplete;
+            this.expected = expected;
+            this.conservative = conservative;
+            this.optimistic = optimistic;
+        }
+    }
+
+    /** 预测业务全量需要的空口工作。workNs 已含 MAC 等待；外部 CCA 占用另以比例表示。 */
+    public static final class ServiceWork {
+        public final double demandBits, demandPackets, arrivalBits, successBits, workNs, txNs, rxNs;
+        public final double busyFraction, meanFailure, ampduDepth;
+
+        ServiceWork(double demandBits, double demandPackets, double arrivalBits, double successBits, double workNs,
+                    double txNs, double rxNs, double busyFraction, double meanFailure, double ampduDepth) {
+            this.demandBits = demandBits;
+            this.demandPackets = demandPackets;
+            this.arrivalBits = arrivalBits;
+            this.successBits = successBits;
+            this.workNs = workNs;
+            this.txNs = txNs;
+            this.rxNs = rxNs;
+            this.busyFraction = busyFraction;
+            this.meanFailure = meanFailure;
+            this.ampduDepth = ampduDepth;
+        }
+    }
+
     /** 采样时刻前已处理的发送事件与 AP 持有的 FIFO。上行没有待发队列。 */
     public static final class Evidence {
         final List<Packet> waitingDlFifo;

@@ -9,6 +9,7 @@ public final class ApModeController {
     public static final long DEFAULT_PERIOD_NS = 5_000_000L;
     public static final double DEFAULT_ALPHA = 0.25;
     public static final double DEFAULT_THRESHOLD_MBPS = 31.0;
+    public static final double DEFAULT_ENERGY_MARGIN_UJ = 0.0;
 
     private final Settings settings;
     private long previousNs;
@@ -42,7 +43,8 @@ public final class ApModeController {
 
     public enum Policy {
         OFF("off", null), ALWAYS_LCM("always-lcm", ApCapabilityMode.LCM),
-        ALWAYS_HCM("always-hcm", ApCapabilityMode.HCM), FIXED_THRESHOLD("fixed-threshold", null);
+        ALWAYS_HCM("always-hcm", ApCapabilityMode.HCM), FIXED_THRESHOLD("fixed-threshold", null),
+        E_AWARE("e-aware", null), EC_AWARE("ec-aware", null);
 
         private final String key;
         private final ApCapabilityMode staticMode;
@@ -54,6 +56,8 @@ public final class ApModeController {
 
         public String key() { return key; }
         public ApCapabilityMode staticMode() { return staticMode; }
+        public boolean usesPrediction() { return this == E_AWARE || this == EC_AWARE; }
+        public boolean dynamic() { return this == FIXED_THRESHOLD || usesPrediction(); }
     }
 
     public static final class Settings {
@@ -61,29 +65,42 @@ public final class ApModeController {
         private final long periodNs;
         private final double alpha;
         private final double thresholdMbps;
+        private final double energyMarginUj;
 
         public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps) {
+            this(policies, periodNs, alpha, thresholdMbps, DEFAULT_ENERGY_MARGIN_UJ);
+        }
+
+        public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps,
+                        double energyMarginUj) {
             if (periodNs <= 0 || !(alpha > 0 && alpha <= 1)
-                    || !Double.isFinite(thresholdMbps) || thresholdMbps < 0) {
-                throw new IllegalArgumentException("Invalid AP mode control period, EWMA alpha or load threshold");
+                    || !Double.isFinite(thresholdMbps) || thresholdMbps < 0
+                    || !Double.isFinite(energyMarginUj) || energyMarginUj < 0) {
+                throw new IllegalArgumentException("Invalid AP mode control period, EWMA alpha, threshold or margin");
             }
             this.policies = Map.copyOf(policies);
             this.periodNs = periodNs;
             this.alpha = alpha;
             this.thresholdMbps = thresholdMbps;
+            this.energyMarginUj = energyMarginUj;
         }
 
         public Map<Integer, Policy> policies() { return policies; }
         public long periodNs() { return periodNs; }
         public double alpha() { return alpha; }
         public double thresholdMbps() { return thresholdMbps; }
+        public double energyMarginUj() { return energyMarginUj; }
 
         public Policy policyFor(int sfuId) {
             return policies.getOrDefault(sfuId, Policy.OFF);
         }
 
-        public boolean hasFixedThreshold() {
-            return policies.containsValue(Policy.FIXED_THRESHOLD);
+        public boolean hasDynamicPolicy() {
+            return policies.values().stream().anyMatch(Policy::dynamic);
+        }
+
+        public boolean needsPrediction() {
+            return policies.values().stream().anyMatch(Policy::usesPrediction);
         }
     }
 
