@@ -11,6 +11,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -30,6 +31,8 @@ final class ApQosModeSimulationTest {
     private static final String B4 = "WIFI_AP_SWITCH_";
     private static final String D4 = "wifi.ap.control.policy=ecq-sdps-d4";
     private static final String D4_DECISION = "WIFI_AP_D4_DECISION";
+    private static final String D5 = "wifi.ap.control.policy=ecq-sdps-complete";
+    private static final String D5_DECISION = "WIFI_AP_D5_DECISION";
     private static final List<String> BASE = List.of("wifi.ap.control.policy=ecq-sdps", "fiber.delay.us=0", "wifi.model=he-su",
             "packet.bytes=1500", "wifi.mac.exchange=data-sifs-ack", "wifi.mac.access=edca-multi-ac",
             "wifi.mac.edca.BE.aifsn=3", "wifi.mac.edca.VO.cwmin=0", "wifi.mac.edca.VI.cwmin=0",
@@ -216,6 +219,47 @@ final class ApQosModeSimulationTest {
     @ValueSource(strings = {"wifi.ap.control.residency.minimum.us=-1", "wifi.ap.control.residency.reverse.margin.uj=-0.01"})
     void d4RejectsInvalidResidencyConfiguration(String setting, @TempDir Path dir) {
         assertThrows(IllegalArgumentException.class, () -> run(dir, D4, "packet.arrival.us=0", setting));
+    }
+
+    @Test
+    void completeControllerDoesNotUseUnseenArrivals(@TempDir Path dir) throws IOException {
+        var first = run(dir, D5, "packet.arrival.us=0", "packet.1.type=VO", "wifi.ap.qos.VO.deadline.us=254.225");
+        var withFuture = run(dir, D5, "packet.arrival.us=0,300,310,320", "packet.1.type=VO", "wifi.ap.qos.VO.deadline.us=254.225");
+        for (String type : List.of(D4_DECISION, D5_DECISION, B4 + "REQUEST")) {
+            assertEquals(events(first, type).stream().filter(row -> stamp(row) == 0).collect(Collectors.toList()),
+                    events(withFuture, type).stream().filter(row -> stamp(row) == 0).collect(Collectors.toList()));
+        }
+        assertEquals(0, stamp(only(first, B4 + "REQUEST")));
+        assertEquals(1, events(first, "DELIVERED").size());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"channel", "qos", "deferral", "residency"})
+    void completeControllerLoadsIndependentAblationSwitches(String feature, @TempDir Path dir) throws IOException {
+        var trace = run(dir, D5, "wifi.ap.control.period.us=125", "packet.arrival.us=0", "packet.1.type=VO",
+                "wifi.ap.qos.VO.deadline.us=254.225", "wifi.ap.control.complete." + feature + ".enabled=false");
+        var record = events(trace, D5_DECISION).get(0);
+        for (var key : List.of("channel", "qos", "deferral", "residency")) {
+            assertEquals(Boolean.toString(!key.equals(feature)), record.get(key));
+        }
+        if (feature.equals("qos")) {
+            assertTrue(events(trace, D4_DECISION).stream().noneMatch(row -> "URGENT_QUEUE".equals(row.get("trigger"))));
+        }
+        if (feature.equals("residency")) {
+            assertEquals("0", events(trace, "WIFI_AP_D4_RESIDENCY").get(0).get("residency_until_ns"));
+        }
+        assertEquals(1, events(trace, "DELIVERED").size());
+    }
+
+    @Test
+    void auxiliaryObservationCanKeepScanTimingWithZeroExtraPower(@TempDir Path dir) throws IOException {
+        var trace = run(dir, D5, "packet.arrival.us=0", "wifi.channel.observation.enabled=true",
+                "wifi.channel.scan.power.w=0", "wifi.channel.scan.schedule=1,1,100,400,6000");
+        var scan = events(trace, "WIFI_CHANNEL_SCAN");
+        assertEquals(List.of("START", "END"), fields(scan, "phase"));
+        assertEquals(500_000L, stamp(scan.get(1)));
+        assertEquals(0, new BigDecimal(scan.get(1).get("extra_energy_uj")).signum());
+        assertEquals(1, events(trace, "DELIVERED").size());
     }
 
     @ParameterizedTest

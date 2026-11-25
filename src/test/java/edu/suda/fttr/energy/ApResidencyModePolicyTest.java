@@ -138,6 +138,38 @@ final class ApResidencyModePolicyTest {
         assertEquals(continued, result.deferred.costUj, 1e-8);
     }
 
+    @Test
+    void completePolicyReleasesHcmWhenBothModesHaveSameDeadlineRiskButLcmSavesEnergy() {
+        var policy = createPolicy(500_000, 25);
+        var residence = policy.start(0, null);
+        var packet = new Packet(1, 1200, 1000, AccessCategory.VO);
+        var low = shape(LCM, false, batch(packet, 250_000, 80_000, 28_000));
+        var high = shape(HCM, false, batch(packet, 350_000, 100_000, 28_000));
+        var old = decide(policy, residence, 1_000_000, HORIZON, HCM, 100_000, 0, low, high);
+        var complete = decide(policy, residence, 1_000_000, HORIZON, HCM, 100_000, 0, low, high,
+                ApModeController.CompleteFeatures.ALL);
+        assertEquals(ApResidencyModePolicy.Reason.HOLD_UNPROVEN_QOS, old.reason);
+        assertEquals(ApResidencyModePolicy.Reason.SAFE_ECONOMIC_EXIT, complete.reason);
+        assertEquals(LCM, complete.target);
+        assertTrue(complete.safeEconomicExit && complete.economics.savingUj > complete.marginUj);
+    }
+
+    @Test
+    void completeEconomicExitRejectsLessThroughputOrUnknownChannel() {
+        var policy = createPolicy(500_000, 25);
+        var residence = policy.start(0, null);
+        var packet = new Packet(1, 1200, 1000, AccessCategory.VO);
+        var reducedService = shape(LCM, false, batch(packet, 6_000_000, 80_000, 28_000));
+        var unknown = shape(LCM, true, batch(packet, 250_000, 80_000, 28_000));
+        var high = shape(HCM, false, batch(packet, 350_000, 100_000, 28_000));
+        for (var low : List.of(reducedService, unknown)) {
+            var denied = decide(policy, residence, 1_000_000, HORIZON, HCM, 100_000, 0, low, high,
+                    ApModeController.CompleteFeatures.ALL);
+            assertFalse(denied.safeEconomicExit);
+            assertEquals(HCM, denied.target);
+        }
+    }
+
     private static ApResidencyModePolicy createPolicy(long minimumNs, double reverseMargin) {
         var settings = new ApModeController.Settings(Map.of(), HORIZON, .25, 31, 0,
                 ApModeController.ServiceModel.AUTO, 50_000, 2_000_000, minimumNs, reverseMargin);
@@ -147,6 +179,13 @@ final class ApResidencyModePolicyTest {
     private static ApResidencyModePolicy.Decision decide(ApResidencyModePolicy policy, ApResidencyModePolicy.Residence resident,
                                                          long now, long span, ApCapabilityMode current, long deadline, double scanW,
                                                          ApModePredictor.ServiceForecast low, ApModePredictor.ServiceForecast high) {
+        return decide(policy, resident, now, span, current, deadline, scanW, low, high, null);
+    }
+
+    private static ApResidencyModePolicy.Decision decide(ApResidencyModePolicy policy, ApResidencyModePolicy.Residence resident,
+                                                         long now, long span, ApCapabilityMode current, long deadline, double scanW,
+                                                         ApModePredictor.ServiceForecast low, ApModePredictor.ServiceForecast high,
+                                                         ApModeController.CompleteFeatures features) {
         var requirements = new EnumMap<AccessCategory, ApAnalysisSettings.Requirement>(AccessCategory.class);
         for (AccessCategory ac : AccessCategory.values()) {
             requirements.put(ac, new ApAnalysisSettings.Requirement(deadline, .99));
@@ -154,7 +193,7 @@ final class ApResidencyModePolicyTest {
         var ready = new ApModeSwitch.Readiness(current, current, 0, 0, 0, 0, false);
         var energy = ENERGY.choose(span, ready, false, List.of(low, high));
         var qos = new ApDeadlineModePolicy(new ApAnalysisSettings(true, span, .25, requirements), SWITCH, 50_000, 2_000_000);
-        return policy.choose(now, resident, HORIZON, 2_000_000, scanW, energy, qos.choose(now, energy, ready, false, true), false);
+        return policy.choose(now, resident, HORIZON, 2_000_000, scanW, energy, qos.choose(now, energy, ready, false, true), false, features);
     }
 
     private static ApModePredictor.DeadlineBatch batch(Packet packet, double workNs, double txNs, double rxNs) {

@@ -49,7 +49,8 @@ public final class ApModeController {
         OFF("off", null), ALWAYS_LCM("always-lcm", ApCapabilityMode.LCM),
         ALWAYS_HCM("always-hcm", ApCapabilityMode.HCM), FIXED_THRESHOLD("fixed-threshold", null),
         E_AWARE("e-aware", null), EC_AWARE("ec-aware", null),
-        ECQ_AWARE("ecq-aware", null), ECQ_SDPS("ecq-sdps", null), ECQ_SDPS_D4("ecq-sdps-d4", null);
+        ECQ_AWARE("ecq-aware", null), ECQ_SDPS("ecq-sdps", null), ECQ_SDPS_D4("ecq-sdps-d4", null),
+        ECQ_SDPS_COMPLETE("ecq-sdps-complete", null);
 
         private final String key;
         private final ApCapabilityMode staticMode;
@@ -63,13 +64,27 @@ public final class ApModeController {
         public ApCapabilityMode staticMode() { return staticMode; }
         public boolean usesQos() { return this == ECQ_AWARE || usesDeferral(); }
         public boolean usesDeferral() { return this == ECQ_SDPS || usesResidency(); }
-        public boolean usesResidency() { return this == ECQ_SDPS_D4; }
+        public boolean usesResidency() { return this == ECQ_SDPS_D4 || isComplete(); }
+        public boolean isComplete() { return this == ECQ_SDPS_COMPLETE; }
         public boolean usesChannel() { return this == EC_AWARE || usesQos(); }
         public boolean usesPrediction() { return this == E_AWARE || usesChannel(); }
         public boolean dynamic() { return this == FIXED_THRESHOLD || usesPrediction(); }
     }
 
     public enum ServiceModel { AUTO, D2_ORIGINAL, LOAD_AWARE }
+
+    /** 仅完整策略使用这些开关。消融时每次只关闭一项。 */
+    public static final class CompleteFeatures {
+        public static final CompleteFeatures ALL = new CompleteFeatures(true, true, true, true);
+        public final boolean channel, qos, deferral, residency;
+
+        public CompleteFeatures(boolean channel, boolean qos, boolean deferral, boolean residency) {
+            this.channel = channel;
+            this.qos = qos;
+            this.deferral = deferral;
+            this.residency = residency;
+        }
+    }
 
     public static final class Settings {
         private final Map<Integer, Policy> policies;
@@ -80,6 +95,7 @@ public final class ApModeController {
         private final ServiceModel serviceModel;
         private final long qosMarginNs, deferralLimitNs, minimumResidencyNs;
         private final double reverseMarginUj;
+        private final CompleteFeatures completeFeatures;
 
         public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps) {
             this(policies, periodNs, alpha, thresholdMbps, DEFAULT_ENERGY_MARGIN_UJ);
@@ -94,6 +110,13 @@ public final class ApModeController {
         public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps,
                         double energyMarginUj, ServiceModel serviceModel, long qosMarginNs, long deferralLimitNs,
                         long minimumResidencyNs, double reverseMarginUj) {
+            this(policies, periodNs, alpha, thresholdMbps, energyMarginUj, serviceModel, qosMarginNs, deferralLimitNs,
+                    minimumResidencyNs, reverseMarginUj, CompleteFeatures.ALL);
+        }
+
+        public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps,
+                        double energyMarginUj, ServiceModel serviceModel, long qosMarginNs, long deferralLimitNs,
+                        long minimumResidencyNs, double reverseMarginUj, CompleteFeatures completeFeatures) {
             if (periodNs <= 0 || !(alpha > 0 && alpha <= 1)
                     || !Double.isFinite(thresholdMbps) || thresholdMbps < 0
                     || !Double.isFinite(energyMarginUj) || energyMarginUj < 0 || qosMarginNs < 0 || deferralLimitNs < 0) {
@@ -112,6 +135,7 @@ public final class ApModeController {
             this.deferralLimitNs = deferralLimitNs;
             this.minimumResidencyNs = minimumResidencyNs;
             this.reverseMarginUj = reverseMarginUj;
+            this.completeFeatures = completeFeatures;
         }
 
         public Map<Integer, Policy> policies() { return policies; }
@@ -123,6 +147,7 @@ public final class ApModeController {
         public long deferralLimitNs() { return deferralLimitNs; }
         public long minimumResidencyNs() { return minimumResidencyNs; }
         public double reverseMarginUj() { return reverseMarginUj; }
+        public CompleteFeatures completeFeatures() { return completeFeatures; }
 
         public boolean useLoadAwareService(Policy policy) {
             return serviceModel == ServiceModel.LOAD_AWARE || (serviceModel == ServiceModel.AUTO && policy.usesQos());

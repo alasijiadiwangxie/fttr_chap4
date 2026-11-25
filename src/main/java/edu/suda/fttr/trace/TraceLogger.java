@@ -1002,6 +1002,14 @@ public final class TraceLogger {
                 nowNs, sfuId, packet.id(), packet.type(), cause);
     }
 
+    public void recordApCompleteDecision(long nowNs, int sfuId, ApModeController.CompleteFeatures features,
+                                         ApResidencyModePolicy.Decision choice) {
+        output.printf(Locale.ROOT, "event=WIFI_AP_D5_DECISION t_ns=%d sfu_id=%d channel=%b qos=%b deferral=%b residency=%b "
+                        + "safe_economic_exit=%b keep_shortfall_mbps=%s change_shortfall_mbps=%s%n",
+                nowNs, sfuId, features.channel, features.qos, features.deferral, features.residency,
+                choice.safeEconomicExit, choice.keepQos.capacityShortfallMbps, choice.changeQos.capacityShortfallMbps);
+    }
+
     public void recordApSwitchEvent(long timeNs, String event, int sfuId, ApModeSwitch.Request request,
                                     ApCapabilityMode from, ApModeSwitch.Profile profile, long startNs, long observedNs,
                                     BigDecimal energyUj) {

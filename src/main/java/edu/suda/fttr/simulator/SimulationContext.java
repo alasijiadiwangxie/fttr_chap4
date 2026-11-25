@@ -373,15 +373,17 @@ public final class SimulationContext {
                     config.downlinkDecoder() == null ? null : config.downlinkDecoder().observedPerCurve());
             boolean passive = config.channelObservation() != null && config.channelObservation().passive();
             boolean externalCca = config.externalInterference() != null;
-            boolean predictChannel = policy.usesChannel() && config.downlinkDecoder() != null;
+            var complete = policy.isComplete() ? config.apControl().completeFeatures() : null;
+            boolean predictChannel = policy.usesChannel() && config.downlinkDecoder() != null
+                    && (complete == null || complete.channel);
             // D2 的本地 CCA 历史只累计本机实际侦听到的带宽。次信道仍须通过扫描或实际驻留获得。
             passive |= policy.usesPrediction() && externalCca;
             var track = new PredictionTrack(sfu, predictor, passive, mode.bandwidthMhz(),
                     config.apAnalysis().revisedPrediction() || policy.usesPrediction(), policy, predictChannel, externalCca,
-                    config.apControl().useLoadAwareService(policy));
+                    config.apControl().useLoadAwareService(policy), complete);
             apPredictors.put(sfu.id(), track);
             if (policy.usesResidency()) {
-                track.residency = new ResidencyTrack(residencyModePolicy.start(0, null));
+                track.residency = new ResidencyTrack(residencyModePolicy.start(0, null, track.protectResidence()));
                 trace.recordApResidency(sfu.id(), mode, track.residency.residence, 0, null);
             }
         }
@@ -442,10 +444,13 @@ public final class SimulationContext {
             if (track.residency != null) {
                 long nextReviewNs = modeDecisionPeriodNs - now % modeDecisionPeriodNs;
                 var choice = residencyModePolicy.choose(now, track.residency.residence, nextReviewNs, deferralRoom(track, now),
-                        track.residency.observedScanPower(now, horizon), decision, qos, externalBusy);
+                        track.residency.observedScanPower(now, horizon), decision, qos, externalBusy, track.complete);
                 outcome = applyQosModeTarget(track, trigger, choice.target, choice.delayNs, ready);
                 track.residency.recordRequest(choice, outcome);
                 trace.recordApResidencyDecision(now, sfuId, trigger, qos, choice, outcome);
+                if (track.complete != null) {
+                    trace.recordApCompleteDecision(now, sfuId, track.complete, choice);
+                }
             } else {
                 outcome = applyQosModeTarget(track, trigger, qos.target, qos.maxDelayNs, ready);
             }
@@ -855,11 +860,12 @@ public final class SimulationContext {
         }
         boolean ingress = event.kind() == ApTrafficObserver.Kind.ENQUEUED || event.kind() == ApTrafficObserver.Kind.REQUEUED;
         String reason;
-        boolean expired = ingress && track.residency != null && deadlineModePolicy.expired(event.packet(), now);
+        boolean screenQos = track.complete == null || track.complete.qos;
+        boolean expired = ingress && screenQos && track.residency != null && deadlineModePolicy.expired(event.packet(), now);
         if (expired) {
             trace.recordApExpiredIngress(now, sfuId, event.packet(), event.kind());
         }
-        if (ingress && !expired && deadlineModePolicy.urgent(event.packet(), now, modeDecisionPeriodNs)) {
+        if (ingress && screenQos && !expired && deadlineModePolicy.urgent(event.packet(), now, modeDecisionPeriodNs)) {
             reason = "URGENT_QUEUE";
         } else if (track.deferred != null && ingress) {
             reason = "DEFER_QUEUE_CHANGED";
@@ -906,7 +912,7 @@ public final class SimulationContext {
         if (state.requestId != request.id()) {
             throw new IllegalStateException("D4 mode change has no matching decision for SFU " + sfuId);
         }
-        state.residence = residencyModePolicy.start(nowNanoseconds(), state.request);
+        state.residence = residencyModePolicy.start(nowNanoseconds(), state.request, track.protectResidence());
         trace.recordApResidency(sfuId, mode, state.residence, state.requestId, state.request);
         state.requestId = 0;
         state.request = null;
@@ -1280,6 +1286,7 @@ public final class SimulationContext {
         private final ApModeController.Policy policy;
         private final boolean predictChannel, externalCca;
         private final boolean loadAware;
+        private final ApModeController.CompleteFeatures complete;
         private boolean mixedMode;
         private long lastDecisionNs = -1;
         private Event recheck;
@@ -1291,7 +1298,8 @@ public final class SimulationContext {
         private int accessMask, busyMask;
 
         private PredictionTrack(Sfu sfu, ApModePredictor predictor, boolean passive, int bandwidthMhz, boolean revised,
-                                ApModeController.Policy policy, boolean predictChannel, boolean externalCca, boolean loadAware) {
+                                ApModeController.Policy policy, boolean predictChannel, boolean externalCca, boolean loadAware,
+                                ApModeController.CompleteFeatures complete) {
             this.sfu = sfu;
             this.predictor = predictor;
             this.passive = passive;
@@ -1300,8 +1308,11 @@ public final class SimulationContext {
             this.predictChannel = predictChannel;
             this.externalCca = externalCca;
             this.loadAware = loadAware;
+            this.complete = complete;
             accessMask = (1 << (bandwidthMhz / 20)) - 1;
         }
+
+        private boolean protectResidence() { return complete == null || complete.residency; }
 
         private void advanceCca(long timeNs) {
             long delta = timeNs - previousNs;

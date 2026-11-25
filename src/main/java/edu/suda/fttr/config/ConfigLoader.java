@@ -127,6 +127,10 @@ public final class ConfigLoader {
     private static final String AP_CONTROL_DEFER_LIMIT_US = "wifi.ap.control.defer.max.us";
     private static final String AP_CONTROL_MIN_RESIDENCY_US = "wifi.ap.control.residency.minimum.us";
     private static final String AP_CONTROL_REVERSE_MARGIN = "wifi.ap.control.residency.reverse.margin.uj";
+    private static final String AP_COMPLETE_CHANNEL = "wifi.ap.control.complete.channel.enabled";
+    private static final String AP_COMPLETE_QOS = "wifi.ap.control.complete.qos.enabled";
+    private static final String AP_COMPLETE_DELAY = "wifi.ap.control.complete.deferral.enabled";
+    private static final String AP_COMPLETE_RESIDENCY = "wifi.ap.control.complete.residency.enabled";
     private static final Set<String> KEYS = Set.of(
             FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", DOWNLINK_PROPAGATION_US,
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
@@ -148,7 +152,8 @@ public final class ConfigLoader {
             HCM_POWER + "idle.w", HCM_POWER + "tx.w", HCM_POWER + "rx.w",
             AP_CONTROL_POLICY, AP_CONTROL_PERIOD_US, AP_CONTROL_ALPHA, AP_CONTROL_THRESHOLD, AP_CONTROL_MARGIN,
             AP_CONTROL_SERVICE_MODEL, AP_CONTROL_QOS_MARGIN_US, AP_CONTROL_DEFER_LIMIT_US,
-            AP_CONTROL_MIN_RESIDENCY_US, AP_CONTROL_REVERSE_MARGIN,
+            AP_CONTROL_MIN_RESIDENCY_US, AP_CONTROL_REVERSE_MARGIN, AP_COMPLETE_CHANNEL, AP_COMPLETE_QOS,
+            AP_COMPLETE_DELAY, AP_COMPLETE_RESIDENCY,
             AP_SWITCH_ENABLED, LCM_TO_HCM + "delay.us", LCM_TO_HCM + "power.w",
             HCM_TO_LCM + "delay.us", HCM_TO_LCM + "power.w");
     private static final Set<String> PHY_KEYS = Set.of(
@@ -763,8 +768,15 @@ public final class ConfigLoader {
                 Long.toString(ApModeController.DEFAULT_MINIMUM_RESIDENCY_NS / 1000), false);
         double reverseMargin = parseNonNegativeDouble(properties.getProperty(AP_CONTROL_REVERSE_MARGIN,
                 Double.toString(ApModeController.DEFAULT_REVERSE_MARGIN_UJ)), AP_CONTROL_REVERSE_MARGIN);
+        var features = new ApModeController.CompleteFeatures(readCompleteFeature(properties, AP_COMPLETE_CHANNEL),
+                readCompleteFeature(properties, AP_COMPLETE_QOS), readCompleteFeature(properties, AP_COMPLETE_DELAY),
+                readCompleteFeature(properties, AP_COMPLETE_RESIDENCY));
         return new ApModeController.Settings(policies, periodNs, alpha, threshold, margin, serviceModel, qosMargin, deferLimit,
-                minimumResidency, reverseMargin);
+                minimumResidency, reverseMargin, features);
+    }
+
+    private static boolean readCompleteFeature(Properties properties, String key) {
+        return channelBoolean(properties.getProperty(key, "true").strip(), key);
     }
 
     private static ApModeController.Policy readApPolicy(Properties properties, String key, String fallback) {
@@ -774,7 +786,7 @@ public final class ConfigLoader {
                 return policy;
             }
         }
-        throw new IllegalArgumentException(key + " must be off, always-lcm, always-hcm, fixed-threshold, e-aware, ec-aware, ecq-aware, ecq-sdps or ecq-sdps-d4");
+        throw new IllegalArgumentException(key + " must be off, always-lcm, always-hcm, fixed-threshold, e-aware, ec-aware, ecq-aware, ecq-sdps, ecq-sdps-d4 or ecq-sdps-complete");
     }
 
     private static void validateApControl(ApModeController.Settings control, ApModeSwitch.Settings switching) {
@@ -941,7 +953,8 @@ public final class ConfigLoader {
             reads.add(timeNs);
         }
         boolean passive = channelBoolean(properties.getProperty(CHANNEL_PASSIVE, "false").strip(), CHANNEL_PASSIVE);
-        BigDecimal scanPower = readPowerWatts(properties, CHANNEL_SCAN_POWER, new BigDecimal("0.5"));
+        // 理想观测对照复用相同的扫描时间和可见性，允许只将这项附加功率设为零。
+        BigDecimal scanPower = readPowerWatts(properties, CHANNEL_SCAN_POWER, new BigDecimal("0.5"), true);
         List<ChannelObservationInput.Scan> scans = readAuxiliaryScans(properties, sfuCount);
         return enabled ? new ChannelObservationInput(truth, feedback, reads, scans, passive, scanPower) : null;
     }
@@ -1153,18 +1166,22 @@ public final class ConfigLoader {
     }
 
     private static BigDecimal readPowerWatts(Properties properties, String key, BigDecimal defaultWatts) {
+        return readPowerWatts(properties, key, defaultWatts, false);
+    }
+
+    private static BigDecimal readPowerWatts(Properties properties, String key, BigDecimal defaultWatts, boolean allowZero) {
         String configured = properties.getProperty(key);
         if (configured == null) {
             return defaultWatts;
         }
-        String message = key + " must be a positive finite decimal power in W";
+        String message = key + " must be a " + (allowZero ? "nonnegative" : "positive") + " finite decimal power in W";
         BigDecimal watts;
         try {
             watts = new BigDecimal(configured.strip());
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException(message, e);
         }
-        if (!ApEnergyModel.Power.isValidWatts(watts)) {
+        if (!(allowZero && watts.signum() == 0) && !ApEnergyModel.Power.isValidWatts(watts)) {
             throw new IllegalArgumentException(message);
         }
         return watts;

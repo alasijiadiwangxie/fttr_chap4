@@ -21,6 +21,7 @@ public final class ApResidencyModePolicy {
     private final ApEnergyModePolicy energyPolicy;
     private final long minimumNs;
     private final double reverseMarginUj;
+    private final long defaultDeferralLimitNs;
 
     public ApResidencyModePolicy(ApEnergyModel power, ApModeSwitch.Settings switching, ApEnergyModePolicy energyPolicy,
                                  ApModeController.Settings settings) {
@@ -29,17 +30,30 @@ public final class ApResidencyModePolicy {
         this.energyPolicy = energyPolicy;
         this.minimumNs = settings.minimumResidencyNs();
         this.reverseMarginUj = settings.reverseMarginUj();
+        this.defaultDeferralLimitNs = settings.deferralLimitNs();
     }
 
     public Residence start(long nowNs, Decision executed) {
+        return start(nowNs, executed, true);
+    }
+
+    public Residence start(long nowNs, Decision executed, boolean protect) {
         // 驻留从接收能力真正改变时计时。QoS 驱动的换档只应用基本驻留时间。
-        long duration = executed != null && executed.reason == Reason.ECONOMICAL_SWITCH
-                ? Math.max(minimumNs, executed.economicResidenceNs) : minimumNs;
+        long duration = protect ? minimumNs : 0;
+        if (protect && executed != null && executed.reason.economic()) {
+            duration = Math.max(minimumNs, executed.economicResidenceNs);
+        }
         return new Residence(nowNs, nowNs + Math.min(duration, Long.MAX_VALUE - nowNs), executed != null);
     }
 
     public Decision choose(long nowNs, Residence residence, long untilReviewNs, long delayLimitNs, double scanW,
                            ApEnergyModePolicy.Decision energy, ApDeadlineModePolicy.Decision qos, boolean externalBusy) {
+        return choose(nowNs, residence, untilReviewNs, delayLimitNs, scanW, energy, qos, externalBusy, null);
+    }
+
+    public Decision choose(long nowNs, Residence residence, long untilReviewNs, long delayLimitNs, double scanW,
+                           ApEnergyModePolicy.Decision energy, ApDeadlineModePolicy.Decision qos, boolean externalBusy,
+                           ApModeController.CompleteFeatures features) {
         var ready = energy.readiness;
         var current = ready.projectedMode;
         int base = current == ApCapabilityMode.LCM ? 0 : 1;
@@ -47,14 +61,20 @@ public final class ApResidencyModePolicy {
         var change = energy.candidates.get(1 - base);
         var keepQos = qos.candidates.get(base);
         var changeQos = qos.candidates.get(1 - base);
-        boolean keepFeasible = feasible(keepQos);
-        boolean changeFeasible = feasible(changeQos);
-        boolean energyLed = keepFeasible && changeFeasible;
-        double marginUj = energy.marginUj + (residence.afterSwitch ? reverseMarginUj : 0);
+        boolean checkQos = features == null || features.qos;
+        boolean economicProtection = features == null || features.residency;
+        boolean keepFeasible = !checkQos || feasible(keepQos);
+        boolean changeFeasible = !checkQos || feasible(changeQos);
+        boolean bothRisky = !keepFeasible && !changeFeasible;
+        double marginUj = energy.marginUj + (residence.afterSwitch && economicProtection ? reverseMarginUj : 0);
 
-        Economics economics = economics(energy, keep, change, scanW, marginUj);
+        Economics economics = economics(energy, keep, change, scanW, marginUj, economicProtection);
         long untilRelease = Math.max(0, residence.eligibleAtNs - nowNs);
-        Risk risk = risk(keepQos, changeQos, Math.min(untilRelease, untilReviewNs));
+        Risk risk = checkQos ? risk(keepQos, changeQos, Math.min(untilRelease, untilReviewNs)) : Risk.NONE;
+        // D4 只接受可挽救报文带来的明确增益。完整策略也允许 QoS 不退步且仍能承担业务的经济降档。
+        boolean safeExit = features != null && current == ApCapabilityMode.HCM && bothRisky && !risk.clearImprovement()
+                && safeEconomicExit(keepQos, changeQos, keep, change);
+        boolean energyLed = keepFeasible && changeFeasible || safeExit;
         boolean exception = untilRelease > 0 && risk.urgent != null && !keepFeasible;
         Reason reason;
         if (ready.activeSwitchNs > 0) {
@@ -63,32 +83,52 @@ public final class ApResidencyModePolicy {
             reason = Reason.SAME_TICK_GUARD;
         } else if (keepFeasible && !changeFeasible) {
             reason = Reason.KEEP_QOS;
-        } else if (!keepFeasible && !changeFeasible && !risk.clearImprovement()) {
+        } else if (bothRisky && !risk.clearImprovement() && !safeExit) {
             reason = Reason.HOLD_UNPROVEN_QOS;
         } else if (energyLed && !(economics.savingUj > marginUj)) {
             reason = residence.afterSwitch && economics.savingUj > energy.marginUj
                     ? Reason.REVERSE_HYSTERESIS : Reason.KEEP_ENERGY;
-        } else if (energyLed && !economics.covered()) {
+        } else if (energyLed && !(economicProtection ? economics.covered() : change.expected.transitionFits)) {
             reason = Reason.PAYBACK_BEYOND_FORECAST;
         } else if (untilRelease > 0 && !exception) {
             reason = Reason.RESIDENCY_HOLD;
         } else {
-            reason = exception ? Reason.URGENT_EXCEPTION : energyLed ? Reason.ECONOMICAL_SWITCH : Reason.QOS_IMPROVEMENT;
+            reason = exception ? Reason.URGENT_EXCEPTION : safeExit ? Reason.SAFE_ECONOMIC_EXIT
+                    : energyLed ? Reason.ECONOMICAL_SWITCH : Reason.QOS_IMPROVEMENT;
         }
 
         var target = reason.requestsChange() ? change.forecast.mode : current;
-        long allowed = target == ApCapabilityMode.HCM && current == ApCapabilityMode.LCM && changeFeasible
-                ? Math.min(qos.maxDelayNs, delayLimitNs) : 0;
+        boolean canDelay = (features == null || features.deferral) && target == ApCapabilityMode.HCM
+                && current == ApCapabilityMode.LCM && changeFeasible;
+        long allowed = canDelay ? Math.min(checkQos ? qos.maxDelayNs : defaultDeferralLimitNs, delayLimitNs) : 0;
         Deferred deferred = allowed > 0 && reason != Reason.URGENT_EXCEPTION
                 ? defer(energy, keep, change, allowed, scanW, externalBusy, economics.returnReserveUj) : Deferred.UNAVAILABLE;
         double immediateUj = economics.changeUj + economics.returnReserveUj;
         long delayNs = deferred.costUj + energy.marginUj < immediateUj && Double.isFinite(deferred.costUj) ? allowed : 0;
         return new Decision(target, reason, residence, economics, marginUj, scanW, risk, keepQos, changeQos,
-                allowed, delayNs, immediateUj, deferred);
+                allowed, delayNs, immediateUj, deferred, safeExit);
+    }
+
+    private static boolean safeEconomicExit(ApDeadlineModePolicy.Candidate keepQos,
+                                            ApDeadlineModePolicy.Candidate changeQos,
+                                            ApEnergyModePolicy.Candidate keep, ApEnergyModePolicy.Candidate change) {
+        // 比较相同时窗内、含 B4 等待和新切换的成功量。仅比时延概率相同会误放行更慢的 LCM。
+        if (keepQos.uncertain || changeQos.uncertain || !change.expected.transitionFits
+                || change.expected.successBits + NUMERICAL_TOLERANCE < keep.expected.successBits
+                || changeQos.capacityShortfallMbps > keepQos.capacityShortfallMbps + NUMERICAL_TOLERANCE) {
+            return false;
+        }
+        Map<Packet, Double> previous = new HashMap<>();
+        for (var estimate : keepQos.liveDeadlines) {
+            previous.put(estimate.packet, estimate.onTimeProbability);
+        }
+        return changeQos.liveDeadlines.size() == previous.size() && changeQos.liveDeadlines.stream().allMatch(
+                estimate -> estimate.onTimeProbability + NUMERICAL_TOLERANCE
+                        >= previous.getOrDefault(estimate.packet, Double.POSITIVE_INFINITY));
     }
 
     private Economics economics(ApEnergyModePolicy.Decision plan, ApEnergyModePolicy.Candidate keep,
-                                ApEnergyModePolicy.Candidate change, double scanW, double marginUj) {
+                                ApEnergyModePolicy.Candidate change, double scanW, double marginUj, boolean protect) {
         var source = keep.forecast.mode;
         var target = change.forecast.mode;
         long horizon = plan.horizonNs;
@@ -97,7 +137,7 @@ public final class ApResidencyModePolicy {
         var exit = switching.profileFrom(target);
         BigDecimal idle = power.powerFor(source).idleW();
         BigDecimal entryPremium = switchPremium(entry, idle);
-        BigDecimal returnPremium = switchPremium(exit, idle);
+        BigDecimal returnPremium = protect ? switchPremium(exit, idle) : BigDecimal.ZERO;
         // D2 的候选成本已包含本次切换。这里只加将来可能再次切回的增量，避免再计入本次切换。
         double reserveUj = Math.max(0, returnPremium.doubleValue());
         double keepScanUj = scanCost(scanW, source == ApCapabilityMode.LCM ? available + keep.expected.tailNs : 0);
@@ -229,11 +269,13 @@ public final class ApResidencyModePolicy {
 
     public enum Reason {
         SWITCH_IN_PROGRESS, SAME_TICK_GUARD, KEEP_QOS, HOLD_UNPROVEN_QOS, REVERSE_HYSTERESIS, KEEP_ENERGY,
-        PAYBACK_BEYOND_FORECAST, RESIDENCY_HOLD, ECONOMICAL_SWITCH, QOS_IMPROVEMENT, URGENT_EXCEPTION;
+        PAYBACK_BEYOND_FORECAST, RESIDENCY_HOLD, ECONOMICAL_SWITCH, SAFE_ECONOMIC_EXIT, QOS_IMPROVEMENT, URGENT_EXCEPTION;
 
         boolean requestsChange() {
-            return this == ECONOMICAL_SWITCH || this == QOS_IMPROVEMENT || this == URGENT_EXCEPTION;
+            return economic() || this == QOS_IMPROVEMENT || this == URGENT_EXCEPTION;
         }
+
+        private boolean economic() { return this == ECONOMICAL_SWITCH || this == SAFE_ECONOMIC_EXIT; }
     }
 
     public static final class Residence {
@@ -257,11 +299,12 @@ public final class ApResidencyModePolicy {
         public final Economics economics;
         public final Risk risk;
         public final Deferred deferred;
+        public final boolean safeEconomicExit;
 
         private Decision(ApCapabilityMode target, Reason reason, Residence residence, Economics economics,
                          double marginUj, double scanW, Risk risk, ApDeadlineModePolicy.Candidate keepQos,
                          ApDeadlineModePolicy.Candidate changeQos, long allowedDelayNs, long delayNs,
-                         double immediateUj, Deferred deferred) {
+                         double immediateUj, Deferred deferred, boolean safeEconomicExit) {
             this.target = target;
             this.reason = reason;
             this.residence = residence;
@@ -276,6 +319,7 @@ public final class ApResidencyModePolicy {
             this.delayNs = delayNs;
             this.immediateUj = immediateUj;
             this.deferred = deferred;
+            this.safeEconomicExit = safeEconomicExit;
         }
     }
 
@@ -305,6 +349,7 @@ public final class ApResidencyModePolicy {
     }
 
     public static final class Risk {
+        private static final Risk NONE = new Risk(null, 0, false, null);
         public final AccessCategory ac;
         public final double expectedOnTimeGain;
         private final boolean clear;
