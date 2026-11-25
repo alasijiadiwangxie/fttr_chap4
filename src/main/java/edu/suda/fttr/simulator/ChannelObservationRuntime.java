@@ -164,6 +164,7 @@ final class ChannelObservationRuntime {
 
     private void startScan(ChannelObservationInput.Scan scan) {
         Sfu sfu = sfus.get(scan.sfuId() - 1);
+        context.recordApScanOpportunity(scan.sfuId(), scan.startNs(), scan.endNs(), input.scanPowerW().doubleValue());
         boolean accepted = sfu.canStartAuxScan();
         trace.recordChannelScan(scan.startNs(), scan, accepted ? "START" : "SKIP_MODE", 0, BigDecimal.ZERO);
         if (!accepted) {

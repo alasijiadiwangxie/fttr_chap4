@@ -12,6 +12,8 @@ public final class ApModeController {
     public static final double DEFAULT_ENERGY_MARGIN_UJ = 0.0;
     public static final long DEFAULT_QOS_MARGIN_NS = 50_000L;
     public static final long DEFAULT_DEFERRAL_LIMIT_NS = 2_000_000L;
+    public static final long DEFAULT_MINIMUM_RESIDENCY_NS = 500_000L;
+    public static final double DEFAULT_REVERSE_MARGIN_UJ = 25.0;
 
     private final Settings settings;
     private long previousNs;
@@ -47,7 +49,7 @@ public final class ApModeController {
         OFF("off", null), ALWAYS_LCM("always-lcm", ApCapabilityMode.LCM),
         ALWAYS_HCM("always-hcm", ApCapabilityMode.HCM), FIXED_THRESHOLD("fixed-threshold", null),
         E_AWARE("e-aware", null), EC_AWARE("ec-aware", null),
-        ECQ_AWARE("ecq-aware", null), ECQ_SDPS("ecq-sdps", null);
+        ECQ_AWARE("ecq-aware", null), ECQ_SDPS("ecq-sdps", null), ECQ_SDPS_D4("ecq-sdps-d4", null);
 
         private final String key;
         private final ApCapabilityMode staticMode;
@@ -59,7 +61,9 @@ public final class ApModeController {
 
         public String key() { return key; }
         public ApCapabilityMode staticMode() { return staticMode; }
-        public boolean usesQos() { return this == ECQ_AWARE || this == ECQ_SDPS; }
+        public boolean usesQos() { return this == ECQ_AWARE || usesDeferral(); }
+        public boolean usesDeferral() { return this == ECQ_SDPS || usesResidency(); }
+        public boolean usesResidency() { return this == ECQ_SDPS_D4; }
         public boolean usesChannel() { return this == EC_AWARE || usesQos(); }
         public boolean usesPrediction() { return this == E_AWARE || usesChannel(); }
         public boolean dynamic() { return this == FIXED_THRESHOLD || usesPrediction(); }
@@ -74,7 +78,8 @@ public final class ApModeController {
         private final double thresholdMbps;
         private final double energyMarginUj;
         private final ServiceModel serviceModel;
-        private final long qosMarginNs, deferralLimitNs;
+        private final long qosMarginNs, deferralLimitNs, minimumResidencyNs;
+        private final double reverseMarginUj;
 
         public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps) {
             this(policies, periodNs, alpha, thresholdMbps, DEFAULT_ENERGY_MARGIN_UJ);
@@ -83,15 +88,19 @@ public final class ApModeController {
         public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps,
                         double energyMarginUj) {
             this(policies, periodNs, alpha, thresholdMbps, energyMarginUj, ServiceModel.AUTO,
-                    DEFAULT_QOS_MARGIN_NS, DEFAULT_DEFERRAL_LIMIT_NS);
+                    DEFAULT_QOS_MARGIN_NS, DEFAULT_DEFERRAL_LIMIT_NS, DEFAULT_MINIMUM_RESIDENCY_NS, DEFAULT_REVERSE_MARGIN_UJ);
         }
 
         public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps,
-                        double energyMarginUj, ServiceModel serviceModel, long qosMarginNs, long deferralLimitNs) {
+                        double energyMarginUj, ServiceModel serviceModel, long qosMarginNs, long deferralLimitNs,
+                        long minimumResidencyNs, double reverseMarginUj) {
             if (periodNs <= 0 || !(alpha > 0 && alpha <= 1)
                     || !Double.isFinite(thresholdMbps) || thresholdMbps < 0
                     || !Double.isFinite(energyMarginUj) || energyMarginUj < 0 || qosMarginNs < 0 || deferralLimitNs < 0) {
                 throw new IllegalArgumentException("Invalid AP mode control period, EWMA alpha, threshold or margin");
+            }
+            if (minimumResidencyNs < 0 || !Double.isFinite(reverseMarginUj) || reverseMarginUj < 0) {
+                throw new IllegalArgumentException("Invalid AP residency minimum or reverse energy margin");
             }
             this.policies = Map.copyOf(policies);
             this.periodNs = periodNs;
@@ -101,6 +110,8 @@ public final class ApModeController {
             this.serviceModel = serviceModel;
             this.qosMarginNs = qosMarginNs;
             this.deferralLimitNs = deferralLimitNs;
+            this.minimumResidencyNs = minimumResidencyNs;
+            this.reverseMarginUj = reverseMarginUj;
         }
 
         public Map<Integer, Policy> policies() { return policies; }
@@ -110,6 +121,8 @@ public final class ApModeController {
         public double energyMarginUj() { return energyMarginUj; }
         public long qosMarginNs() { return qosMarginNs; }
         public long deferralLimitNs() { return deferralLimitNs; }
+        public long minimumResidencyNs() { return minimumResidencyNs; }
+        public double reverseMarginUj() { return reverseMarginUj; }
 
         public boolean useLoadAwareService(Policy policy) {
             return serviceModel == ServiceModel.LOAD_AWARE || (serviceModel == ServiceModel.AUTO && policy.usesQos());

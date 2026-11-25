@@ -78,6 +78,24 @@ public final class ApEnergyModePolicy {
         return new Candidate(forecast, expected, conservative, optimistic);
     }
 
+    /** D4 的稳态参照只比较两档处理同一份工作所需的能耗。 */
+    Cost steady(long horizonNs, ServiceForecast forecast) {
+        return cost(horizonNs, idleReady(forecast.mode), false, forecast.mode, forecast.expected, forecast.expected);
+    }
+
+    /** 主动等待已交付的比特只从剩余业务扣一次。切换与后续等待仍由同一 D2 成本模型计算。 */
+    Cost afterLcmWork(long horizonNs, ServiceForecast lcm, ServiceForecast hcm, boolean externalBusy, double remainingRatio) {
+        ServiceWork full = hcm.expected;
+        var remaining = new ServiceWork(full.demandBits * remainingRatio, full.demandPackets * remainingRatio,
+                full.arrivalBits * remainingRatio, full.successBits * remainingRatio, full.workNs * remainingRatio,
+                full.txNs * remainingRatio, full.rxNs * remainingRatio, full.busyFraction, full.meanFailure, full.ampduDepth);
+        return cost(horizonNs, idleReady(ApCapabilityMode.LCM), externalBusy, ApCapabilityMode.HCM, remaining, lcm.expected);
+    }
+
+    private static ApModeSwitch.Readiness idleReady(ApCapabilityMode mode) {
+        return new ApModeSwitch.Readiness(mode, mode, 0, 0, 0, 0, false);
+    }
+
     private Cost cost(long horizonNs, ApModeSwitch.Readiness ready, boolean externalBusy, ApCapabilityMode mode,
                       ServiceWork work, ServiceWork base) {
         ApEnergyModel.Power sourcePower = energy.powerFor(ready.sourceMode);

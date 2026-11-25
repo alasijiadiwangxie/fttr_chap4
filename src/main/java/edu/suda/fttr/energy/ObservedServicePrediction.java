@@ -246,7 +246,8 @@ final class ObservedServicePrediction {
                 addBatch(flow, depth, bytes, depth, error, batch);
                 if (input != Input.C3 && estimate == Estimate.CONSERVATIVE) {
                     total.deadlineBatches.add(new DeadlineBatch(local.subList(offset, offset + depth),
-                            batch.airNs * batch.attempts, batch.success));
+                            batch.airNs * batch.attempts, batch.success, batch.dataNs * batch.attempts,
+                            batch.responseNs * batch.attempts));
                 }
                 if (loadAware) {
                     // 当前 FIFO 的同伴顺序已知，这部分容量保留真实可装载的批次。

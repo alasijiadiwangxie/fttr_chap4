@@ -5,6 +5,7 @@ import edu.suda.fttr.entity.ApModeSwitch;
 import edu.suda.fttr.entity.Packet;
 import edu.suda.fttr.phy.ApCapabilityMode;
 
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -28,11 +29,16 @@ public final class ApDeadlineModePolicy {
 
     public Decision choose(long nowNs, ApEnergyModePolicy.Decision energy, ApModeSwitch.Readiness ready,
                            boolean externalBusy) {
+        return choose(nowNs, energy, ready, externalBusy, false);
+    }
+
+    public Decision choose(long nowNs, ApEnergyModePolicy.Decision energy, ApModeSwitch.Readiness ready,
+                           boolean externalBusy, boolean excludeExpired) {
         ApEnergyModePolicy.Candidate first = energy.candidates.get(0);
         ApEnergyModePolicy.Candidate second = energy.candidates.get(1);
         double activeBusy = (ready.projectedMode == ApCapabilityMode.LCM ? first : second).forecast.conservative.busyFraction;
-        Candidate low = evaluate(nowNs, energy.horizonNs, ready, externalBusy, activeBusy, first);
-        Candidate high = evaluate(nowNs, energy.horizonNs, ready, externalBusy, activeBusy, second);
+        Candidate low = evaluate(nowNs, energy.horizonNs, ready, externalBusy, activeBusy, first, excludeExpired);
+        Candidate high = evaluate(nowNs, energy.horizonNs, ready, externalBusy, activeBusy, second, excludeExpired);
 
         ApCapabilityMode target;
         Reason reason;
@@ -56,7 +62,7 @@ public final class ApDeadlineModePolicy {
     }
 
     private Candidate evaluate(long nowNs, long horizonNs, ApModeSwitch.Readiness ready, boolean externalBusy,
-                               double activeBusy, ApEnergyModePolicy.Candidate energy) {
+                               double activeBusy, ApEnergyModePolicy.Candidate energy, boolean excludeExpired) {
         var forecast = energy.forecast;
         boolean changing = forecast.mode != ready.projectedMode;
         double shared = (double) ready.waitNs + ready.activeSwitchNs;
@@ -65,6 +71,8 @@ public final class ApDeadlineModePolicy {
         double lead = shared + externalWait + switchNs;
 
         EnumMap<AccessCategory, ClassRisk> byClass = new EnumMap<>(AccessCategory.class);
+        List<DeadlineEstimate> live = excludeExpired ? new ArrayList<>() : List.of();
+        int expired = 0;
         for (AccessCategory ac : AccessCategory.values()) {
             byClass.put(ac, new ClassRisk(analysis.requirement(ac)));
         }
@@ -77,9 +85,17 @@ public final class ApDeadlineModePolicy {
             for (Packet packet : batch.packets) {
                 ClassRisk risk = byClass.get(packet.type());
                 long remaining = remainingNs(packet, nowNs, risk.requirement);
+                if (excludeExpired && remaining <= 0) {
+                    // 报文仍在队列中，前面已算入其服务时间。后续报文不能跳过这份工作。
+                    expired++;
+                    continue;
+                }
                 double slack = remaining - lead - service - marginNs;
                 risk.add(remaining, service, slack, batch.successProbability);
                 minimumSlack = Math.min(minimumSlack, slack);
+                if (excludeExpired) {
+                    live.add(new DeadlineEstimate(packet, slack, slack < 0 ? 0 : batch.successProbability));
+                }
             }
         }
         double arrivalMbps = forecast.expected.arrivalBits * 1_000 / horizonNs;
@@ -97,7 +113,7 @@ public final class ApDeadlineModePolicy {
             }
         }
         return new Candidate(forecast.mode, status, uncertain, byClass, ready.waitNs, ready.activeSwitchNs,
-                externalWait, switchNs, marginNs, minimumSlack, shortfall);
+                externalWait, switchNs, marginNs, minimumSlack, shortfall, expired, live);
     }
 
     private static int compareRisk(Candidate left, Candidate right) {
@@ -120,6 +136,10 @@ public final class ApDeadlineModePolicy {
     public boolean urgent(Packet packet, long nowNs, long decisionPeriodNs) {
         return packet.type() == AccessCategory.VO || packet.type() == AccessCategory.VI
                 || remainingNs(packet, nowNs, analysis.requirement(packet.type())) <= decisionPeriodNs;
+    }
+
+    public boolean expired(Packet packet, long nowNs) {
+        return remainingNs(packet, nowNs, analysis.requirement(packet.type())) <= 0;
     }
 
     private static long remainingNs(Packet packet, long nowNs, ApAnalysisSettings.Requirement requirement) {
@@ -151,10 +171,12 @@ public final class ApDeadlineModePolicy {
         public final Map<AccessCategory, ClassRisk> classes;
         public final long localWaitNs, activeSwitchNs, switchNs, marginNs;
         public final double externalWaitNs, minimumSlackNs, capacityShortfallMbps;
+        public final int expiredPackets;
+        public final List<DeadlineEstimate> liveDeadlines;
 
         private Candidate(ApCapabilityMode mode, Status status, boolean uncertain, Map<AccessCategory, ClassRisk> classes,
                           long localWaitNs, long activeSwitchNs, double externalWaitNs, long switchNs, long marginNs,
-                          double minimumSlackNs, double capacityShortfallMbps) {
+                          double minimumSlackNs, double capacityShortfallMbps, int expiredPackets, List<DeadlineEstimate> live) {
             this.mode = mode;
             this.status = status;
             this.uncertain = uncertain;
@@ -166,6 +188,19 @@ public final class ApDeadlineModePolicy {
             this.marginNs = marginNs;
             this.minimumSlackNs = minimumSlackNs;
             this.capacityShortfallMbps = capacityShortfallMbps;
+            this.expiredPackets = expiredPackets;
+            this.liveDeadlines = List.copyOf(live);
+        }
+    }
+
+    public static final class DeadlineEstimate {
+        public final Packet packet;
+        public final double slackNs, onTimeProbability;
+
+        private DeadlineEstimate(Packet packet, double slackNs, double onTimeProbability) {
+            this.packet = packet;
+            this.slackNs = slackNs;
+            this.onTimeProbability = onTimeProbability;
         }
     }
 
@@ -196,6 +231,7 @@ public final class ApDeadlineModePolicy {
         public long deadlineNs() { return requirement.deadlineNs(); }
         public double requiredOnTime() { return requirement.minOnTime(); }
         public double onTimeRatio() { return packets == 0 ? 1 : onTime / packets; }
+        public double expectedOnTime() { return onTime; }
         public double expectedMisses() { return packets - onTime; }
         public long earliestRemainingNs() { return earliestRemainingNs; }
         public double serviceNs() { return serviceNs; }

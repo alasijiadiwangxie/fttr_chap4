@@ -97,6 +97,7 @@ public final class ApModeSwitch {
         BigDecimal energyUj = ApEnergyModel.switchEnergyUj(observedNs, profile.powerW);
         context.recordApSwitchEvent("WIFI_AP_SWITCH_END", sfuId, active, source, profile, startNs, observedNs, energyUj);
         mode = active.target;
+        context.recordApCapabilityChange(sfuId, mode, active);
         active = null;
         return links.get(mode);
     }

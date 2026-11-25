@@ -8,6 +8,7 @@ import edu.suda.fttr.energy.ApEnergyModePolicy;
 import edu.suda.fttr.energy.ApDeadlineModePolicy;
 import edu.suda.fttr.energy.ApModePredictor;
 import edu.suda.fttr.energy.ApQosLedger;
+import edu.suda.fttr.energy.ApResidencyModePolicy;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.ApEnergyModel;
@@ -938,7 +939,8 @@ public final class TraceLogger {
                             + "action=%s switch_id=%d max_delay_ns=%d qos_local_wait_ns=%d qos_active_switch_ns=%d "
                             + "qos_cca_wait_ns=%s qos_switch_ns=%d qos_margin_ns=%d qos_min_slack_ns=%s capacity_shortfall_mbps=%s%n",
                     nowNs, sfuId, policy.key(), trigger, candidate.mode, decision.target, candidate.status, candidate.uncertain,
-                    decision.reason, outcome == null ? "DEFERRED" : outcome.action(), outcome == null ? 0 : outcome.requestId(),
+                    decision.reason, policy.usesResidency() ? "PROPOSAL" : outcome == null ? "DEFERRED" : outcome.action(),
+                    outcome == null ? 0 : outcome.requestId(),
                     decision.maxDelayNs, candidate.localWaitNs, candidate.activeSwitchNs, candidate.externalWaitNs,
                     candidate.switchNs, candidate.marginNs, candidate.minimumSlackNs, candidate.capacityShortfallMbps);
             for (AccessCategory ac : AccessCategory.values()) {
@@ -956,10 +958,48 @@ public final class TraceLogger {
     }
 
     public void recordApHcmDeferral(long nowNs, int sfuId, long id, long openedNs, long dueNs, String phase,
-                                    String trigger, long allowedNs, int switchId) {
-        output.printf(Locale.ROOT, "event=WIFI_AP_HCM_DEFER t_ns=%d sfu_id=%d policy=ecq-sdps defer_id=%d phase=%s "
+                                    String trigger, long allowedNs, int switchId, ApModeController.Policy policy) {
+        output.printf(Locale.ROOT, "event=WIFI_AP_HCM_DEFER t_ns=%d sfu_id=%d policy=%s defer_id=%d phase=%s "
                         + "trigger=%s opened_ns=%d due_ns=%d max_delay_ns=%d active_delay_ns=%d switch_id=%d%n",
-                nowNs, sfuId, id, phase, trigger, openedNs, dueNs, allowedNs, nowNs - openedNs, switchId);
+                nowNs, sfuId, policy.key(), id, phase, trigger, openedNs, dueNs, allowedNs, nowNs - openedNs, switchId);
+    }
+
+    public void recordApResidency(int sfuId, ApCapabilityMode mode, ApResidencyModePolicy.Residence residence,
+                                  int switchId, ApResidencyModePolicy.Decision executed) {
+        output.printf(Locale.ROOT, "event=WIFI_AP_D4_RESIDENCY t_ns=%d sfu_id=%d current_mode=%s switch_id=%d "
+                        + "residency_start_ns=%d residency_until_ns=%d reason=%s economic_residency_ns=%d%n",
+                residence.startedNs, sfuId, mode, switchId, residence.startedNs, residence.eligibleAtNs,
+                executed == null ? "INITIAL" : executed.reason,
+                executed == null || executed.economicResidenceNs == Long.MAX_VALUE ? -1 : executed.economicResidenceNs);
+    }
+
+    public void recordApResidencyDecision(long nowNs, int sfuId, String trigger, ApDeadlineModePolicy.Decision qos,
+                                         ApResidencyModePolicy.Decision choice, ApModeSwitch.Outcome outcome) {
+        var estimate = choice.economics;
+        var urgent = choice.risk.urgent;
+        output.printf(Locale.ROOT, "event=WIFI_AP_D4_DECISION t_ns=%d sfu_id=%d trigger=%s current_mode=%s candidate_mode=%s "
+                        + "target_mode=%s qos_target=%s keep_qos=%s change_qos=%s reason=%s action=%s switch_id=%d "
+                        + "residency_start_ns=%d residency_until_ns=%d economic_residency_ns=%d "
+                        + "live_packets=%d expired_packets=%d decisive_ac=%s on_time_gain=%s clear_qos_gain=%b "
+                        + "urgent_packet_id=%d urgent_slack_ns=%s allowed_delay_ns=%d chosen_delay_ns=%d deferred_batches=%d "
+                        + "deferred_bits=%s keep_uj=%s change_uj=%s return_reserve_uj=%s round_trip_premium_uj=%s "
+                        + "saving_w=%s net_saving_uj=%s margin_uj=%s forecast_residency_ns=%s scan_power_w=%s "
+                        + "keep_scan_uj=%s change_scan_uj=%s immediate_uj=%s deferred_uj=%s%n",
+                nowNs, sfuId, trigger, choice.keepQos.mode, choice.changeQos.mode, choice.target, qos.target,
+                choice.keepQos.status, choice.changeQos.status, choice.reason, outcome == null ? "DEFERRED" : outcome.action(),
+                outcome == null ? 0 : outcome.requestId(), choice.residence.startedNs, choice.residence.eligibleAtNs,
+                choice.economicResidenceNs == Long.MAX_VALUE ? -1 : choice.economicResidenceNs,
+                choice.keepQos.liveDeadlines.size(), choice.keepQos.expiredPackets, choice.risk.ac, choice.risk.expectedOnTimeGain,
+                choice.risk.clearImprovement(), urgent == null ? 0 : urgent.packet.id(), urgent == null ? -1 : urgent.slackNs,
+                choice.allowedDelayNs, choice.delayNs, choice.deferred.batches, choice.deferred.successBits,
+                estimate.keepUj, estimate.changeUj, estimate.returnReserveUj, estimate.roundTripPremiumUj, estimate.savingW,
+                estimate.savingUj, choice.marginUj, estimate.forecastNs, choice.scanW,
+                estimate.keepScanUj, estimate.changeScanUj, choice.immediateUj, choice.deferred.costUj);
+    }
+
+    public void recordApExpiredIngress(long nowNs, int sfuId, Packet packet, ApTrafficObserver.Kind cause) {
+        output.printf(Locale.ROOT, "event=WIFI_AP_D4_EXPIRED_INGRESS t_ns=%d sfu_id=%d packet_id=%d ac=%s action=%s%n",
+                nowNs, sfuId, packet.id(), packet.type(), cause);
     }
 
     public void recordApSwitchEvent(long timeNs, String event, int sfuId, ApModeSwitch.Request request,

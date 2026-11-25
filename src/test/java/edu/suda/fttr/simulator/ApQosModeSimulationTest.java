@@ -28,6 +28,8 @@ final class ApQosModeSimulationTest {
     private static final String DEFER = "WIFI_AP_HCM_DEFER";
     private static final String CHOOSE = "WIFI_AP_QOS_MODE_DECISION";
     private static final String B4 = "WIFI_AP_SWITCH_";
+    private static final String D4 = "wifi.ap.control.policy=ecq-sdps-d4";
+    private static final String D4_DECISION = "WIFI_AP_D4_DECISION";
     private static final List<String> BASE = List.of("wifi.ap.control.policy=ecq-sdps", "fiber.delay.us=0", "wifi.model=he-su",
             "packet.bytes=1500", "wifi.mac.exchange=data-sifs-ack", "wifi.mac.access=edca-multi-ac",
             "wifi.mac.edca.BE.aifsn=3", "wifi.mac.edca.VO.cwmin=0", "wifi.mac.edca.VI.cwmin=0",
@@ -160,6 +162,62 @@ final class ApQosModeSimulationTest {
                 events(extra, CHOOSE).stream().filter(row -> stamp(row) == 0).collect(Collectors.toList()));
     }
 
+    @Test
+    void d4StartsEconomicResidenceAtActualB4Completion(@TempDir Path dir) throws IOException {
+        var trace = run(dir, D4, "traffic.mode=poisson", "traffic.duration.us=6000", "traffic.sfu.1.rate.pps=0",
+                "sfu.1.wifi.ap.mode=HCM", "wifi.ap.activity.window.us=6000");
+        var result = only(trace, D4_DECISION);
+        assertEquals("767573", result.get("economic_residency_ns"));
+        assertEquals("ECONOMICAL_SWITCH", result.get("reason"));
+        var start = events(trace, "WIFI_AP_D4_RESIDENCY").get(1);
+        assertEquals(stamp(only(trace, B4 + "END")), stamp(start));
+        assertEquals("5792823", start.get("residency_until_ns"));
+        assertTrue(events(trace, "DELIVERED").isEmpty());
+    }
+
+    @Test
+    void d4ImmediatelyRescuesVoiceButMaintainsResidenceForLaterUrgentArrivals(@TempDir Path dir) throws IOException {
+        var trace = run(dir, D4, "packet.arrival.us=0,400,800", "packet.1.type=VO", "packet.2.type=VO", "packet.3.type=VO",
+                "wifi.ap.qos.VO.deadline.us=254.225", "wifi.ap.control.residency.minimum.us=5000");
+        assertEquals("URGENT_EXCEPTION", events(trace, D4_DECISION).get(0).get("reason"));
+        assertEquals("1", events(trace, D4_DECISION).get(0).get("urgent_packet_id"));
+        assertEquals(0, stamp(only(trace, B4 + "REQUEST")));
+        assertEquals(40_125, stamp(only(trace, B4 + "END")));
+        assertEquals(3, events(trace, "DELIVERED").size());
+        for (var row : events(trace, "DELIVERED")) {
+            long generation = (Long.parseLong(row.get("packet_id")) - 1) * 400_000;
+            assertTrue(stamp(row) - generation <= 254_225);
+        }
+    }
+
+    @Test
+    void d4StillDeliversAlreadyOverdueIngressWithoutTriggeringEmergency(@TempDir Path dir) throws IOException {
+        var trace = run(dir, D4, "fiber.delay.us=300", "packet.arrival.us=0", "packet.1.type=VO",
+                "wifi.ap.qos.VO.deadline.us=254.225");
+        assertEquals(300_000, stamp(only(trace, "WIFI_AP_D4_EXPIRED_INGRESS")));
+        assertTrue(events(trace, D4_DECISION).isEmpty());
+        assertTrue(events(trace, B4 + "REQUEST").isEmpty());
+        assertTrue(stamp(only(trace, "DELIVERED")) > 300_000);
+    }
+
+    @Test
+    void d4DoesNotWaitJustBecauseD3AllowsPositiveSlack(@TempDir Path dir) throws IOException {
+        var trace = run(dir, D4, "packet.arrival.us=0", "wifi.ap.qos.BE.deadline.us=295",
+                "wifi.ap.control.residency.minimum.us=0");
+        var choice = only(trace, D4_DECISION);
+        assertEquals("29525", choice.get("allowed_delay_ns"));
+        assertEquals("0", choice.get("chosen_delay_ns"));
+        assertEquals("0", choice.get("deferred_batches"));
+        assertEquals(0, stamp(only(trace, B4 + "REQUEST")));
+        assertTrue(events(trace, DEFER).isEmpty());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"wifi.ap.control.residency.minimum.us=-1", "wifi.ap.control.residency.reverse.margin.uj=-0.01"})
+    void d4RejectsInvalidResidencyConfiguration(String setting, @TempDir Path dir) {
+        assertThrows(IllegalArgumentException.class, () -> run(dir, D4, "packet.arrival.us=0", setting));
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"wifi.ap.control.defer.max.us=-1", "wifi.ap.control.qos.margin.us=-1",
             "wifi.ap.control.service.model=unknown"})
@@ -169,6 +227,9 @@ final class ApQosModeSimulationTest {
 
     private static List<Map<String, String>> run(Path dir, String... extra) throws IOException {
         List<String> lines = new ArrayList<>(BASE);
+        if (List.of(extra).contains("traffic.mode=poisson")) {
+            lines.remove("packet.bytes=1500");
+        }
         lines.addAll(List.of(extra));
         var file = Files.write(dir.resolve("d3.properties"), lines, StandardCharsets.UTF_8);
         var buffer = new ByteArrayOutputStream();

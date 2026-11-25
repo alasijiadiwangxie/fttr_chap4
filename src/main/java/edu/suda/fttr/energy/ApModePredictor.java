@@ -152,12 +152,18 @@ public final class ApModePredictor {
     /** 按实际待发队列组织的完整交换。一次聚合的成员共用其预计完成时刻。 */
     public static final class DeadlineBatch {
         public final List<Packet> packets;
-        public final double workNs, successProbability;
+        public final double workNs, successProbability, txNs, rxNs;
 
         DeadlineBatch(List<Packet> packets, double workNs, double successProbability) {
+            this(packets, workNs, successProbability, 0, 0);
+        }
+
+        DeadlineBatch(List<Packet> packets, double workNs, double successProbability, double txNs, double rxNs) {
             this.packets = List.copyOf(packets);
             this.workNs = workNs;
             this.successProbability = successProbability;
+            this.txNs = txNs;
+            this.rxNs = rxNs;
         }
     }
 

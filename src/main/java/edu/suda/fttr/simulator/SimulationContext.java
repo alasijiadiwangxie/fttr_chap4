@@ -9,6 +9,7 @@ import edu.suda.fttr.energy.ApDeadlineModePolicy;
 import edu.suda.fttr.energy.ApEnergyModePolicy;
 import edu.suda.fttr.energy.ApModePredictor;
 import edu.suda.fttr.energy.ApQosLedger;
+import edu.suda.fttr.energy.ApResidencyModePolicy;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApActivity;
 import edu.suda.fttr.entity.ApEnergyModel;
@@ -35,6 +36,8 @@ import edu.suda.fttr.phy.WirelessPhy;
 import edu.suda.fttr.trace.TraceLogger;
 
 import java.math.BigDecimal;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -68,6 +71,7 @@ public final class SimulationContext {
     private long modeDecisionEndNs;
     private ApEnergyModePolicy energyModePolicy;
     private ApDeadlineModePolicy deadlineModePolicy;
+    private ApResidencyModePolicy residencyModePolicy;
     private long energyPredictionWindowNs;
     private ChannelObservationRuntime channelObservation;
     private boolean causalChannelSampling;
@@ -340,6 +344,10 @@ public final class SimulationContext {
             deadlineModePolicy = new ApDeadlineModePolicy(config.apAnalysis(), config.apSwitching(),
                     config.apControl().qosMarginNs(), config.apControl().deferralLimitNs());
         }
+        if (config.apControl().policies().values().stream().anyMatch(ApModeController.Policy::usesResidency)) {
+            residencyModePolicy = new ApResidencyModePolicy(config.apEnergyModel(), config.apSwitching(), energyModePolicy,
+                    config.apControl());
+        }
         if (!config.apAnalysis().predictionEnabled() && energyModePolicy == null) {
             return;
         }
@@ -368,9 +376,14 @@ public final class SimulationContext {
             boolean predictChannel = policy.usesChannel() && config.downlinkDecoder() != null;
             // D2 的本地 CCA 历史只累计本机实际侦听到的带宽。次信道仍须通过扫描或实际驻留获得。
             passive |= policy.usesPrediction() && externalCca;
-            apPredictors.put(sfu.id(), new PredictionTrack(sfu, predictor, passive, mode.bandwidthMhz(),
+            var track = new PredictionTrack(sfu, predictor, passive, mode.bandwidthMhz(),
                     config.apAnalysis().revisedPrediction() || policy.usesPrediction(), policy, predictChannel, externalCca,
-                    config.apControl().useLoadAwareService(policy)));
+                    config.apControl().useLoadAwareService(policy));
+            apPredictors.put(sfu.id(), track);
+            if (policy.usesResidency()) {
+                track.residency = new ResidencyTrack(residencyModePolicy.start(0, null));
+                trace.recordApResidency(sfu.id(), mode, track.residency.residence, 0, null);
+            }
         }
     }
 
@@ -424,10 +437,20 @@ public final class SimulationContext {
         var decision = energyModePolicy.choose(horizon, ready, externalBusy, forecasts);
         if (track.policy.usesQos()) {
             var fullReadiness = track.sfu.modeSwitchReadiness(now, Long.MAX_VALUE - now);
-            var qos = deadlineModePolicy.choose(now, decision, fullReadiness, externalBusy);
-            var outcome = applyQosModeTarget(track, trigger, qos, ready);
+            var qos = deadlineModePolicy.choose(now, decision, fullReadiness, externalBusy, track.policy.usesResidency());
+            ApModeSwitch.Outcome outcome;
+            if (track.residency != null) {
+                long nextReviewNs = modeDecisionPeriodNs - now % modeDecisionPeriodNs;
+                var choice = residencyModePolicy.choose(now, track.residency.residence, nextReviewNs, deferralRoom(track, now),
+                        track.residency.observedScanPower(now, horizon), decision, qos, externalBusy);
+                outcome = applyQosModeTarget(track, trigger, choice.target, choice.delayNs, ready);
+                track.residency.recordRequest(choice, outcome);
+                trace.recordApResidencyDecision(now, sfuId, trigger, qos, choice, outcome);
+            } else {
+                outcome = applyQosModeTarget(track, trigger, qos.target, qos.maxDelayNs, ready);
+            }
             trace.recordApEnergyModeDecision(now, sfuId, track.policy, visible, decision, null, externalBusy);
-            trace.recordApQosModeDecision(now, sfuId, track.policy, trigger, qos, outcome);
+            trace.recordApQosModeDecision(now, sfuId, track.policy, trigger, qos, track.residency == null ? outcome : null);
         } else {
             var outcome = track.sfu.applyModeTarget(decision.target, track.policy, this);
             trace.recordApEnergyModeDecision(now, sfuId, track.policy, visible, decision, outcome, externalBusy);
@@ -436,14 +459,14 @@ public final class SimulationContext {
     }
 
     private ApModeSwitch.Outcome applyQosModeTarget(PredictionTrack track, String trigger,
-                                                    ApDeadlineModePolicy.Decision qos, ApModeSwitch.Readiness ready) {
+                                                    ApCapabilityMode target, long allowedNs, ApModeSwitch.Readiness ready) {
         long now = nowNanoseconds();
-        boolean canDefer = track.policy == ApModeController.Policy.ECQ_SDPS && qos.target == ApCapabilityMode.HCM
+        boolean canDefer = track.policy.usesDeferral() && target == ApCapabilityMode.HCM
                 && ready.projectedMode == ApCapabilityMode.LCM && ready.activeSwitchNs == 0
                 && !track.sfu.hasPendingModeTarget(ApCapabilityMode.HCM);
         DeferredHcm pending = track.deferred;
         if (canDefer) {
-            long latest = now + Math.min(qos.maxDelayNs, Long.MAX_VALUE - now);
+            long latest = now + Math.min(allowedNs, Long.MAX_VALUE - now);
             if (modeDecisionEndNs > 0) {
                 latest = Math.min(latest, modeDecisionEndNs);
             }
@@ -452,13 +475,13 @@ public final class SimulationContext {
                 if (pending == null) {
                     Event timer = scheduleAfterTicks(due - now, EventType.WIFI_AP_QOS_RECHECK, null, track.sfu.id());
                     track.deferred = pending = new DeferredHcm(track.nextDeferralId++, now, timer);
-                    traceDeferral(track, pending, "OPEN", trigger, qos.maxDelayNs, 0);
+                    traceDeferral(track, pending, "OPEN", trigger, allowedNs, 0);
                 } else if (due < pending.timer.timeTicks()) {
                     cancel(pending.timer);
                     pending.timer = scheduleAfterTicks(due - now, EventType.WIFI_AP_QOS_RECHECK, null, track.sfu.id());
-                    traceDeferral(track, pending, "ADVANCE", trigger, qos.maxDelayNs, 0);
+                    traceDeferral(track, pending, "ADVANCE", trigger, allowedNs, 0);
                 } else {
-                    traceDeferral(track, pending, "MERGE", trigger, qos.maxDelayNs, 0);
+                    traceDeferral(track, pending, "MERGE", trigger, allowedNs, 0);
                 }
                 return null;
             }
@@ -468,18 +491,36 @@ public final class SimulationContext {
         if (pending != null) {
             cancel(pending.timer);
         }
-        ApModeSwitch.Outcome outcome = track.sfu.applyModeTarget(qos.target, track.policy, this);
+        ApModeSwitch.Outcome outcome = track.sfu.applyModeTarget(target, track.policy, this);
         if (pending != null) {
-            String phase = qos.target == ApCapabilityMode.HCM && outcome.action() == ApModeSwitch.Action.REQUESTED
+            String phase = target == ApCapabilityMode.HCM && outcome.action() == ApModeSwitch.Action.REQUESTED
                     ? "RELEASE" : "CANCEL";
-            traceDeferral(track, pending, phase, trigger, qos.maxDelayNs, outcome.requestId());
+            traceDeferral(track, pending, phase, trigger, allowedNs, outcome.requestId());
         }
         return outcome;
     }
 
     private void traceDeferral(PredictionTrack track, DeferredHcm pending, String phase, String trigger, long allowed, int switchId) {
         trace.recordApHcmDeferral(nowNanoseconds(), track.sfu.id(), pending.id, pending.openedNs,
-                pending.timer.timeTicks(), phase, trigger, allowed, switchId);
+                pending.timer.timeTicks(), phase, trigger, allowed, switchId, track.policy);
+    }
+
+    private long deferralRoom(PredictionTrack track, long now) {
+        if (track.sfu.hasPendingModeTarget(ApCapabilityMode.HCM)) {
+            return 0;
+        }
+        long cutoff = modeDecisionEndNs > 0 ? modeDecisionEndNs : Long.MAX_VALUE;
+        if (track.deferred != null) {
+            cutoff = Math.min(cutoff, track.deferred.timer.timeTicks());
+        }
+        return Math.max(0, cutoff - now);
+    }
+
+    void recordApScanOpportunity(int sfuId, long startNs, long endNs, double powerW) {
+        PredictionTrack track = apPredictors.get(sfuId);
+        if (track != null && track.residency != null) {
+            track.residency.scans.addLast(new ScanOpportunity(startNs, endNs, powerW));
+        }
     }
 
     void observeApMediumAfterEvent(int sfuId) {
@@ -814,7 +855,11 @@ public final class SimulationContext {
         }
         boolean ingress = event.kind() == ApTrafficObserver.Kind.ENQUEUED || event.kind() == ApTrafficObserver.Kind.REQUEUED;
         String reason;
-        if (ingress && deadlineModePolicy.urgent(event.packet(), now, modeDecisionPeriodNs)) {
+        boolean expired = ingress && track.residency != null && deadlineModePolicy.expired(event.packet(), now);
+        if (expired) {
+            trace.recordApExpiredIngress(now, sfuId, event.packet(), event.kind());
+        }
+        if (ingress && !expired && deadlineModePolicy.urgent(event.packet(), now, modeDecisionPeriodNs)) {
             reason = "URGENT_QUEUE";
         } else if (track.deferred != null && ingress) {
             reason = "DEFER_QUEUE_CHANGED";
@@ -850,6 +895,21 @@ public final class SimulationContext {
             track.mixedMode = true;
         }
         return activity.observedDurationNs(startNs, nowTicks);
+    }
+
+    public void recordApCapabilityChange(int sfuId, ApCapabilityMode mode, ApModeSwitch.Request request) {
+        PredictionTrack track = apPredictors.get(sfuId);
+        if (track == null || track.residency == null) {
+            return;
+        }
+        var state = track.residency;
+        if (state.requestId != request.id()) {
+            throw new IllegalStateException("D4 mode change has no matching decision for SFU " + sfuId);
+        }
+        state.residence = residencyModePolicy.start(nowNanoseconds(), state.request);
+        trace.recordApResidency(sfuId, mode, state.residence, state.requestId, state.request);
+        state.requestId = 0;
+        state.request = null;
     }
 
     /** DATA 的实际发送端和接收端决定 AP 活动。接入和帧间等待没有活动边界。 */
@@ -1225,6 +1285,7 @@ public final class SimulationContext {
         private Event recheck;
         private String recheckReason;
         private DeferredHcm deferred;
+        private ResidencyTrack residency;
         private long nextDeferralId = 1;
         private long startNs, previousNs, primaryBusyNs, wideBusyNs, wideObservedNs;
         private int accessMask, busyMask;
@@ -1300,6 +1361,49 @@ public final class SimulationContext {
             this.id = id;
             this.openedNs = openedNs;
             this.timer = timer;
+        }
+    }
+
+    private static final class ResidencyTrack {
+        private ApResidencyModePolicy.Residence residence;
+        private int requestId;
+        private ApResidencyModePolicy.Decision request;
+        private final Deque<ScanOpportunity> scans = new ArrayDeque<>();
+
+        private ResidencyTrack(ApResidencyModePolicy.Residence residence) {
+            this.residence = residence;
+        }
+
+        private void recordRequest(ApResidencyModePolicy.Decision decision, ApModeSwitch.Outcome outcome) {
+            if (outcome != null && outcome.action() == ApModeSwitch.Action.REQUESTED) {
+                request = decision;
+                requestId = outcome.requestId();
+            } else if (outcome != null && outcome.action() == ApModeSwitch.Action.CANCELLED) {
+                request = null;
+                requestId = 0;
+            }
+        }
+
+        private double observedScanPower(long nowNs, long windowNs) {
+            // 只用已发生的扫描机会，含 HCM 当时跳过的机会，估计继续在 LCM 时每单位时间的辅助功率。
+            long from = Math.max(0, nowNs - windowNs);
+            scans.removeIf(scan -> scan.endNs <= from);
+            double wattNs = 0;
+            for (ScanOpportunity scan : scans) {
+                wattNs += scan.powerW * Math.max(0, Math.min(nowNs, scan.endNs) - Math.max(from, scan.startNs));
+            }
+            return windowNs == 0 ? 0 : wattNs / windowNs;
+        }
+    }
+
+    private static final class ScanOpportunity {
+        private final long startNs, endNs;
+        private final double powerW;
+
+        private ScanOpportunity(long startNs, long endNs, double powerW) {
+            this.startNs = startNs;
+            this.endNs = endNs;
+            this.powerW = powerW;
         }
     }
 
