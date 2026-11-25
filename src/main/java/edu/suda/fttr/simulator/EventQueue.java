@@ -28,8 +28,11 @@ final class EventQueue {
         if (type == EventType.WIFI_AP_MODE_DECISION) {
             return 2;
         }
-        if (type == EventType.WIFI_ACCESS_RESOLVE) {
+        if (type == EventType.WIFI_AP_QOS_RECHECK) {
             return 3;
+        }
+        if (type == EventType.WIFI_ACCESS_RESOLVE) {
+            return 4;
         }
         // 一包恰好在光帧边界发完时，先释放前一帧资源，再执行本帧的授权。
         return type == EventType.WIFI_SELECT_NEXT || type == EventType.WIFI_ACCESS_TIMER

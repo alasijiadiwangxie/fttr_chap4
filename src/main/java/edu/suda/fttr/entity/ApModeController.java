@@ -10,6 +10,8 @@ public final class ApModeController {
     public static final double DEFAULT_ALPHA = 0.25;
     public static final double DEFAULT_THRESHOLD_MBPS = 31.0;
     public static final double DEFAULT_ENERGY_MARGIN_UJ = 0.0;
+    public static final long DEFAULT_QOS_MARGIN_NS = 50_000L;
+    public static final long DEFAULT_DEFERRAL_LIMIT_NS = 2_000_000L;
 
     private final Settings settings;
     private long previousNs;
@@ -44,7 +46,8 @@ public final class ApModeController {
     public enum Policy {
         OFF("off", null), ALWAYS_LCM("always-lcm", ApCapabilityMode.LCM),
         ALWAYS_HCM("always-hcm", ApCapabilityMode.HCM), FIXED_THRESHOLD("fixed-threshold", null),
-        E_AWARE("e-aware", null), EC_AWARE("ec-aware", null);
+        E_AWARE("e-aware", null), EC_AWARE("ec-aware", null),
+        ECQ_AWARE("ecq-aware", null), ECQ_SDPS("ecq-sdps", null);
 
         private final String key;
         private final ApCapabilityMode staticMode;
@@ -56,9 +59,13 @@ public final class ApModeController {
 
         public String key() { return key; }
         public ApCapabilityMode staticMode() { return staticMode; }
-        public boolean usesPrediction() { return this == E_AWARE || this == EC_AWARE; }
+        public boolean usesQos() { return this == ECQ_AWARE || this == ECQ_SDPS; }
+        public boolean usesChannel() { return this == EC_AWARE || usesQos(); }
+        public boolean usesPrediction() { return this == E_AWARE || usesChannel(); }
         public boolean dynamic() { return this == FIXED_THRESHOLD || usesPrediction(); }
     }
+
+    public enum ServiceModel { AUTO, D2_ORIGINAL, LOAD_AWARE }
 
     public static final class Settings {
         private final Map<Integer, Policy> policies;
@@ -66,6 +73,8 @@ public final class ApModeController {
         private final double alpha;
         private final double thresholdMbps;
         private final double energyMarginUj;
+        private final ServiceModel serviceModel;
+        private final long qosMarginNs, deferralLimitNs;
 
         public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps) {
             this(policies, periodNs, alpha, thresholdMbps, DEFAULT_ENERGY_MARGIN_UJ);
@@ -73,9 +82,15 @@ public final class ApModeController {
 
         public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps,
                         double energyMarginUj) {
+            this(policies, periodNs, alpha, thresholdMbps, energyMarginUj, ServiceModel.AUTO,
+                    DEFAULT_QOS_MARGIN_NS, DEFAULT_DEFERRAL_LIMIT_NS);
+        }
+
+        public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps,
+                        double energyMarginUj, ServiceModel serviceModel, long qosMarginNs, long deferralLimitNs) {
             if (periodNs <= 0 || !(alpha > 0 && alpha <= 1)
                     || !Double.isFinite(thresholdMbps) || thresholdMbps < 0
-                    || !Double.isFinite(energyMarginUj) || energyMarginUj < 0) {
+                    || !Double.isFinite(energyMarginUj) || energyMarginUj < 0 || qosMarginNs < 0 || deferralLimitNs < 0) {
                 throw new IllegalArgumentException("Invalid AP mode control period, EWMA alpha, threshold or margin");
             }
             this.policies = Map.copyOf(policies);
@@ -83,6 +98,9 @@ public final class ApModeController {
             this.alpha = alpha;
             this.thresholdMbps = thresholdMbps;
             this.energyMarginUj = energyMarginUj;
+            this.serviceModel = serviceModel;
+            this.qosMarginNs = qosMarginNs;
+            this.deferralLimitNs = deferralLimitNs;
         }
 
         public Map<Integer, Policy> policies() { return policies; }
@@ -90,6 +108,12 @@ public final class ApModeController {
         public double alpha() { return alpha; }
         public double thresholdMbps() { return thresholdMbps; }
         public double energyMarginUj() { return energyMarginUj; }
+        public long qosMarginNs() { return qosMarginNs; }
+        public long deferralLimitNs() { return deferralLimitNs; }
+
+        public boolean useLoadAwareService(Policy policy) {
+            return serviceModel == ServiceModel.LOAD_AWARE || (serviceModel == ServiceModel.AUTO && policy.usesQos());
+        }
 
         public Policy policyFor(int sfuId) {
             return policies.getOrDefault(sfuId, Policy.OFF);

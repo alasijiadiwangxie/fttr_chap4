@@ -56,6 +56,10 @@ public final class ApTrafficObserver {
     /** 与 C1 采样周期无关的累计下行入口字节数。每个新报文在首次入队时计入。 */
     public long downlinkArrivalBytes() { return downlinkArrivalBytes; }
 
+    public boolean hasWaitingDownlink() {
+        return traffic.get(Packet.Direction.DL).values().stream().anyMatch(local -> !local.waiting.isEmpty());
+    }
+
     /** 当前 AP 可见的下行待发 FIFO。每个 AC 内保留实际队首顺序，在途成员不在此列。 */
     public List<Packet> waitingDownlinkPackets() {
         List<Packet> packets = new ArrayList<>();
@@ -215,23 +219,29 @@ public final class ApTrafficObserver {
 
     /** 当前决策可见的 C1 快照。即使决策与采样不同步，也不会关闭或修改 C1 的窗口。 */
     public List<Observation> preview(long nowNs, long totalTxNs, long totalRxNs) {
+        return preview(nowNs, totalTxNs, totalRxNs, false);
+    }
+
+    public List<Observation> preview(long nowNs, long totalTxNs, long totalRxNs, boolean urgentPrediction) {
         long durationNs = nowNs - windowStartNs;
         long tx = totalTxNs - previousTxNs;
         long rx = totalRxNs - previousRxNs;
-        if (nowNs < lastEventNs || durationNs <= 0 || durationNs > periodNs
+        if (nowNs < lastEventNs || durationNs < 0 || durationNs > periodNs || (durationNs == 0 && !urgentPrediction)
                 || tx < 0 || rx < 0 || tx > durationNs - rx) {
             throw new IllegalArgumentException("AP decision snapshot must be within the open C1 interval");
         }
         // 按已过时长缩放部分窗口的权重，避免刚过采样点的单包被当作整个周期的突发。
-        double weight = durationNs == periodNs ? ewmaAlpha
+        double weight = durationNs == 0 ? 0 : durationNs == periodNs ? ewmaAlpha
                 : -StrictMath.expm1(StrictMath.log1p(-ewmaAlpha) * ((double) durationNs / periodNs));
         List<Observation> rows = new ArrayList<>();
         for (Packet.Direction direction : Packet.Direction.values()) {
             for (AccessCategory category : AccessCategory.values()) {
                 Traffic local = traffic.get(direction).get(category);
                 Window window = new Window(local.window);
-                double arrivalPps = pps(window.arrivalPackets, durationNs);
-                double arrivalMbps = megabitsPerSecond(window.arrivalBytes, durationNs);
+                // 首窗的早期紧急决策已能单独看到队列。用完整周期归一化初始速率，避免用近零时间推断未来突发。
+                long rateDuration = urgentPrediction && !sampled ? periodNs : durationNs;
+                double arrivalPps = rateDuration == 0 ? 0 : pps(window.arrivalPackets, rateDuration);
+                double arrivalMbps = rateDuration == 0 ? 0 : megabitsPerSecond(window.arrivalBytes, rateDuration);
                 rows.add(new Observation(windowStartNs, nowNs, direction, category, local, window,
                         sampled ? smooth(local.ewmaPps, arrivalPps, weight) : arrivalPps,
                         sampled ? smooth(local.ewmaMbps, arrivalMbps, weight) : arrivalMbps, tx, rx));
@@ -441,10 +451,10 @@ public final class ApTrafficObserver {
         public long dataPpdus() { return window.dataPpdus; }
         public long ppduMembers() { return window.ppduMembers; }
         public double averageDepth() { return window.dataPpdus == 0 ? 0.0 : (double) window.ppduMembers / window.dataPpdus; }
-        public double arrivalPps() { return pps(window.arrivalPackets, endNs - startNs); }
-        public double arrivalMbps() { return megabitsPerSecond(window.arrivalBytes, endNs - startNs); }
-        public double deliveredPps() { return pps(window.deliveredPackets, endNs - startNs); }
-        public double deliveredMbps() { return megabitsPerSecond(window.deliveredBytes, endNs - startNs); }
+        public double arrivalPps() { return endNs == startNs ? 0 : pps(window.arrivalPackets, endNs - startNs); }
+        public double arrivalMbps() { return endNs == startNs ? 0 : megabitsPerSecond(window.arrivalBytes, endNs - startNs); }
+        public double deliveredPps() { return endNs == startNs ? 0 : pps(window.deliveredPackets, endNs - startNs); }
+        public double deliveredMbps() { return endNs == startNs ? 0 : megabitsPerSecond(window.deliveredBytes, endNs - startNs); }
         /** 当前窗口内已结算下行业务的成功比例。没有结算样本或上行时返回 -1。 */
         public double deliverySuccessRatio() {
             long terminal = window.confirmedPackets + window.droppedPackets;

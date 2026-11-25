@@ -5,6 +5,7 @@ import edu.suda.fttr.channel.ExternalInterference;
 import edu.suda.fttr.config.ChannelObservationInput;
 import edu.suda.fttr.config.SimulationConfig;
 import edu.suda.fttr.channel.AuxChannelScan;
+import edu.suda.fttr.energy.ApDeadlineModePolicy;
 import edu.suda.fttr.energy.ApEnergyModePolicy;
 import edu.suda.fttr.energy.ApModePredictor;
 import edu.suda.fttr.energy.ApQosLedger;
@@ -66,6 +67,7 @@ public final class SimulationContext {
     private long nextModeDecisionNs;
     private long modeDecisionEndNs;
     private ApEnergyModePolicy energyModePolicy;
+    private ApDeadlineModePolicy deadlineModePolicy;
     private long energyPredictionWindowNs;
     private ChannelObservationRuntime channelObservation;
     private boolean causalChannelSampling;
@@ -334,6 +336,10 @@ public final class SimulationContext {
                     config.apControl().energyMarginUj());
             energyPredictionWindowNs = config.apAnalysis().horizonNs();
         }
+        if (config.apControl().policies().values().stream().anyMatch(ApModeController.Policy::usesQos)) {
+            deadlineModePolicy = new ApDeadlineModePolicy(config.apAnalysis(), config.apSwitching(),
+                    config.apControl().qosMarginNs(), config.apControl().deferralLimitNs());
+        }
         if (!config.apAnalysis().predictionEnabled() && energyModePolicy == null) {
             return;
         }
@@ -359,11 +365,12 @@ public final class SimulationContext {
                     config.downlinkDecoder() == null ? null : config.downlinkDecoder().observedPerCurve());
             boolean passive = config.channelObservation() != null && config.channelObservation().passive();
             boolean externalCca = config.externalInterference() != null;
-            boolean predictChannel = policy == ApModeController.Policy.EC_AWARE && config.downlinkDecoder() != null;
+            boolean predictChannel = policy.usesChannel() && config.downlinkDecoder() != null;
             // D2 的本地 CCA 历史只累计本机实际侦听到的带宽。次信道仍须通过扫描或实际驻留获得。
             passive |= policy.usesPrediction() && externalCca;
             apPredictors.put(sfu.id(), new PredictionTrack(sfu, predictor, passive, mode.bandwidthMhz(),
-                    config.apAnalysis().revisedPrediction() || policy.usesPrediction(), policy, predictChannel, externalCca));
+                    config.apAnalysis().revisedPrediction() || policy.usesPrediction(), policy, predictChannel, externalCca,
+                    config.apControl().useLoadAwareService(policy)));
         }
     }
 
@@ -371,30 +378,108 @@ public final class SimulationContext {
         if (energyModePolicy == null) {
             return;
         }
-        long now = nowNanoseconds();
-        long horizon = Math.min(energyPredictionWindowNs, Long.MAX_VALUE - now);
-        apPredictors.forEach((sfuId, track) -> {
-            if (!track.policy.usesPrediction()) {
-                return;
+        for (PredictionTrack track : apPredictors.values()) {
+            if (track.policy.usesPrediction()) {
+                boolean due = track.deferred != null && track.deferred.timer.timeTicks() == nowTicks;
+                decideApMode(track, due ? "DEFER_EXPIRES" : "PERIODIC", true);
             }
-            ApTrafficObserver observer = apObservers.get(sfuId);
-            ApActivity.Airtime airtime = apActivities.get(sfuId).airtimeAt(now);
-            List<ApTrafficObserver.Observation> visible = observer.preview(now, airtime.txNs(), airtime.rxNs());
-            var evidence = track.mac.snapshot(now, observer.waitingDownlinkPackets());
-            var ready = track.sfu.modeSwitchReadiness(now, horizon);
-            boolean useCca = track.predictChannel && track.externalCca;
-            double[] busy = useCca ? track.sampleCca(now) : new double[] {0, 0};
-            int projectedMask = (1 << (ready.projectedMode.bandwidthMhz() / 20)) - 1;
-            boolean externalBusy = useCca && (track.sfu.observedExternalMask() & projectedMask) != 0;
-            var forecasts = track.predictor.predictControlWork(now, ready.sourceMode, visible,
-                    track.sfu::candidateChannelReport, busy[0], busy[1], evidence, track.predictChannel, track.mixedMode);
+        }
+    }
+
+    void applyQosRecheck(Event event) {
+        PredictionTrack track = apPredictors.get(event.sfuId());
+        if (event == track.recheck) {
+            track.recheck = null;
+            decideApMode(track, track.recheckReason, false);
+        } else if (track.deferred != null && event == track.deferred.timer) {
+            decideApMode(track, "DEFER_EXPIRES", false);
+        }
+    }
+
+    private void decideApMode(PredictionTrack track, String trigger, boolean periodic) {
+        long now = nowNanoseconds();
+        if (track.lastDecisionNs == now) {
+            return;
+        }
+        track.lastDecisionNs = now;
+        int sfuId = track.sfu.id();
+        long horizon = Math.min(energyPredictionWindowNs, Long.MAX_VALUE - now);
+        ApTrafficObserver observer = apObservers.get(sfuId);
+        ApActivity.Airtime airtime = apActivities.get(sfuId).airtimeAt(now);
+        var visible = observer.preview(now, airtime.txNs(), airtime.rxNs(), track.policy.usesQos());
+        var evidence = track.mac.snapshot(now, observer.waitingDownlinkPackets());
+        var ready = track.sfu.modeSwitchReadiness(now, horizon);
+        boolean useCca = track.predictChannel && track.externalCca;
+        double[] busy = useCca ? track.sampleCca(now, periodic) : new double[] {0, 0};
+        int projectedMask = (1 << (ready.projectedMode.bandwidthMhz() / 20)) - 1;
+        boolean externalBusy = useCca && (track.sfu.observedExternalMask() & projectedMask) != 0;
+        var forecasts = track.predictor.predictControlWork(now, ready.sourceMode, visible,
+                track.sfu::candidateChannelReport, busy[0], busy[1], evidence, track.predictChannel,
+                track.mixedMode || !periodic, track.loadAware);
+        if (periodic) {
+            // 紧急事件读取同一窗口已有证据。只有周期边界会消费该窗口并训练历史。
             track.mac.resetWindow();
             track.mixedMode = false;
-            var decision = energyModePolicy.choose(horizon, ready, externalBusy, forecasts);
+        }
+        var decision = energyModePolicy.choose(horizon, ready, externalBusy, forecasts);
+        if (track.policy.usesQos()) {
+            var fullReadiness = track.sfu.modeSwitchReadiness(now, Long.MAX_VALUE - now);
+            var qos = deadlineModePolicy.choose(now, decision, fullReadiness, externalBusy);
+            var outcome = applyQosModeTarget(track, trigger, qos, ready);
+            trace.recordApEnergyModeDecision(now, sfuId, track.policy, visible, decision, null, externalBusy);
+            trace.recordApQosModeDecision(now, sfuId, track.policy, trigger, qos, outcome);
+        } else {
             var outcome = track.sfu.applyModeTarget(decision.target, track.policy, this);
             trace.recordApEnergyModeDecision(now, sfuId, track.policy, visible, decision, outcome, externalBusy);
-            observeApMediumAfterEvent(sfuId);
-        });
+        }
+        observeApMediumAfterEvent(sfuId);
+    }
+
+    private ApModeSwitch.Outcome applyQosModeTarget(PredictionTrack track, String trigger,
+                                                    ApDeadlineModePolicy.Decision qos, ApModeSwitch.Readiness ready) {
+        long now = nowNanoseconds();
+        boolean canDefer = track.policy == ApModeController.Policy.ECQ_SDPS && qos.target == ApCapabilityMode.HCM
+                && ready.projectedMode == ApCapabilityMode.LCM && ready.activeSwitchNs == 0
+                && !track.sfu.hasPendingModeTarget(ApCapabilityMode.HCM);
+        DeferredHcm pending = track.deferred;
+        if (canDefer) {
+            long latest = now + Math.min(qos.maxDelayNs, Long.MAX_VALUE - now);
+            if (modeDecisionEndNs > 0) {
+                latest = Math.min(latest, modeDecisionEndNs);
+            }
+            long due = pending == null ? latest : Math.min(latest, pending.timer.timeTicks());
+            if (due > now) {
+                if (pending == null) {
+                    Event timer = scheduleAfterTicks(due - now, EventType.WIFI_AP_QOS_RECHECK, null, track.sfu.id());
+                    track.deferred = pending = new DeferredHcm(track.nextDeferralId++, now, timer);
+                    traceDeferral(track, pending, "OPEN", trigger, qos.maxDelayNs, 0);
+                } else if (due < pending.timer.timeTicks()) {
+                    cancel(pending.timer);
+                    pending.timer = scheduleAfterTicks(due - now, EventType.WIFI_AP_QOS_RECHECK, null, track.sfu.id());
+                    traceDeferral(track, pending, "ADVANCE", trigger, qos.maxDelayNs, 0);
+                } else {
+                    traceDeferral(track, pending, "MERGE", trigger, qos.maxDelayNs, 0);
+                }
+                return null;
+            }
+        }
+
+        track.deferred = null;
+        if (pending != null) {
+            cancel(pending.timer);
+        }
+        ApModeSwitch.Outcome outcome = track.sfu.applyModeTarget(qos.target, track.policy, this);
+        if (pending != null) {
+            String phase = qos.target == ApCapabilityMode.HCM && outcome.action() == ApModeSwitch.Action.REQUESTED
+                    ? "RELEASE" : "CANCEL";
+            traceDeferral(track, pending, phase, trigger, qos.maxDelayNs, outcome.requestId());
+        }
+        return outcome;
+    }
+
+    private void traceDeferral(PredictionTrack track, DeferredHcm pending, String phase, String trigger, long allowed, int switchId) {
+        trace.recordApHcmDeferral(nowNanoseconds(), track.sfu.id(), pending.id, pending.openedNs,
+                pending.timer.timeTicks(), phase, trigger, allowed, switchId);
     }
 
     void observeApMediumAfterEvent(int sfuId) {
@@ -717,7 +802,33 @@ public final class SimulationContext {
             PredictionTrack track = apPredictors.get(sfuId);
             if (track != null && track.mac != null && !event.packet().isUplink()) {
                 track.mac.queueChanged(event);
+                considerQosRecheck(sfuId, track, event);
             }
+        }
+    }
+
+    private void considerQosRecheck(int sfuId, PredictionTrack track, ApTrafficObserver.QueueEvent event) {
+        long now = event.timeNs();
+        if (!track.policy.usesQos() || (modeDecisionEndNs > 0 && now >= modeDecisionEndNs) || track.lastDecisionNs == now) {
+            return;
+        }
+        boolean ingress = event.kind() == ApTrafficObserver.Kind.ENQUEUED || event.kind() == ApTrafficObserver.Kind.REQUEUED;
+        String reason;
+        if (ingress && deadlineModePolicy.urgent(event.packet(), now, modeDecisionPeriodNs)) {
+            reason = "URGENT_QUEUE";
+        } else if (track.deferred != null && ingress) {
+            reason = "DEFER_QUEUE_CHANGED";
+        } else if (track.deferred != null && (event.kind() == ApTrafficObserver.Kind.CONFIRMED
+                || event.kind() == ApTrafficObserver.Kind.DROPPED) && !apObservers.get(sfuId).hasWaitingDownlink()) {
+            reason = "QUEUE_DRAIN";
+        } else {
+            return;
+        }
+        if (track.recheck == null) {
+            track.recheck = scheduleAfterTicks(0, EventType.WIFI_AP_QOS_RECHECK, null, sfuId);
+            track.recheckReason = reason;
+        } else if (reason.equals("URGENT_QUEUE")) {
+            track.recheckReason = reason;
         }
     }
 
@@ -1108,12 +1219,18 @@ public final class SimulationContext {
         private final ApMacEvidence mac;
         private final ApModeController.Policy policy;
         private final boolean predictChannel, externalCca;
+        private final boolean loadAware;
         private boolean mixedMode;
+        private long lastDecisionNs = -1;
+        private Event recheck;
+        private String recheckReason;
+        private DeferredHcm deferred;
+        private long nextDeferralId = 1;
         private long startNs, previousNs, primaryBusyNs, wideBusyNs, wideObservedNs;
         private int accessMask, busyMask;
 
         private PredictionTrack(Sfu sfu, ApModePredictor predictor, boolean passive, int bandwidthMhz, boolean revised,
-                                ApModeController.Policy policy, boolean predictChannel, boolean externalCca) {
+                                ApModeController.Policy policy, boolean predictChannel, boolean externalCca, boolean loadAware) {
             this.sfu = sfu;
             this.predictor = predictor;
             this.passive = passive;
@@ -1121,6 +1238,7 @@ public final class SimulationContext {
             this.policy = policy;
             this.predictChannel = predictChannel;
             this.externalCca = externalCca;
+            this.loadAware = loadAware;
             accessMask = (1 << (bandwidthMhz / 20)) - 1;
         }
 
@@ -1139,15 +1257,24 @@ public final class SimulationContext {
         }
 
         private double[] sampleCca(long endNs) {
+            return sampleCca(endNs, true);
+        }
+
+        private double[] sampleCca(long endNs, boolean reset) {
             if (!passive) {
                 return new double[] {-1, -1};
             }
             advanceCca(endNs);
             long duration = endNs - startNs;
+            if (duration == 0) {
+                return new double[] {-1, -1};
+            }
             double primary = (double) primaryBusyNs / duration;
             double wide = wideObservedNs == duration ? (double) wideBusyNs / duration : estimatedWideBusy(endNs, primary);
-            startNs = endNs;
-            primaryBusyNs = wideBusyNs = wideObservedNs = 0;
+            if (reset) {
+                startNs = endNs;
+                primaryBusyNs = wideBusyNs = wideObservedNs = 0;
+            }
             return new double[] {primary, wide};
         }
 
@@ -1162,6 +1289,17 @@ public final class SimulationContext {
                 idleFraction *= 1 - scan.get().busyFraction();
             }
             return 1 - idleFraction;
+        }
+    }
+
+    private static final class DeferredHcm {
+        private final long id, openedNs;
+        private Event timer;
+
+        private DeferredHcm(long id, long openedNs, Event timer) {
+            this.id = id;
+            this.openedNs = openedNs;
+            this.timer = timer;
         }
     }
 

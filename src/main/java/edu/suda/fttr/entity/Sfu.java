@@ -259,6 +259,10 @@ public final class Sfu {
         return outcome;
     }
 
+    public boolean hasPendingModeTarget(ApCapabilityMode target) {
+        return modeSwitch.isPending(target);
+    }
+
     /** 从当前已占有的交换估算就绪时间。未知的解码、干扰结束和后续发送不在本接口内。 */
     public ApModeSwitch.Readiness modeSwitchReadiness(long nowNs, long horizonNs) {
         ApCapabilityMode current = modeSwitch.mode();

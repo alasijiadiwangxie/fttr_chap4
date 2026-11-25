@@ -116,6 +116,30 @@ final class ApServicePredictionTest {
         assertEquals(77.6 * (10.50 - 7.62) + 28 * (8.70 - 7.62), candidate.incrementalEnergyUj, 1e-10);
     }
 
+    @Test
+    void loadAwareDepthDoesNotConfuseALightQueueWithSaturatedHcmCapacity() {
+        var predictor = predictor(null, null, true);
+        var observer = new ApTrafficObserver(5_000_000, .25);
+        for (int id = 1; id <= 35; id++) {
+            Packet packet = packet(id, 1);
+            observer.enqueue(packet, 0);
+            observer.start(packet, 0);
+            observer.deliver(packet, 0);
+            observer.confirm(packet, 0);
+        }
+        var snapshot = observer.sample(5_000_000, 0, 0);
+        var frame = new ApModePredictor.Transmission(Packet.Direction.DL, AccessCategory.BE,
+                1, 1, 1, 1500, 77_600, 28_000, 121_600);
+        var evidence = new ApModePredictor.Evidence(List.of(), java.util.Collections.nCopies(35, frame), 0, 0, 0);
+        var legacy = predictor.predictControlWork(5_000_000, HCM, snapshot, EMPTY, 0, 0, evidence, false, false).get(1);
+        var corrected = predictor.predictControlWork(5_000_000, HCM, snapshot, EMPTY, 0, 0, evidence, false, true, true).get(1);
+        assertEquals(1, legacy.expected.ampduDepth);
+        assertEquals(legacy.expected.demandBits, corrected.expected.demandBits, 1e-8);
+        assertTrue(corrected.expected.ampduDepth > 1);
+        assertTrue(corrected.saturatedMbps > corrected.expected.successBits / corrected.expected.workNs * 1000);
+        assertTrue(corrected.saturatedDepth > corrected.expected.ampduDepth);
+    }
+
     private static Packet packet(int id, int sta) {
         return new Packet(id, 1500, 0, AccessCategory.BE, sta);
     }

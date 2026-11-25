@@ -2,6 +2,7 @@ package edu.suda.fttr.energy;
 
 import edu.suda.fttr.channel.ChannelReport;
 import edu.suda.fttr.energy.ApModePredictor.Confidence;
+import edu.suda.fttr.energy.ApModePredictor.DeadlineBatch;
 import edu.suda.fttr.energy.ApModePredictor.Evidence;
 import edu.suda.fttr.energy.ApModePredictor.Feasibility;
 import edu.suda.fttr.energy.ApModePredictor.FeedbackLookup;
@@ -93,31 +94,32 @@ final class ObservedServicePrediction {
 
     List<ServiceForecast> controlWork(long nowNs, ApCapabilityMode current, List<Observation> observations,
                                       FeedbackLookup feedback, double primaryBusy, double wideBusy, Evidence evidence,
-                                      boolean useChannel, boolean mixedMode) {
+                                      boolean useChannel, boolean mixedMode, boolean loadAware) {
         if (!mixedMode) {
             updateHistory(histories.get(current), evidence);
         }
         Map<AccessCategory, List<Packet>> queues = groupQueues(evidence);
         Input input = useChannel ? Input.CONTROL_CHANNEL : Input.CONTROL_ENERGY;
         return List.of(controlMode(nowNs, current, ApCapabilityMode.LCM, observations, feedback,
-                        primaryBusy, primaryBusy, queues, input),
+                        primaryBusy, primaryBusy, queues, input, loadAware),
                 controlMode(nowNs, current, ApCapabilityMode.HCM, observations, feedback,
-                        wideBusy, primaryBusy, queues, input));
+                        wideBusy, primaryBusy, queues, input, loadAware));
     }
 
     private ServiceForecast controlMode(long startNs, ApCapabilityMode current, ApCapabilityMode mode,
                                         List<Observation> observations, FeedbackLookup feedback, double busy,
-                                        double primary, Map<AccessCategory, List<Packet>> queues, Input input) {
+                                        double primary, Map<AccessCategory, List<Packet>> queues, Input input, boolean loadAware) {
         long horizon = Math.min(settings.horizonNs(), Long.MAX_VALUE - startNs);
         Budget expected = budget(startNs, horizon, 0, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.EXPECTED, input);
+                busy, primary, Estimate.EXPECTED, input, loadAware);
         Budget conservative = budget(startNs, horizon, 0, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.CONSERVATIVE, input);
+                busy, primary, Estimate.CONSERVATIVE, input, loadAware);
         Budget optimistic = budget(startNs, horizon, 0, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.OPTIMISTIC, input);
+                busy, primary, Estimate.OPTIMISTIC, input, loadAware);
         boolean incomplete = expected.packets > 0 && (expected.unknownBusy || expected.missingFeedback);
         return new ServiceForecast(mode, expected.confidence, busy, incomplete, expected.serviceWork(),
-                conservative.serviceWork(), optimistic.serviceWork());
+                conservative.serviceWork(), optimistic.serviceWork(), conservative.deadlineBatches,
+                loadAware ? expected.saturatedMbps() : -1, loadAware ? expected.saturatedDepth() : -1);
     }
 
     private static Map<AccessCategory, List<Packet>> groupQueues(Evidence evidence) {
@@ -167,11 +169,11 @@ final class ObservedServicePrediction {
                 : ApEnergyModel.switchEnergyUj(switchNs, transition.powerW()).doubleValue();
 
         Budget expected = budget(startNs, horizon, switchNs, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.EXPECTED, Input.C3);
+                busy, primary, Estimate.EXPECTED, Input.C3, false);
         Budget conservative = budget(startNs, horizon, switchNs, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.CONSERVATIVE, Input.C3);
+                busy, primary, Estimate.CONSERVATIVE, Input.C3, false);
         Budget optimistic = budget(startNs, horizon, switchNs, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.OPTIMISTIC, Input.C3);
+                busy, primary, Estimate.OPTIMISTIC, Input.C3, false);
         List<QosForecast> qos = new ArrayList<>();
         for (int index = 0; index < observations.size(); index++) {
             Observation observation = observations.get(index);
@@ -207,11 +209,12 @@ final class ObservedServicePrediction {
 
     private Budget budget(long startNs, long horizon, long switchNs, ApCapabilityMode current, ApCapabilityMode mode,
                           List<Observation> observations, Map<AccessCategory, List<Packet>> queues,
-                          FeedbackLookup feedback, double busy, double primary, Estimate estimate, Input input) {
+                          FeedbackLookup feedback, double busy, double primary, Estimate estimate, Input input,
+                          boolean loadAware) {
         ModeHistory prior = histories.get(mode);
         ModeHistory measured = histories.get(current);
         double blocked = busyEstimate(busy, primary, estimate);
-        Budget total = new Budget(horizon, (horizon - switchNs) * (1 - blocked), busy < 0, blocked);
+        Budget total = new Budget(horizon, (horizon - switchNs) * (1 - blocked), busy < 0, blocked, loadAware);
         Map<Integer, WirelessPhy> stations = profiles.get(mode);
         for (Observation observation : observations) {
             Flow flow = new Flow(observation, horizon, input);
@@ -236,14 +239,24 @@ final class ObservedServicePrediction {
                     }
                 }
                 Link link = new Link(Packet.Direction.DL, observation.category(), head.staId());
-                addBatch(flow, depth, (double) bytes, dataNs(phy, depth, bytes, aggregateBytes), depth,
-                        errorFor(startNs, feedback, phy, link, Math.max(1, bytes / depth), prior, measured, estimate, input),
-                        prior, measured, estimate);
+                ErrorEstimate error = errorFor(startNs, feedback, phy, link, Math.max(1, bytes / depth),
+                        prior, measured, estimate, input);
+                Batch batch = batch(depth, dataNs(phy, depth, bytes, aggregateBytes), error.value,
+                        contentionNs(link.ac, prior, measured, estimate));
+                addBatch(flow, depth, bytes, depth, error, batch);
+                if (input != Input.C3 && estimate == Estimate.CONSERVATIVE) {
+                    total.deadlineBatches.add(new DeadlineBatch(local.subList(offset, offset + depth),
+                            batch.airNs * batch.attempts, batch.success));
+                }
+                if (loadAware) {
+                    // 当前 FIFO 的同伴顺序已知，这部分容量保留真实可装载的批次。
+                    total.addSaturated(depth, depth, bytes, batch);
+                }
                 offset += depth;
             }
             double remaining = Math.max(0, flow.demand - local.size());
             if (remaining > 0) {
-                addPredictedArrivals(flow, remaining, stations, startNs, feedback, prior, measured, estimate, input);
+                addPredictedArrivals(flow, remaining, stations, startNs, feedback, prior, measured, estimate, input, total);
             }
             total.add(flow);
         }
@@ -253,14 +266,15 @@ final class ObservedServicePrediction {
 
     private void addPredictedArrivals(Flow flow, double remaining, Map<Integer, WirelessPhy> stations, long startNs,
                                       FeedbackLookup feedback, ModeHistory prior, ModeHistory measured, Estimate kind,
-                                      Input input) {
+                                      Input input, Budget total) {
         Packet.Direction direction = flow.observation.direction();
         AccessCategory ac = flow.observation.category();
         double shares = stations.keySet().stream().mapToDouble(sta -> flowWeight(measured, direction, ac, sta)).sum();
         for (Map.Entry<Integer, WirelessPhy> entry : stations.entrySet()) {
             int sta = entry.getKey();
             WirelessPhy phy = entry.getValue();
-            double count = remaining * flowWeight(measured, direction, ac, sta) / shares;
+            double weight = flowWeight(measured, direction, ac, sta);
+            double count = remaining * weight / shares;
             if (count <= 0) {
                 continue;
             }
@@ -268,12 +282,45 @@ final class ObservedServicePrediction {
             LinkHistory history = prior.links.getOrDefault(link, measured.links.get(link));
             int bytes = flow.forecastBytes;
             int depth = history == null ? 1 : (int) Math.round(history.depth);
-            depth = Math.min(depth, Math.max(1, (int) Math.ceil(count)));
+            ErrorEstimate error = errorFor(startNs, feedback, phy, link, bytes, prior, measured, kind, input);
+            double access = contentionNs(ac, prior, measured, kind);
+            if (total.loadAware && direction == Packet.Direction.DL) {
+                // 两档用同一目标流量和接收者布局。候选用自身交换时长推导能跟上负载的最小深度。
+                double peerShare = weight / shares;
+                int maxDepth = ampdu == null ? 1 : ampdu.maxMpdus();
+                int contiguous = peerShare == 1 ? maxDepth
+                        : (int) Math.max(1, Math.min(maxDepth, Math.round(1 / (1 - peerShare))));
+                int cap = fittedDepth(phy, contiguous, bytes);
+                int limited = Math.min(cap, Math.max(1, (int) Math.ceil(count)));
+                double offeredPps = flow.observation.ewmaArrivalPps() * peerShare;
+                depth = sustainableDepth(phy, bytes, offeredPps, limited, error.value, access, total.busyFraction);
+                total.addSaturated(cap, count, (double) cap * bytes, equalBatch(phy, cap, bytes, error.value, access));
+            } else {
+                depth = Math.min(depth, Math.max(1, (int) Math.ceil(count)));
+            }
             depth = fittedDepth(phy, depth, bytes);
-            int aggregateBytes = depth == 1 ? 0 : equalMpduBytes(phy, depth, bytes);
-            addBatch(flow, depth, (double) depth * bytes, dataNs(phy, depth, bytes, aggregateBytes), count,
-                    errorFor(startNs, feedback, phy, link, bytes, prior, measured, kind, input), prior, measured, kind);
+            Batch batch = equalBatch(phy, depth, bytes, error.value, access);
+            addBatch(flow, depth, (double) depth * bytes, count, error, batch);
+            if (total.loadAware && direction == Packet.Direction.UL) {
+                // AP 不知道 STA 的私有队列，沿用实际可见的上行批次深度。
+                total.addSaturated(depth, count, (double) depth * bytes, batch);
+            }
         }
+    }
+
+    private int sustainableDepth(WirelessPhy phy, int bytes, double pps, int limit, double error,
+                                 double access, double busy) {
+        for (int depth = 1; depth < limit; depth++) {
+            Batch batch = equalBatch(phy, depth, bytes, error, access);
+            if (depth * batch.success * (1 - busy) * 1e9 >= pps * batch.attempts * batch.airNs) {
+                return depth;
+            }
+        }
+        return limit;
+    }
+
+    private Batch equalBatch(WirelessPhy phy, int depth, int bytes, double error, double access) {
+        return batch(depth, dataNs(phy, depth, bytes, depth == 1 ? 0 : equalMpduBytes(phy, depth, bytes)), error, access);
     }
 
     private static double flowWeight(ModeHistory current, Packet.Direction direction, AccessCategory ac, int sta) {
@@ -281,30 +328,30 @@ final class ObservedServicePrediction {
         return history == null ? 1 : Math.max(1, history.attempted);
     }
 
-    private void addBatch(Flow flow, int depth, double bytes, long dataNs, double count, ErrorEstimate error,
-                          ModeHistory prior, ModeHistory measured, Estimate kind) {
-        double failure = error.value;
+    private Batch batch(int depth, long dataNs, double failure, double access) {
         double deliveredProbability = failure == 1 ? 0 : failure == 0 ? 1
                 : -StrictMath.expm1(attemptsLimit * StrictMath.log(failure));
         double attempts = failure == 1 ? attemptsLimit : deliveredProbability / (1 - failure);
-        double exchanges = count * attempts / depth;
         double responseChance = 1 - StrictMath.pow(failure, depth);
         double responseNs = depth > 1 ? exchange.blockAckNs() : exchange.ackNs();
-        double access = contentionNs(flow.observation.category(), prior, measured, kind);
         double cycle = dataNs + responseChance * (exchange.sifsNs() + responseNs)
                 + (1 - responseChance) * timeoutNs + access;
-        double acknowledged = responseChance * responseNs;
+        return new Batch(cycle, dataNs, responseChance * responseNs, attempts, deliveredProbability);
+    }
+
+    private static void addBatch(Flow flow, int depth, double bytes, double count, ErrorEstimate error, Batch batch) {
+        double exchanges = count * batch.attempts / depth;
         boolean uplink = flow.observation.direction() == Packet.Direction.UL;
-        flow.work += exchanges * cycle;
-        flow.tx += exchanges * (uplink ? acknowledged : dataNs);
-        flow.rx += exchanges * (uplink ? dataNs : acknowledged);
+        flow.work += exchanges * batch.airNs;
+        flow.tx += exchanges * (uplink ? batch.responseNs : batch.dataNs);
+        flow.rx += exchanges * (uplink ? batch.dataNs : batch.responseNs);
         flow.frames += exchanges;
-        flow.attempts += count * attempts;
+        flow.attempts += count * batch.attempts;
         flow.offeredBits += count * bytes * 8 / depth;
-        flow.attemptedBits += count * bytes * 8 * attempts / depth;
-        flow.success += count * bytes * 8 * deliveredProbability / depth;
-        flow.successPackets += count * deliveredProbability;
-        flow.failedFirst += count * failure;
+        flow.attemptedBits += count * bytes * 8 * batch.attempts / depth;
+        flow.success += count * bytes * 8 * batch.success / depth;
+        flow.successPackets += count * batch.success;
+        flow.failedFirst += count * error.value;
         flow.confidence = worse(flow.confidence, error.confidence);
     }
 
@@ -473,18 +520,38 @@ final class ObservedServicePrediction {
         private final double available;
         private final boolean unknownBusy;
         private final double busyFraction;
+        private final boolean loadAware;
         private final List<Flow> flows = new ArrayList<>();
+        private final List<DeadlineBatch> deadlineBatches = new ArrayList<>();
         private Confidence confidence = Confidence.IDLE;
         private double packets, queued, offeredBits, attemptedBits, arrivalBits, success, frames, attempts, work, tx, rx;
         private double served;
         private double failedFirst;
         private boolean missingFeedback;
+        private double saturatedBits, saturatedNs, saturatedFrames, saturatedMpdus;
 
-        private Budget(long horizon, double available, boolean unknownBusy, double busyFraction) {
+        private Budget(long horizon, double available, boolean unknownBusy, double busyFraction, boolean loadAware) {
             this.horizon = horizon;
             this.available = available;
             this.unknownBusy = unknownBusy;
             this.busyFraction = busyFraction;
+            this.loadAware = loadAware;
+        }
+
+        private void addSaturated(int depth, double count, double bytes, Batch batch) {
+            double exchanged = count * batch.attempts / depth;
+            saturatedBits += count * bytes * 8 * batch.success / depth;
+            saturatedNs += exchanged * batch.airNs;
+            saturatedFrames += exchanged;
+            saturatedMpdus += count * batch.attempts;
+        }
+
+        private double saturatedMbps() {
+            return saturatedNs == 0 ? 0 : saturatedBits / saturatedNs * (1 - busyFraction) * 1_000;
+        }
+
+        private double saturatedDepth() {
+            return saturatedFrames == 0 ? 0 : saturatedMpdus / saturatedFrames;
         }
 
         private void add(Flow flow) {
@@ -518,6 +585,18 @@ final class ObservedServicePrediction {
 
         private double throughputMbps() {
             return success * served * 1_000 / horizon;
+        }
+    }
+
+    private static final class Batch {
+        private final double airNs, dataNs, responseNs, attempts, success;
+
+        private Batch(double airNs, double dataNs, double responseNs, double attempts, double success) {
+            this.airNs = airNs;
+            this.dataNs = dataNs;
+            this.responseNs = responseNs;
+            this.attempts = attempts;
+            this.success = success;
         }
     }
 

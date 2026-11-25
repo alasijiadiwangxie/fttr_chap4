@@ -122,6 +122,9 @@ public final class ConfigLoader {
     private static final String AP_CONTROL_ALPHA = "wifi.ap.control.ewma.alpha";
     private static final String AP_CONTROL_THRESHOLD = "wifi.ap.control.threshold.mbps";
     private static final String AP_CONTROL_MARGIN = "wifi.ap.control.energy.margin.uj";
+    private static final String AP_CONTROL_SERVICE_MODEL = "wifi.ap.control.service.model";
+    private static final String AP_CONTROL_QOS_MARGIN_US = "wifi.ap.control.qos.margin.us";
+    private static final String AP_CONTROL_DEFER_LIMIT_US = "wifi.ap.control.defer.max.us";
     private static final Set<String> KEYS = Set.of(
             FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", DOWNLINK_PROPAGATION_US,
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
@@ -142,6 +145,7 @@ public final class ConfigLoader {
             LCM_POWER + "idle.w", LCM_POWER + "tx.w", LCM_POWER + "rx.w",
             HCM_POWER + "idle.w", HCM_POWER + "tx.w", HCM_POWER + "rx.w",
             AP_CONTROL_POLICY, AP_CONTROL_PERIOD_US, AP_CONTROL_ALPHA, AP_CONTROL_THRESHOLD, AP_CONTROL_MARGIN,
+            AP_CONTROL_SERVICE_MODEL, AP_CONTROL_QOS_MARGIN_US, AP_CONTROL_DEFER_LIMIT_US,
             AP_SWITCH_ENABLED, LCM_TO_HCM + "delay.us", LCM_TO_HCM + "power.w",
             HCM_TO_LCM + "delay.us", HCM_TO_LCM + "power.w");
     private static final Set<String> PHY_KEYS = Set.of(
@@ -266,7 +270,7 @@ public final class ConfigLoader {
         WifiAccessMode accessMode = readWifiAccessMode(properties);
         WifiFrameExchange frameExchange = readWifiFrameExchange(properties, wirelessPhy, edcaParameters.sifsUs());
         if (apControl.needsPrediction() && (frameExchange == null || accessMode != WifiAccessMode.EDCA_MULTI_AC)) {
-            throw new IllegalArgumentException("e-aware and ec-aware require edca-multi-ac and data-sifs-ack");
+            throw new IllegalArgumentException("Predictive AP control requires edca-multi-ac and data-sifs-ack");
         }
         if (apAnalysis != null && apAnalysis.predictionEnabled() && frameExchange == null) {
             throw new IllegalArgumentException(AP_PREDICTION_ENABLED + " requires data-sifs-ack");
@@ -740,7 +744,19 @@ public final class ConfigLoader {
                 Double.toString(ApModeController.DEFAULT_THRESHOLD_MBPS)), AP_CONTROL_THRESHOLD);
         double margin = parseNonNegativeDouble(properties.getProperty(AP_CONTROL_MARGIN,
                 Double.toString(ApModeController.DEFAULT_ENERGY_MARGIN_UJ)), AP_CONTROL_MARGIN);
-        return new ApModeController.Settings(policies, periodNs, alpha, threshold, margin);
+        String model = properties.getProperty(AP_CONTROL_SERVICE_MODEL, "auto").strip();
+        ApModeController.ServiceModel serviceModel;
+        switch (model) {
+            case "auto": serviceModel = ApModeController.ServiceModel.AUTO; break;
+            case "d2-original": serviceModel = ApModeController.ServiceModel.D2_ORIGINAL; break;
+            case "load-aware": serviceModel = ApModeController.ServiceModel.LOAD_AWARE; break;
+            default: throw new IllegalArgumentException(AP_CONTROL_SERVICE_MODEL + " must be auto, d2-original or load-aware");
+        }
+        long qosMargin = readDurationNs(properties, AP_CONTROL_QOS_MARGIN_US,
+                Long.toString(ApModeController.DEFAULT_QOS_MARGIN_NS / 1000), false);
+        long deferLimit = readDurationNs(properties, AP_CONTROL_DEFER_LIMIT_US,
+                Long.toString(ApModeController.DEFAULT_DEFERRAL_LIMIT_NS / 1000), false);
+        return new ApModeController.Settings(policies, periodNs, alpha, threshold, margin, serviceModel, qosMargin, deferLimit);
     }
 
     private static ApModeController.Policy readApPolicy(Properties properties, String key, String fallback) {
@@ -750,7 +766,7 @@ public final class ConfigLoader {
                 return policy;
             }
         }
-        throw new IllegalArgumentException(key + " must be off, always-lcm, always-hcm, fixed-threshold, e-aware or ec-aware");
+        throw new IllegalArgumentException(key + " must be off, always-lcm, always-hcm, fixed-threshold, e-aware, ec-aware, ecq-aware or ecq-sdps");
     }
 
     private static void validateApControl(ApModeController.Settings control, ApModeSwitch.Settings switching) {

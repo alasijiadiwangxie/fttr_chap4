@@ -103,8 +103,17 @@ public final class ApModePredictor {
                                                     List<ApTrafficObserver.Observation> observations,
                                                     FeedbackLookup feedback, double primaryBusy, double wideBusy,
                                                     Evidence evidence, boolean useChannel, boolean mixedMode) {
+        return predictControlWork(nowNs, currentMode, observations, feedback, primaryBusy, wideBusy, evidence,
+                useChannel, mixedMode, false);
+    }
+
+    public List<ServiceForecast> predictControlWork(long nowNs, ApCapabilityMode currentMode,
+                                                    List<ApTrafficObserver.Observation> observations,
+                                                    FeedbackLookup feedback, double primaryBusy, double wideBusy,
+                                                    Evidence evidence, boolean useChannel, boolean mixedMode,
+                                                    boolean loadAware) {
         return revised.controlWork(nowNs, currentMode, observations, feedback, primaryBusy, wideBusy,
-                evidence, useChannel, mixedMode);
+                evidence, useChannel, mixedMode, loadAware);
     }
 
     public static final class ServiceForecast {
@@ -113,10 +122,20 @@ public final class ApModePredictor {
         public final double observedBusyFraction;
         public final boolean channelIncomplete;
         public final ServiceWork expected, conservative, optimistic;
+        public final List<DeadlineBatch> deadlineBatches;
+        public final double saturatedMbps, saturatedDepth;
 
         ServiceForecast(ApCapabilityMode mode, Confidence confidence, double observedBusyFraction,
                         boolean channelIncomplete, ServiceWork expected, ServiceWork conservative,
                         ServiceWork optimistic) {
+            this(mode, confidence, observedBusyFraction, channelIncomplete, expected, conservative, optimistic,
+                    List.of(), -1, -1);
+        }
+
+        ServiceForecast(ApCapabilityMode mode, Confidence confidence, double observedBusyFraction,
+                        boolean channelIncomplete, ServiceWork expected, ServiceWork conservative,
+                        ServiceWork optimistic, List<DeadlineBatch> deadlineBatches, double saturatedMbps,
+                        double saturatedDepth) {
             this.mode = mode;
             this.confidence = confidence;
             this.observedBusyFraction = observedBusyFraction;
@@ -124,6 +143,21 @@ public final class ApModePredictor {
             this.expected = expected;
             this.conservative = conservative;
             this.optimistic = optimistic;
+            this.deadlineBatches = List.copyOf(deadlineBatches);
+            this.saturatedMbps = saturatedMbps;
+            this.saturatedDepth = saturatedDepth;
+        }
+    }
+
+    /** 按实际待发队列组织的完整交换。一次聚合的成员共用其预计完成时刻。 */
+    public static final class DeadlineBatch {
+        public final List<Packet> packets;
+        public final double workNs, successProbability;
+
+        DeadlineBatch(List<Packet> packets, double workNs, double successProbability) {
+            this.packets = List.copyOf(packets);
+            this.workNs = workNs;
+            this.successProbability = successProbability;
         }
     }
 

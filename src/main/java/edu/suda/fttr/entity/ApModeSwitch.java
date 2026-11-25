@@ -109,6 +109,10 @@ public final class ApModeSwitch {
         return active == null ? mode : active.target;
     }
 
+    public boolean isPending(ApCapabilityMode target) {
+        return pending.peekFirst() != null && pending.peekFirst().target == target;
+    }
+
     public long remainingSwitchNs(long nowNs) {
         return active == null ? 0 : settings.profileFrom(mode).delayNs - (nowNs - startNs);
     }

@@ -5,6 +5,7 @@ import edu.suda.fttr.channel.ChannelReport;
 import edu.suda.fttr.channel.ChannelTruth;
 import edu.suda.fttr.config.ChannelObservationInput;
 import edu.suda.fttr.energy.ApEnergyModePolicy;
+import edu.suda.fttr.energy.ApDeadlineModePolicy;
 import edu.suda.fttr.energy.ApModePredictor;
 import edu.suda.fttr.energy.ApQosLedger;
 import edu.suda.fttr.entity.AccessCategory;
@@ -132,6 +133,7 @@ public final class TraceLogger {
             case WIFI_AP_SWITCH_REQUEST:
             case WIFI_AP_SWITCH_END:
             case WIFI_AP_MODE_DECISION:
+            case WIFI_AP_QOS_RECHECK:
             case WIFI_EXTERNAL_CCA_EDGE:
             case WIFI_CHANNEL_MANAGEMENT_START:
             case WIFI_CHANNEL_MANAGEMENT_END:
@@ -898,6 +900,9 @@ public final class TraceLogger {
             var forecast = candidate.forecast;
             var work = forecast.expected;
             var cost = candidate.expected;
+            String loadAware = forecast.saturatedMbps < 0 ? "" : " service_model=load-aware saturated_service_mbps="
+                    + forecast.saturatedMbps + " saturated_ampdu_depth=" + forecast.saturatedDepth
+                    + " predicted_goodput_mbps=" + cost.successBits * 1_000 / decision.horizonNs;
             output.printf(Locale.ROOT, "event=WIFI_AP_ENERGY_MODE_DECISION t_ns=%d sfu_id=%d policy=%s "
                             + "window_start_ns=%d horizon_ns=%d arrival_mbps=%s ewma_mbps=%s dl_queue=%d dl_inflight=%d "
                             + "current_mode=%s projected_mode=%s candidate_mode=%s target_mode=%s reason=%s action=%s switch_id=%d "
@@ -909,10 +914,11 @@ public final class TraceLogger {
                             + "effective_service_mbps=%s success_bits=%s lower_success_bits=%s upper_success_bits=%s "
                             + "unserved_bits=%s ending_queue_packets=%s tx_ns=%s rx_ns=%s idle_ns=%s "
                             + "tx_uj=%s rx_uj=%s idle_uj=%s active_switch_uj=%s new_switch_uj=%s window_uj=%s "
-                            + "tail_ns=%s tail_uj=%s total_cost_uj=%s low_cost_uj=%s high_cost_uj=%s%n",
+                            + "tail_ns=%s tail_uj=%s total_cost_uj=%s low_cost_uj=%s high_cost_uj=%s%s%n",
                     nowNs, sfuId, policy.key(), traffic.get(0).startNs(), decision.horizonNs, arrival, ewma, queue, inflight,
                     ready.sourceMode, ready.projectedMode, forecast.mode, decision.target, decision.reason,
-                    outcome.action(), outcome.requestId(), forecast.confidence, forecast.channelIncomplete,
+                    outcome == null ? "QOS_FILTERED" : outcome.action(), outcome == null ? 0 : outcome.requestId(),
+                    forecast.confidence, forecast.channelIncomplete,
                     forecast.observedBusyFraction, work.busyFraction, externalBusy, work.meanFailure, work.ampduDepth,
                     decision.marginUj, ready.waitNs, ready.txNs, ready.rxNs, ready.activeSwitchNs, ready.timingUncertain,
                     cost.ccaWaitNs, cost.newSwitchNs, cost.transitionFits, cost.availableNs, work.arrivalBits, work.demandPackets,
@@ -920,8 +926,40 @@ public final class TraceLogger {
                     cost.successBits, candidate.lowerSuccessBits, candidate.upperSuccessBits, cost.unservedBits,
                     cost.endingQueuePackets, cost.txNs, cost.rxNs, cost.idleNs, cost.txUj, cost.rxUj, cost.idleUj,
                     cost.activeUj, cost.newSwitchUj, cost.windowUj, cost.tailNs, cost.tailUj, cost.totalUj,
-                    candidate.lowCostUj, candidate.highCostUj);
+                    candidate.lowCostUj, candidate.highCostUj, loadAware);
         }
+    }
+
+    public void recordApQosModeDecision(long nowNs, int sfuId, ApModeController.Policy policy, String trigger,
+                                       ApDeadlineModePolicy.Decision decision, ApModeSwitch.Outcome outcome) {
+        for (var candidate : decision.candidates) {
+            output.printf(Locale.ROOT, "event=WIFI_AP_QOS_MODE_DECISION t_ns=%d sfu_id=%d policy=%s trigger=%s "
+                            + "candidate_mode=%s target_mode=%s qos_status=%s uncertain=%b qos_reason=%s "
+                            + "action=%s switch_id=%d max_delay_ns=%d qos_local_wait_ns=%d qos_active_switch_ns=%d "
+                            + "qos_cca_wait_ns=%s qos_switch_ns=%d qos_margin_ns=%d qos_min_slack_ns=%s capacity_shortfall_mbps=%s%n",
+                    nowNs, sfuId, policy.key(), trigger, candidate.mode, decision.target, candidate.status, candidate.uncertain,
+                    decision.reason, outcome == null ? "DEFERRED" : outcome.action(), outcome == null ? 0 : outcome.requestId(),
+                    decision.maxDelayNs, candidate.localWaitNs, candidate.activeSwitchNs, candidate.externalWaitNs,
+                    candidate.switchNs, candidate.marginNs, candidate.minimumSlackNs, candidate.capacityShortfallMbps);
+            for (AccessCategory ac : AccessCategory.values()) {
+                var risk = candidate.classes.get(ac);
+                if (risk.packets() == 0) {
+                    continue;
+                }
+                output.printf(Locale.ROOT, "event=WIFI_AP_QOS_DEADLINE_PREDICTION t_ns=%d sfu_id=%d policy=%s "
+                                + "candidate_mode=%s ac=%s queued_packets=%d deadline_ns=%d required_on_time=%s "
+                                + "predicted_on_time=%s predicted_misses=%s earliest_remaining_ns=%d queue_service_ns=%s qos_min_slack_ns=%s%n",
+                        nowNs, sfuId, policy.key(), candidate.mode, ac, risk.packets(), risk.deadlineNs(), risk.requiredOnTime(),
+                        risk.onTimeRatio(), risk.expectedMisses(), risk.earliestRemainingNs(), risk.serviceNs(), risk.minimumSlackNs());
+            }
+        }
+    }
+
+    public void recordApHcmDeferral(long nowNs, int sfuId, long id, long openedNs, long dueNs, String phase,
+                                    String trigger, long allowedNs, int switchId) {
+        output.printf(Locale.ROOT, "event=WIFI_AP_HCM_DEFER t_ns=%d sfu_id=%d policy=ecq-sdps defer_id=%d phase=%s "
+                        + "trigger=%s opened_ns=%d due_ns=%d max_delay_ns=%d active_delay_ns=%d switch_id=%d%n",
+                nowNs, sfuId, id, phase, trigger, openedNs, dueNs, allowedNs, nowNs - openedNs, switchId);
     }
 
     public void recordApSwitchEvent(long timeNs, String event, int sfuId, ApModeSwitch.Request request,

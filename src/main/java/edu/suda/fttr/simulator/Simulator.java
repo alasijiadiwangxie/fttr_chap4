@@ -297,6 +297,9 @@ public final class Simulator {
                     });
                     context.applyEnergyModeDecisions();
                     break;
+                case WIFI_AP_QOS_RECHECK:
+                    context.applyQosRecheck(event);
+                    break;
                 case WIFI_EXTERNAL_CCA_EDGE:
                     sfus.get(event.sfuId() - 1).receiveExternalCca(
                             interference.apBusyMask(event.sfuId(), context.nowNanoseconds()), context);
