@@ -1,5 +1,6 @@
 package edu.suda.fttr.energy;
 
+import edu.suda.fttr.channel.CcaHistory;
 import edu.suda.fttr.channel.ChannelReport;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApEnergyModel;
@@ -112,8 +113,17 @@ public final class ApModePredictor {
                                                     FeedbackLookup feedback, double primaryBusy, double wideBusy,
                                                     Evidence evidence, boolean useChannel, boolean mixedMode,
                                                     boolean loadAware) {
+        return predictControlWork(nowNs, currentMode, observations, feedback, primaryBusy, wideBusy, evidence,
+                useChannel, mixedMode, loadAware, null);
+    }
+
+    public List<ServiceForecast> predictControlWork(long nowNs, ApCapabilityMode currentMode,
+                                                    List<ApTrafficObserver.Observation> observations,
+                                                    FeedbackLookup feedback, double primaryBusy, double wideBusy,
+                                                    Evidence evidence, boolean useChannel, boolean mixedMode,
+                                                    boolean loadAware, CcaHistory.Snapshot history) {
         return revised.controlWork(nowNs, currentMode, observations, feedback, primaryBusy, wideBusy,
-                evidence, useChannel, mixedMode, loadAware);
+                evidence, useChannel, mixedMode, loadAware, history);
     }
 
     public static final class ServiceForecast {

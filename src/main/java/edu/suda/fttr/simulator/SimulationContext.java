@@ -1,5 +1,6 @@
 package edu.suda.fttr.simulator;
 
+import edu.suda.fttr.channel.CcaHistory;
 import edu.suda.fttr.channel.ApChannelObservations.LocalReception;
 import edu.suda.fttr.channel.ExternalInterference;
 import edu.suda.fttr.config.ChannelObservationInput;
@@ -329,7 +330,15 @@ public final class SimulationContext {
             track.advanceCca(nowNanoseconds());
             track.accessMask = accessMask;
             track.busyMask = observedMask & accessMask;
+            if (track.ccaHistory != null && !track.sensingSuspended) {
+                track.ccaHistory.listen(nowNanoseconds(), accessMask, track.busyMask);
+            }
         }
+    }
+
+    CcaHistory ccaHistory(int sfuId) {
+        PredictionTrack track = apPredictors.get(sfuId);
+        return track == null ? null : track.ccaHistory;
     }
 
     void trackApAnalysis(SimulationConfig config, List<Sfu> sfus) {
@@ -374,13 +383,14 @@ public final class SimulationContext {
             boolean passive = config.channelObservation() != null && config.channelObservation().passive();
             boolean externalCca = config.externalInterference() != null;
             var complete = policy.isComplete() ? config.apControl().completeFeatures() : null;
+            var options = policy == ApModeController.Policy.ECQ_SDPS_E1 ? config.apControl().predictionOptions() : null;
             boolean predictChannel = policy.usesChannel() && config.downlinkDecoder() != null
                     && (complete == null || complete.channel);
             // D2 的本地 CCA 历史只累计本机实际侦听到的带宽。次信道仍须通过扫描或实际驻留获得。
             passive |= policy.usesPrediction() && externalCca;
             var track = new PredictionTrack(sfu, predictor, passive, mode.bandwidthMhz(),
                     config.apAnalysis().revisedPrediction() || policy.usesPrediction(), policy, predictChannel, externalCca,
-                    config.apControl().useLoadAwareService(policy), complete);
+                    config.apControl().useLoadAwareService(policy), complete, options);
             apPredictors.put(sfu.id(), track);
             if (policy.usesResidency()) {
                 track.residency = new ResidencyTrack(residencyModePolicy.start(0, null, track.protectResidence()));
@@ -426,11 +436,15 @@ public final class SimulationContext {
         var ready = track.sfu.modeSwitchReadiness(now, horizon);
         boolean useCca = track.predictChannel && track.externalCca;
         double[] busy = useCca ? track.sampleCca(now, periodic) : new double[] {0, 0};
+        CcaHistory.Snapshot history = track.ccaHistory == null ? null : track.ccaHistory.sample(now);
+        if (history != null) {
+            trace.recordApCcaForecast(now, sfuId, horizon, history, busy, track.e1.slidingCca, track.sfu.ccaState());
+        }
         int projectedMask = (1 << (ready.projectedMode.bandwidthMhz() / 20)) - 1;
         boolean externalBusy = useCca && (track.sfu.observedExternalMask() & projectedMask) != 0;
         var forecasts = track.predictor.predictControlWork(now, ready.sourceMode, visible,
                 track.sfu::candidateChannelReport, busy[0], busy[1], evidence, track.predictChannel,
-                track.mixedMode || !periodic, track.loadAware);
+                track.mixedMode || !periodic, track.loadAware, history != null && track.e1.slidingCca ? history : null);
         if (periodic) {
             // 紧急事件读取同一窗口已有证据。只有周期边界会消费该窗口并训练历史。
             track.mac.resetWindow();
@@ -445,7 +459,19 @@ public final class SimulationContext {
                 long nextReviewNs = modeDecisionPeriodNs - now % modeDecisionPeriodNs;
                 var choice = residencyModePolicy.choose(now, track.residency.residence, nextReviewNs, deferralRoom(track, now),
                         track.residency.observedScanPower(now, horizon), decision, qos, externalBusy, track.complete);
-                outcome = applyQosModeTarget(track, trigger, choice.target, choice.delayNs, ready);
+                boolean guard = track.e1 != null && track.e1.guardUrgent && trigger.equals("URGENT_QUEUE")
+                        && choice.target != ready.projectedMode;
+                var rescue = guard ? ApResidencyModePolicy.urgentAction(choice, nextReviewNs).urgent : null;
+                if (guard) {
+                    trace.recordApUrgentProof(now, sfuId, ready.projectedMode, choice.target,
+                            rescue == null ? 0 : rescue.packet.id(), nextReviewNs);
+                }
+                if (guard && rescue == null) {
+                    // 复核未形成新的切换请求时，也不撤销先前合法的 B4 请求或主动等待。
+                    outcome = ApModeSwitch.Outcome.HOLD;
+                } else {
+                    outcome = applyQosModeTarget(track, trigger, choice.target, choice.delayNs, ready);
+                }
                 track.residency.recordRequest(choice, outcome);
                 trace.recordApResidencyDecision(now, sfuId, trigger, qos, choice, outcome);
                 if (track.complete != null) {
@@ -889,6 +915,11 @@ public final class SimulationContext {
     }
 
     public void startApModeSwitch(int sfuId, ApCapabilityMode target) {
+        PredictionTrack track = apPredictors.get(sfuId);
+        if (track != null && track.ccaHistory != null) {
+            track.sensingSuspended = true;
+            track.ccaHistory.listen(nowNanoseconds(), 0, 0);
+        }
         ApActivity activity = apActivities.get(sfuId);
         logApActivity(sfuId, activity, activity.beginSwitch(nowTicks, target), null, "SWITCH_START");
     }
@@ -899,6 +930,7 @@ public final class SimulationContext {
         PredictionTrack track = apPredictors.get(sfuId);
         if (track != null && track.policy.usesPrediction()) {
             track.mixedMode = true;
+            track.sensingSuspended = false;
         }
         return activity.observedDurationNs(startNs, nowTicks);
     }
@@ -1287,6 +1319,9 @@ public final class SimulationContext {
         private final boolean predictChannel, externalCca;
         private final boolean loadAware;
         private final ApModeController.CompleteFeatures complete;
+        private final ApModeController.PredictionOptions e1;
+        private final CcaHistory ccaHistory;
+        private boolean sensingSuspended;
         private boolean mixedMode;
         private long lastDecisionNs = -1;
         private Event recheck;
@@ -1299,7 +1334,7 @@ public final class SimulationContext {
 
         private PredictionTrack(Sfu sfu, ApModePredictor predictor, boolean passive, int bandwidthMhz, boolean revised,
                                 ApModeController.Policy policy, boolean predictChannel, boolean externalCca, boolean loadAware,
-                                ApModeController.CompleteFeatures complete) {
+                                ApModeController.CompleteFeatures complete, ApModeController.PredictionOptions e1) {
             this.sfu = sfu;
             this.predictor = predictor;
             this.passive = passive;
@@ -1309,7 +1344,9 @@ public final class SimulationContext {
             this.externalCca = externalCca;
             this.loadAware = loadAware;
             this.complete = complete;
+            this.e1 = e1;
             accessMask = (1 << (bandwidthMhz / 20)) - 1;
+            ccaHistory = e1 != null && predictChannel && externalCca ? new CcaHistory(e1.ccaWindowNs, accessMask) : null;
         }
 
         private boolean protectResidence() { return complete == null || complete.residency; }

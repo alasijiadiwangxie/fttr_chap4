@@ -108,7 +108,7 @@ def energy_account(name, rows, initial, end, drained, switches, settings):
 
 
 def audit_optical(name, rows, packets, delivery, local_dl, settings, end, unsettled):
-    if settings.get("fiber.uplink.dba.mode") != "giant-complete":
+    if settings.get("fiber.uplink.dba.mode") not in ("giant-complete", "giant-complete-recovery"):
         return {}, None
     boundaries = {kind: {} for kind in ("FIBER_TX_START", "FIBER_TX_END")}
     for row in rows:

@@ -1,5 +1,6 @@
 package edu.suda.fttr.energy;
 
+import edu.suda.fttr.channel.CcaHistory;
 import edu.suda.fttr.channel.ChannelReport;
 import edu.suda.fttr.energy.ApModePredictor.Confidence;
 import edu.suda.fttr.energy.ApModePredictor.DeadlineBatch;
@@ -94,30 +95,36 @@ final class ObservedServicePrediction {
 
     List<ServiceForecast> controlWork(long nowNs, ApCapabilityMode current, List<Observation> observations,
                                       FeedbackLookup feedback, double primaryBusy, double wideBusy, Evidence evidence,
-                                      boolean useChannel, boolean mixedMode, boolean loadAware) {
+                                      boolean useChannel, boolean mixedMode, boolean loadAware, CcaHistory.Snapshot history) {
         if (!mixedMode) {
             updateHistory(histories.get(current), evidence);
         }
         Map<AccessCategory, List<Packet>> queues = groupQueues(evidence);
         Input input = useChannel ? Input.CONTROL_CHANNEL : Input.CONTROL_ENERGY;
         return List.of(controlMode(nowNs, current, ApCapabilityMode.LCM, observations, feedback,
-                        primaryBusy, primaryBusy, queues, input, loadAware),
+                        primaryBusy, primaryBusy, queues, input, loadAware, history == null ? null : history.primary),
                 controlMode(nowNs, current, ApCapabilityMode.HCM, observations, feedback,
-                        wideBusy, primaryBusy, queues, input, loadAware));
+                        wideBusy, primaryBusy, queues, input, loadAware, history == null ? null : history.wide));
     }
 
     private ServiceForecast controlMode(long startNs, ApCapabilityMode current, ApCapabilityMode mode,
                                         List<Observation> observations, FeedbackLookup feedback, double busy,
-                                        double primary, Map<AccessCategory, List<Packet>> queues, Input input, boolean loadAware) {
+                                        double primary, Map<AccessCategory, List<Packet>> queues, Input input, boolean loadAware,
+                                        CcaHistory.Estimate occupancy) {
         long horizon = Math.min(settings.horizonNs(), Long.MAX_VALUE - startNs);
+        double middle = occupancy == null ? busy : occupancy.expected();
+        double more = occupancy == null ? busy : occupancy.conservative();
+        double less = occupancy == null ? busy : occupancy.lower();
         Budget expected = budget(startNs, horizon, 0, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.EXPECTED, input, loadAware);
+                middle, primary, Estimate.EXPECTED, input, loadAware);
         Budget conservative = budget(startNs, horizon, 0, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.CONSERVATIVE, input, loadAware);
+                more, primary, Estimate.CONSERVATIVE, input, loadAware);
         Budget optimistic = budget(startNs, horizon, 0, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.OPTIMISTIC, input, loadAware);
-        boolean incomplete = expected.packets > 0 && (expected.unknownBusy || expected.missingFeedback);
-        return new ServiceForecast(mode, expected.confidence, busy, incomplete, expected.serviceWork(),
+                less, primary, Estimate.OPTIMISTIC, input, loadAware);
+        // 部分重叠的扫描仍有上下界。只有缺少近期子信道证据时才令 ECQ 进入信息不足分支。
+        boolean incomplete = expected.packets > 0 && (expected.unknownBusy || expected.missingFeedback
+                || (occupancy != null && occupancy.missingRecentBand()));
+        return new ServiceForecast(mode, expected.confidence, middle, incomplete, expected.serviceWork(),
                 conservative.serviceWork(), optimistic.serviceWork(), conservative.deadlineBatches,
                 loadAware ? expected.saturatedMbps() : -1, loadAware ? expected.saturatedDepth() : -1);
     }

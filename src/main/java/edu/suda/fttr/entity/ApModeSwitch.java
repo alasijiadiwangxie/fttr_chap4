@@ -144,6 +144,7 @@ public final class ApModeSwitch {
 
     /** 用同一请求 ID 关联策略决策、等待、开始和完成。0 表示没有切换请求。 */
     public static final class Outcome {
+        public static final Outcome HOLD = new Outcome(Action.HOLD, 0);
         private final Action action;
         private final int requestId;
 

@@ -56,7 +56,7 @@ public final class PonDemandLedger {
             // 预算在创建时锁定需求，装载前生成的新 REPORT 仍含这些报文，不能因快照较新而漏扣。
             // 装载后快照已排除所选数据，不能再次扣减。结算反馈到达之前只知道完整预算。
             for (Budget budget : history.budgets.values()) {
-                if (budget.createNs <= timeNs && report.snapshotTimeNs() < budget.startNs) {
+                if (budget.createNs <= timeNs && report.snapshotTimeNs() < budget.startNs && budget.mayRemoveBytesAt(timeNs)) {
                     long debit = budget.settleNs >= 0 && budget.settleNs <= timeNs
                             ? budget.actualBytes : budget.bytes;
                     granted = Math.addExact(granted, debit);
@@ -117,6 +117,10 @@ public final class PonDemandLedger {
             throw new IllegalArgumentException("Pipelined budgets must use distinct ordered and disjoint frame windows");
         }
         Budget budget = new Budget(createNs, targetFrameId, startNs, endNs, bytes, fixedBytes);
+        if (bytes == fixedBytes && bytes <= history.failedBudgetBytes && !awaitingRecoverySettlement(allocationId, createNs)) {
+            // 固定预约仍占时隙。同一队首尚未移动时，已证实不足的固定预约不会减少缓存。
+            budget.blockedAtNs = createNs;
+        }
         history.budgets.put(grantId, budget);
         history.latestBudget = budget;
         return true;
@@ -129,6 +133,12 @@ public final class PonDemandLedger {
 
     public boolean settleAllocationBudgetGrant(long allocationId, int sfuId, long grantId, long receiveNs,
                                                long actualBytes) {
+        return settleAllocationBudgetGrant(allocationId, sfuId, grantId, receiveNs, actualBytes, false);
+    }
+
+    /** 只有收到确认的零装载结算才能建立失败下界，队列为空的零实发不能触发恢复。 */
+    public boolean settleAllocationBudgetGrant(long allocationId, int sfuId, long grantId, long receiveNs,
+                                               long actualBytes, boolean headBlocked) {
         AllocationHistory history = historyForRead(allocationId, sfuId);
         Budget budget = history == null ? null : history.budgets.get(grantId);
         if (budget == null || receiveNs < budget.endNs || actualBytes < 0 || actualBytes > budget.bytes) {
@@ -142,7 +152,40 @@ public final class PonDemandLedger {
         }
         budget.settleNs = receiveNs;
         budget.actualBytes = actualBytes;
+        if (budget.endNs >= history.lastRecoverySlotEndNs) {
+            history.lastRecoverySlotEndNs = budget.endNs;
+            if (actualBytes > 0) {
+                history.failedBudgetBytes = 0;
+            } else if (headBlocked) {
+                history.failedBudgetBytes = Math.max(history.failedBudgetBytes, budget.bytes);
+                markBlockedFixedBudgets(history, receiveNs);
+            }
+        }
         return true;
+    }
+
+    /** 已预约固定时隙仍执行。若在它之前有可能发走队首，就保留它的账本扣减。 */
+    private static void markBlockedFixedBudgets(AllocationHistory history, long nowNs) {
+        long possibleProgress = history.budgets.values().stream()
+                .filter(budget -> budget.outstandingAt(nowNs) && !budget.fixedBelow(history.failedBudgetBytes))
+                .mapToLong(budget -> budget.startNs).min().orElse(Long.MAX_VALUE);
+        for (Budget budget : history.budgets.values()) {
+            if (budget.outstandingAt(nowNs) && budget.startNs < possibleProgress
+                    && budget.fixedBelow(history.failedBudgetBytes) && budget.blockedAtNs < 0) {
+                budget.blockedAtNs = nowNs;
+            }
+        }
+    }
+
+    public long failedBudgetBytes(long allocationId) {
+        AllocationHistory history = histories.get(allocationId);
+        return history == null ? 0 : history.failedBudgetBytes;
+    }
+
+    public boolean awaitingRecoverySettlement(long allocationId, long timeNs) {
+        AllocationHistory history = histories.get(allocationId);
+        return history != null && history.failedBudgetBytes > 0 && history.budgets.values().stream()
+                .anyMatch(budget -> budget.outstandingAt(timeNs) && budget.mayRemoveBytesAt(timeNs));
     }
 
     public boolean hasOutstandingBudget(int sfuId, long timeNs) {
@@ -151,8 +194,7 @@ public final class PonDemandLedger {
 
     public boolean hasOutstandingAllocationBudget(long allocationId, long timeNs) {
         AllocationHistory history = histories.get(allocationId);
-        return history != null && history.budgets.values().stream().anyMatch(budget -> budget.createNs <= timeNs
-                && (budget.settleNs < 0 || budget.settleNs > timeNs));
+        return history != null && history.budgets.values().stream().anyMatch(budget -> budget.outstandingAt(timeNs));
     }
 
     public boolean hasBudgetGrant(int sfuId, long grantId) {
@@ -191,6 +233,8 @@ public final class PonDemandLedger {
         private final Map<Integer, Grant> grantsById = new HashMap<>();
         private final Map<Long, Budget> budgets = new HashMap<>();
         private Budget latestBudget;
+        private long failedBudgetBytes;
+        private long lastRecoverySlotEndNs = -1;
 
         private AllocationHistory(int sfuId) {
             this.sfuId = sfuId;
@@ -222,6 +266,7 @@ public final class PonDemandLedger {
         private final long fixedBytes;
         private long settleNs = -1;
         private long actualBytes;
+        private long blockedAtNs = -1;
 
         private Budget(long createNs, long targetFrameId, long startNs, long endNs, long bytes, long fixedBytes) {
             this.createNs = createNs;
@@ -230,6 +275,18 @@ public final class PonDemandLedger {
             this.endNs = endNs;
             this.bytes = bytes;
             this.fixedBytes = fixedBytes;
+        }
+
+        private boolean outstandingAt(long nowNs) {
+            return createNs <= nowNs && (settleNs < 0 || settleNs > nowNs);
+        }
+
+        private boolean mayRemoveBytesAt(long nowNs) {
+            return blockedAtNs < 0 || nowNs < blockedAtNs;
+        }
+
+        private boolean fixedBelow(long failedBytes) {
+            return bytes == fixedBytes && bytes <= failedBytes;
         }
     }
 

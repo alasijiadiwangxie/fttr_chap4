@@ -174,6 +174,11 @@ final class ChannelObservationRuntime {
             long busy = interference == null ? 0 : interference.apBusyDurationNs(
                     scan.sfuId(), scan.subchannel(), scan.startNs(), scan.endNs());
             sfu.completeAuxScan(scan.subchannel(), scan.startNs(), scan.endNs(), busy, scan.expiresNs());
+            var history = context.ccaHistory(scan.sfuId());
+            if (history != null) {
+                var intervals = interference.apBusyIntervals(scan.sfuId(), scan.subchannel(), scan.startNs(), scan.endNs());
+                history.completeScan(scan.subchannel(), scan.startNs(), scan.endNs(), scan.expiresNs(), intervals);
+            }
             ObservationStats observation = stats.get(scan.sfuId() - 1);
             observation.scanNs += scan.endNs() - scan.startNs();
             BigDecimal energyUj = input.scanPowerW()

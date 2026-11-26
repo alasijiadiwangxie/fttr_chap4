@@ -109,6 +109,11 @@ public final class ApResidencyModePolicy {
                 allowed, delayNs, immediateUj, deferred, safeExit);
     }
 
+    /** 紧急事件可重算。只有换档能挽救一包、且等到下次周期会失去机会时才即时提交。 */
+    public static Risk urgentAction(Decision proposal, long untilReviewNs) {
+        return risk(proposal.keepQos, proposal.changeQos, untilReviewNs);
+    }
+
     private static boolean safeEconomicExit(ApDeadlineModePolicy.Candidate keepQos,
                                             ApDeadlineModePolicy.Candidate changeQos,
                                             ApEnergyModePolicy.Candidate keep, ApEnergyModePolicy.Candidate change) {

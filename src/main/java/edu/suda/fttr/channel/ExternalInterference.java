@@ -78,6 +78,17 @@ public final class ExternalInterference {
 
     /** 扫描只汇总 AP 本地的 CCA 能量，结果不包含 STA 下行质量。区间为 [fromNs,toNs)。 */
     public long apBusyDurationNs(int sfuId, int subchannel, long fromNs, long toNs) {
+        return measureApBusy(sfuId, subchannel, fromNs, toNs, null);
+    }
+
+    /** 供扫描接收端在完成事件读取实际接收到的时间片，调用者只发布所扫子信道的过去样本。 */
+    public List<CcaHistory.BusyInterval> apBusyIntervals(int sfuId, int subchannel, long fromNs, long toNs) {
+        List<CcaHistory.BusyInterval> result = new ArrayList<>();
+        measureApBusy(sfuId, subchannel, fromNs, toNs, result);
+        return List.copyOf(result);
+    }
+
+    private long measureApBusy(int sfuId, int subchannel, long fromNs, long toNs, List<CcaHistory.BusyInterval> samples) {
         ChannelReport.requireSubchannel(subchannel);
         if (fromNs < 0 || toNs < fromNs) {
             throw new IllegalArgumentException("Invalid AP CCA measurement interval");
@@ -93,11 +104,20 @@ public final class ExternalInterference {
         for (Map.Entry<Long, Power> edge : timeline.subMap(fromNs, false, toNs, false).entrySet()) {
             if (busy) {
                 busyNs += edge.getKey() - cursor;
+                if (samples != null) {
+                    samples.add(new CcaHistory.BusyInterval(cursor, edge.getKey()));
+                }
             }
             cursor = edge.getKey();
             busy = edge.getValue().apDbm >= ccaThresholdDbm;
         }
-        return busy ? busyNs + (toNs - cursor) : busyNs;
+        if (busy && toNs > cursor) {
+            busyNs += toNs - cursor;
+            if (samples != null) {
+                samples.add(new CcaHistory.BusyInterval(cursor, toNs));
+            }
+        }
+        return busyNs;
     }
 
     /** 原始 SINR 已包含背景噪声和旧干扰。只将本时间线的新增功率加到分母一次。 */

@@ -14,6 +14,7 @@ public final class ApModeController {
     public static final long DEFAULT_DEFERRAL_LIMIT_NS = 2_000_000L;
     public static final long DEFAULT_MINIMUM_RESIDENCY_NS = 500_000L;
     public static final double DEFAULT_REVERSE_MARGIN_UJ = 25.0;
+    public static final long DEFAULT_CCA_HISTORY_NS = 5_000_000L;
 
     private final Settings settings;
     private long previousNs;
@@ -50,7 +51,7 @@ public final class ApModeController {
         ALWAYS_HCM("always-hcm", ApCapabilityMode.HCM), FIXED_THRESHOLD("fixed-threshold", null),
         E_AWARE("e-aware", null), EC_AWARE("ec-aware", null),
         ECQ_AWARE("ecq-aware", null), ECQ_SDPS("ecq-sdps", null), ECQ_SDPS_D4("ecq-sdps-d4", null),
-        ECQ_SDPS_COMPLETE("ecq-sdps-complete", null);
+        ECQ_SDPS_COMPLETE("ecq-sdps-complete", null), ECQ_SDPS_E1("ecq-sdps-e1", null);
 
         private final String key;
         private final ApCapabilityMode staticMode;
@@ -65,10 +66,25 @@ public final class ApModeController {
         public boolean usesQos() { return this == ECQ_AWARE || usesDeferral(); }
         public boolean usesDeferral() { return this == ECQ_SDPS || usesResidency(); }
         public boolean usesResidency() { return this == ECQ_SDPS_D4 || isComplete(); }
-        public boolean isComplete() { return this == ECQ_SDPS_COMPLETE; }
+        public boolean isComplete() { return this == ECQ_SDPS_COMPLETE || this == ECQ_SDPS_E1; }
         public boolean usesChannel() { return this == EC_AWARE || usesQos(); }
         public boolean usesPrediction() { return this == E_AWARE || usesChannel(); }
         public boolean dynamic() { return this == FIXED_THRESHOLD || usesPrediction(); }
+    }
+
+    public static final class PredictionOptions {
+        public static final PredictionOptions DEFAULT = new PredictionOptions(DEFAULT_CCA_HISTORY_NS, true, true);
+        public final long ccaWindowNs;
+        public final boolean slidingCca, guardUrgent;
+
+        public PredictionOptions(long ccaWindowNs, boolean slidingCca, boolean guardUrgent) {
+            if (ccaWindowNs != 5_000_000 && ccaWindowNs != 10_000_000 && ccaWindowNs != 20_000_000) {
+                throw new IllegalArgumentException("E1 CCA history must be 5000, 10000 or 20000 us");
+            }
+            this.ccaWindowNs = ccaWindowNs;
+            this.slidingCca = slidingCca;
+            this.guardUrgent = guardUrgent;
+        }
     }
 
     public enum ServiceModel { AUTO, D2_ORIGINAL, LOAD_AWARE }
@@ -96,6 +112,7 @@ public final class ApModeController {
         private final long qosMarginNs, deferralLimitNs, minimumResidencyNs;
         private final double reverseMarginUj;
         private final CompleteFeatures completeFeatures;
+        private final PredictionOptions predictionOptions;
 
         public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps) {
             this(policies, periodNs, alpha, thresholdMbps, DEFAULT_ENERGY_MARGIN_UJ);
@@ -117,6 +134,14 @@ public final class ApModeController {
         public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps,
                         double energyMarginUj, ServiceModel serviceModel, long qosMarginNs, long deferralLimitNs,
                         long minimumResidencyNs, double reverseMarginUj, CompleteFeatures completeFeatures) {
+            this(policies, periodNs, alpha, thresholdMbps, energyMarginUj, serviceModel, qosMarginNs, deferralLimitNs,
+                    minimumResidencyNs, reverseMarginUj, completeFeatures, PredictionOptions.DEFAULT);
+        }
+
+        public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps,
+                        double energyMarginUj, ServiceModel serviceModel, long qosMarginNs, long deferralLimitNs,
+                        long minimumResidencyNs, double reverseMarginUj, CompleteFeatures completeFeatures,
+                        PredictionOptions predictionOptions) {
             if (periodNs <= 0 || !(alpha > 0 && alpha <= 1)
                     || !Double.isFinite(thresholdMbps) || thresholdMbps < 0
                     || !Double.isFinite(energyMarginUj) || energyMarginUj < 0 || qosMarginNs < 0 || deferralLimitNs < 0) {
@@ -136,6 +161,7 @@ public final class ApModeController {
             this.minimumResidencyNs = minimumResidencyNs;
             this.reverseMarginUj = reverseMarginUj;
             this.completeFeatures = completeFeatures;
+            this.predictionOptions = predictionOptions;
         }
 
         public Map<Integer, Policy> policies() { return policies; }
@@ -148,6 +174,7 @@ public final class ApModeController {
         public long minimumResidencyNs() { return minimumResidencyNs; }
         public double reverseMarginUj() { return reverseMarginUj; }
         public CompleteFeatures completeFeatures() { return completeFeatures; }
+        public PredictionOptions predictionOptions() { return predictionOptions; }
 
         public boolean useLoadAwareService(Policy policy) {
             return serviceModel == ServiceModel.LOAD_AWARE || (serviceModel == ServiceModel.AUTO && policy.usesQos());

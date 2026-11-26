@@ -60,6 +60,7 @@ public final class SimulationConfig {
     private final boolean dbaMultiGrantEnabled;
     private final boolean dbaGiantEnabled;
     private final boolean dbaGiantCompleteEnabled;
+    private final boolean dbaGiantRecoveryEnabled;
     private final TcontTopology tcontTopology;
 
     SimulationConfig(List<Event> inputEvents, int sfuCount, List<Integer> staSfuIds, long fiberDelayUs,
@@ -75,6 +76,7 @@ public final class SimulationConfig {
                      List<Long> downlinkTrafficWindowsUs, List<Long> uplinkTrafficWindowsUs, boolean uplinkEnabled,
                      boolean demandLedgerEnabled, boolean dbaShadowEnabled, boolean dbaExecutionEnabled,
                      boolean dbaMultiGrantEnabled, boolean dbaGiantEnabled, boolean dbaGiantCompleteEnabled,
+                     boolean dbaGiantRecoveryEnabled,
                      TcontTopology tcontTopology) {
         this.inputEvents = List.copyOf(inputEvents);
         this.sfuCount = sfuCount;
@@ -112,6 +114,7 @@ public final class SimulationConfig {
         this.dbaMultiGrantEnabled = dbaMultiGrantEnabled;
         this.dbaGiantEnabled = dbaGiantEnabled;
         this.dbaGiantCompleteEnabled = dbaGiantCompleteEnabled;
+        this.dbaGiantRecoveryEnabled = dbaGiantRecoveryEnabled;
         this.tcontTopology = tcontTopology;
     }
 
@@ -315,6 +318,10 @@ public final class SimulationConfig {
 
     public boolean dbaGiantCompleteEnabled() {
         return dbaGiantCompleteEnabled;
+    }
+
+    public boolean dbaGiantRecoveryEnabled() {
+        return dbaGiantRecoveryEnabled;
     }
 
     /** 显式的 Alloc-ID / SFU / 业务类型映射；默认关闭时仍保留旧单对象编号。 */

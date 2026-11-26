@@ -96,6 +96,8 @@ public final class DbaContext {
         private final Long reportAgeNs;
         private final boolean budgetOutstanding;
         private final TcontProfile profile;
+        private final long failedBudgetBytes;
+        private final boolean recoveryWaiting;
 
         public Allocation(long allocationId, int sfuId, Long knownDemandBytes,
                           Long reportFrameId, Long reportAgeNs) {
@@ -111,8 +113,15 @@ public final class DbaContext {
         /** T-CONT 参数为不可变元数据；单对象兼容模式使用 null。 */
         public Allocation(long allocationId, int sfuId, Long knownDemandBytes,
                           Long reportFrameId, Long reportAgeNs, boolean budgetOutstanding, TcontProfile profile) {
+            this(allocationId, sfuId, knownDemandBytes, reportFrameId, reportAgeNs, budgetOutstanding, profile, 0, false);
+        }
+
+        /** 恢复只使用已经结算的零装载记录。失败额度是下界，调度端不读取远端队首大小。 */
+        public Allocation(long allocationId, int sfuId, Long knownDemandBytes, Long reportFrameId, Long reportAgeNs,
+                          boolean budgetOutstanding, TcontProfile profile, long failedBudgetBytes, boolean recoveryWaiting) {
             if (allocationId < 1 || sfuId < 1 || (knownDemandBytes != null && knownDemandBytes < 0)
-                    || (reportFrameId != null && reportFrameId < 0) || (reportAgeNs != null && reportAgeNs < 0)) {
+                    || (reportFrameId != null && reportFrameId < 0) || (reportAgeNs != null && reportAgeNs < 0)
+                    || failedBudgetBytes < 0 || (recoveryWaiting && (failedBudgetBytes == 0 || !budgetOutstanding))) {
                 throw new IllegalArgumentException("DBA allocation identity or known demand is outside its valid range");
             }
             // UNKNOWN 不能附带旧报告元数据，否则策略可能错误地把它当成已知零需求。
@@ -129,6 +138,8 @@ public final class DbaContext {
             this.reportAgeNs = reportAgeNs;
             this.budgetOutstanding = budgetOutstanding;
             this.profile = profile;
+            this.failedBudgetBytes = failedBudgetBytes;
+            this.recoveryWaiting = recoveryWaiting;
         }
 
         public long allocationId() {
@@ -163,5 +174,9 @@ public final class DbaContext {
         public TcontProfile profile() {
             return profile;
         }
+
+        public long failedBudgetBytes() { return failedBudgetBytes; }
+
+        public boolean recoveryWaiting() { return recoveryWaiting; }
     }
 }

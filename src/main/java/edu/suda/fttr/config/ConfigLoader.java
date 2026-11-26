@@ -131,6 +131,9 @@ public final class ConfigLoader {
     private static final String AP_COMPLETE_QOS = "wifi.ap.control.complete.qos.enabled";
     private static final String AP_COMPLETE_DELAY = "wifi.ap.control.complete.deferral.enabled";
     private static final String AP_COMPLETE_RESIDENCY = "wifi.ap.control.complete.residency.enabled";
+    private static final String AP_E1_CCA_WINDOW = "wifi.ap.control.e1.cca.window.us";
+    private static final String AP_E1_SLIDING_CCA = "wifi.ap.control.e1.cca.enabled";
+    private static final String AP_E1_URGENT_GUARD = "wifi.ap.control.e1.urgent.guard.enabled";
     private static final Set<String> KEYS = Set.of(
             FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", DOWNLINK_PROPAGATION_US,
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
@@ -153,7 +156,7 @@ public final class ConfigLoader {
             AP_CONTROL_POLICY, AP_CONTROL_PERIOD_US, AP_CONTROL_ALPHA, AP_CONTROL_THRESHOLD, AP_CONTROL_MARGIN,
             AP_CONTROL_SERVICE_MODEL, AP_CONTROL_QOS_MARGIN_US, AP_CONTROL_DEFER_LIMIT_US,
             AP_CONTROL_MIN_RESIDENCY_US, AP_CONTROL_REVERSE_MARGIN, AP_COMPLETE_CHANNEL, AP_COMPLETE_QOS,
-            AP_COMPLETE_DELAY, AP_COMPLETE_RESIDENCY,
+            AP_COMPLETE_DELAY, AP_COMPLETE_RESIDENCY, AP_E1_CCA_WINDOW, AP_E1_SLIDING_CCA, AP_E1_URGENT_GUARD,
             AP_SWITCH_ENABLED, LCM_TO_HCM + "delay.us", LCM_TO_HCM + "power.w",
             HCM_TO_LCM + "delay.us", HCM_TO_LCM + "power.w");
     private static final Set<String> PHY_KEYS = Set.of(
@@ -232,7 +235,8 @@ public final class ConfigLoader {
         boolean demandLedgerEnabled = readDemandLedgerEnabled(properties, ponUplink);
         String dbaMode = readDbaMode(properties, ponUplink, demandLedgerEnabled);
         boolean dbaShadowEnabled = dbaMode.equals("shadow-rr");
-        boolean dbaGiantCompleteEnabled = dbaMode.equals("giant-complete");
+        boolean dbaGiantRecoveryEnabled = dbaMode.equals("giant-complete-recovery");
+        boolean dbaGiantCompleteEnabled = dbaMode.equals("giant-complete") || dbaGiantRecoveryEnabled;
         boolean dbaGiantEnabled = dbaMode.equals("giant") || dbaGiantCompleteEnabled;
         boolean dbaMultiGrantEnabled = dbaMode.equals("rr-multi") || dbaGiantEnabled;
         boolean dbaExecutionEnabled = dbaMode.equals("rr") || dbaMultiGrantEnabled;
@@ -317,7 +321,7 @@ public final class ConfigLoader {
                 frameExchange, edcaParameters, accessMode, retryPolicy, ampduConfig, downlinkDecoder, externalInterference,
                 downlink.windowsUs, uplink.windowsUs,
                 directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled,
-                dbaMultiGrantEnabled, dbaGiantEnabled, dbaGiantCompleteEnabled, tcontTopology);
+                dbaMultiGrantEnabled, dbaGiantEnabled, dbaGiantCompleteEnabled, dbaGiantRecoveryEnabled, tcontTopology);
     }
 
     private static TcontTopology readTcontTopology(Properties properties, int sfuCount, boolean dbaExecutionEnabled) {
@@ -335,7 +339,8 @@ public final class ConfigLoader {
         }
         // 真实 DBA 路径依赖 pon-framed、BWmap、REPORT、账本和有限轮询。
         if (!dbaExecutionEnabled) {
-            throw new IllegalArgumentException(TCONT_ENABLED + " requires fiber.uplink.dba.mode=rr, rr-multi, giant or giant-complete");
+            throw new IllegalArgumentException(TCONT_ENABLED
+                    + " requires fiber.uplink.dba.mode=rr, rr-multi, giant, giant-complete or giant-complete-recovery");
         }
         Set<Long> allocationIds = new HashSet<>();
         List<TcontProfile> profiles = new ArrayList<>();
@@ -416,8 +421,9 @@ public final class ConfigLoader {
             return mode;
         }
         if (!mode.equals("shadow-rr") && !mode.equals("rr") && !mode.equals("rr-multi")
-                && !mode.equals("giant") && !mode.equals("giant-complete")) {
-            throw new IllegalArgumentException(UPLINK_DBA_MODE + " must be fcfs, shadow-rr, rr, rr-multi, giant or giant-complete");
+                && !mode.equals("giant") && !mode.equals("giant-complete") && !mode.equals("giant-complete-recovery")) {
+            throw new IllegalArgumentException(UPLINK_DBA_MODE
+                    + " must be fcfs, shadow-rr, rr, rr-multi, giant, giant-complete or giant-complete-recovery");
         }
         if (uplink == null || uplink.framePeriodNs() == 0 || uplink.bwmapPropagationNs() < 0
                 || !uplink.reportEnabled() || !demandLedgerEnabled || uplink.polling() == null) {
@@ -771,8 +777,11 @@ public final class ConfigLoader {
         var features = new ApModeController.CompleteFeatures(readCompleteFeature(properties, AP_COMPLETE_CHANNEL),
                 readCompleteFeature(properties, AP_COMPLETE_QOS), readCompleteFeature(properties, AP_COMPLETE_DELAY),
                 readCompleteFeature(properties, AP_COMPLETE_RESIDENCY));
+        var prediction = new ApModeController.PredictionOptions(readDurationNs(properties, AP_E1_CCA_WINDOW,
+                Long.toString(ApModeController.DEFAULT_CCA_HISTORY_NS / 1000), true),
+                readCompleteFeature(properties, AP_E1_SLIDING_CCA), readCompleteFeature(properties, AP_E1_URGENT_GUARD));
         return new ApModeController.Settings(policies, periodNs, alpha, threshold, margin, serviceModel, qosMargin, deferLimit,
-                minimumResidency, reverseMargin, features);
+                minimumResidency, reverseMargin, features, prediction);
     }
 
     private static boolean readCompleteFeature(Properties properties, String key) {
@@ -786,7 +795,8 @@ public final class ConfigLoader {
                 return policy;
             }
         }
-        throw new IllegalArgumentException(key + " must be off, always-lcm, always-hcm, fixed-threshold, e-aware, ec-aware, ecq-aware, ecq-sdps, ecq-sdps-d4 or ecq-sdps-complete");
+        throw new IllegalArgumentException(key + " must be off, always-lcm, always-hcm, fixed-threshold, e-aware, ec-aware, "
+                + "ecq-aware, ecq-sdps, ecq-sdps-d4, ecq-sdps-complete or ecq-sdps-e1");
     }
 
     private static void validateApControl(ApModeController.Settings control, ApModeSwitch.Settings switching) {

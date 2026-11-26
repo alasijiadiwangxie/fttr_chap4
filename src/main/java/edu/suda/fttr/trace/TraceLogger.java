@@ -1,5 +1,7 @@
 package edu.suda.fttr.trace;
 
+import edu.suda.fttr.channel.CcaHistory;
+import edu.suda.fttr.link.WifiChannel;
 import edu.suda.fttr.channel.ApChannelObservations.LocalReception;
 import edu.suda.fttr.channel.ChannelReport;
 import edu.suda.fttr.channel.ChannelTruth;
@@ -394,7 +396,17 @@ public final class TraceLogger {
                 allocation.known() ? "KNOWN" : "UNKNOWN", allocation.known() ? allocation.knownDemandBytes() : -1,
                 allocation.budgetOutstanding(), allocation.reportFrameId() == null ? -1 : allocation.reportFrameId(),
                 allocation.reportAgeNs() == null ? -1 : allocation.reportAgeNs(), input.controlReservedNs(),
-                decision.complete() ? completeGiantDetails(profile, decision) : "");
+                decision.complete() ? completeGiantDetails(profile, decision) + recoveryDetails(decision) : "");
+    }
+
+    private static String recoveryDetails(GiantDbaPolicy.Decision decision) {
+        DbaContext.Allocation allocation = decision.allocation();
+        if (allocation.failedBudgetBytes() == 0) {
+            return "";
+        }
+        return " recovery_failed_bytes=" + allocation.failedBudgetBytes() + " recovery_ceiling_bytes="
+                + decision.recoveryCeiling() + " recovery_waiting=" + allocation.recoveryWaiting()
+                + " recovery_limit=" + (decision.recoveryCeiling() <= allocation.failedBudgetBytes());
     }
 
     private static String completeGiantDetails(TcontProfile profile, GiantDbaPolicy.Decision decision) {
@@ -1008,6 +1020,34 @@ public final class TraceLogger {
                         + "safe_economic_exit=%b keep_shortfall_mbps=%s change_shortfall_mbps=%s%n",
                 nowNs, sfuId, features.channel, features.qos, features.deferral, features.residency,
                 choice.safeEconomicExit, choice.keepQos.capacityShortfallMbps, choice.changeQos.capacityShortfallMbps);
+    }
+
+    public void recordApCcaForecast(long nowNs, int sfuId, long horizonNs, CcaHistory.Snapshot history,
+                                    double[] legacyBusy, boolean applied, WifiChannel.State physicalCca) {
+        recordApCcaForecast(nowNs, sfuId, horizonNs, history.fromNs, ApCapabilityMode.LCM, history.primary,
+                legacyBusy[0], applied, physicalCca);
+        recordApCcaForecast(nowNs, sfuId, horizonNs, history.fromNs, ApCapabilityMode.HCM, history.wide,
+                legacyBusy[1], applied, physicalCca);
+    }
+
+    private void recordApCcaForecast(long nowNs, int sfuId, long horizonNs, long fromNs, ApCapabilityMode mode,
+                                     CcaHistory.Estimate sample, double legacyBusy, boolean applied, WifiChannel.State physicalCca) {
+        output.printf(Locale.ROOT, "event=WIFI_AP_E1_CCA t_ns=%d sfu_id=%d candidate_mode=%s horizon_ns=%d "
+                        + "history_from_ns=%d history_ns=%d physical_cca=%s current_external_cca=%s "
+                        + "known_busy_ns=%d known_ns=%d fully_sensed_ns=%d newest_age_ns=%d oldest_band_age_ns=%d "
+                        + "ongoing_busy_ns=%d longest_busy_ns=%d lower_busy=%s expected_busy=%s conservative_busy=%s upper_busy=%s "
+                        + "incomplete=%b missing_recent_band=%b applied=%b legacy_busy=%s%n",
+                nowNs, sfuId, mode, horizonNs, fromNs, sample.windowNs, physicalCca, sample.current,
+                sample.busyNs, sample.knownNs, sample.fullySensedNs, sample.ageNs, sample.oldestBandAgeNs,
+                sample.ongoingBusyNs, sample.longestBusyNs, sample.lower(), sample.expected(), sample.conservative(), sample.upper(),
+                sample.incomplete(), sample.missingRecentBand(), applied, legacyBusy);
+    }
+
+    public void recordApUrgentProof(long nowNs, int sfuId, ApCapabilityMode current, ApCapabilityMode proposed,
+                                    int savedPacketId, long untilReviewNs) {
+        output.printf(Locale.ROOT, "event=WIFI_AP_E1_URGENT t_ns=%d sfu_id=%d current_mode=%s proposed_mode=%s "
+                        + "action_gate=%s saved_packet_id=%d next_review_in_ns=%d%n", nowNs, sfuId, current, proposed,
+                savedPacketId == 0 ? "REVIEW_ONLY" : "DEADLINE_RESCUE", savedPacketId, untilReviewNs);
     }
 
     public void recordApSwitchEvent(long timeNs, String event, int sfuId, ApModeSwitch.Request request,

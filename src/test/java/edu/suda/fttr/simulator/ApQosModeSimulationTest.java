@@ -33,6 +33,7 @@ final class ApQosModeSimulationTest {
     private static final String D4_DECISION = "WIFI_AP_D4_DECISION";
     private static final String D5 = "wifi.ap.control.policy=ecq-sdps-complete";
     private static final String D5_DECISION = "WIFI_AP_D5_DECISION";
+    private static final String E1 = "wifi.ap.control.policy=ecq-sdps-e1";
     private static final List<String> BASE = List.of("wifi.ap.control.policy=ecq-sdps", "fiber.delay.us=0", "wifi.model=he-su",
             "packet.bytes=1500", "wifi.mac.exchange=data-sifs-ack", "wifi.mac.access=edca-multi-ac",
             "wifi.mac.edca.BE.aifsn=3", "wifi.mac.edca.VO.cwmin=0", "wifi.mac.edca.VI.cwmin=0",
@@ -262,9 +263,41 @@ final class ApQosModeSimulationTest {
         assertEquals(1, events(trace, "DELIVERED").size());
     }
 
+    @Test
+    void e1KeepsImmediateRescueForADeadlineThatCannotWait(@TempDir Path dir) throws IOException {
+        var trace = run(dir, E1, "packet.arrival.us=0", "packet.1.type=VO", "wifi.ap.qos.VO.deadline.us=254.225");
+        assertEquals("DEADLINE_RESCUE", only(trace, "WIFI_AP_E1_URGENT").get("action_gate"));
+        assertEquals(0, stamp(only(trace, B4 + "REQUEST")));
+        assertTrue(stamp(only(trace, "DELIVERED")) <= 254_225);
+    }
+
+    @Test
+    void e1ExistingUrgentEventDoesNotRequestAPurelyEconomicChange(@TempDir Path dir) throws IOException {
+        var trace = run(dir, E1, "sfu.1.wifi.ap.mode=HCM", "wifi.ap.control.residency.minimum.us=0",
+                "wifi.ap.energy.hcm.idle.w=15", "packet.arrival.us=0", "packet.1.type=VO", "wifi.ap.qos.VO.deadline.us=2000");
+        assertEquals("REVIEW_ONLY", only(trace, "WIFI_AP_E1_URGENT").get("action_gate"));
+        assertEquals("URGENT_QUEUE", only(trace, D4_DECISION).get("trigger"));
+        assertTrue(events(trace, B4 + "REQUEST").isEmpty());
+        assertEquals(1, events(trace, "DELIVERED").size());
+    }
+
+    @Test
+    void e1BuildsAnEightyMegahertzUnionForOverlappingInterferers(@TempDir Path dir) throws IOException {
+        var trace = run(dir, E1, "sfu.1.wifi.ap.mode=HCM", "wifi.ap.activity.window.us=6000", "traffic.mode=poisson",
+                "traffic.duration.us=6000", "traffic.sfu.1.rate.pps=0", "wifi.channel.interference.enabled=true",
+                "wifi.channel.observation.enabled=true", "wifi.phy.per.enabled=true", "wifi.phy.per.curves=7,0,1;7,30,0",
+                "wifi.phy.per.frequency.model=subchannel-blocks", "wifi.phy.per.source=E1_TEST",
+                "wifi.channel.interference.timeline=1,1,1200,1800,-73,-86;1,3,1500,2000,-73,-86");
+        var e1 = events(trace, "WIFI_AP_E1_CCA").stream().filter(row -> row.get("candidate_mode").equals("HCM")).findFirst().orElseThrow();
+        assertEquals(5_000_000L, stamp(e1));
+        assertEquals("800000", e1.get("known_busy_ns"));
+        assertEquals("5000000", e1.get("known_ns"));
+        assertEquals(.16, Double.parseDouble(e1.get("expected_busy")), 1e-12);
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"wifi.ap.control.defer.max.us=-1", "wifi.ap.control.qos.margin.us=-1",
-            "wifi.ap.control.service.model=unknown"})
+            "wifi.ap.control.service.model=unknown", "wifi.ap.control.e1.cca.window.us=0", "wifi.ap.control.e1.cca.window.us=7500"})
     void rejectsInvalidOptions(String setting, @TempDir Path dir) {
         assertThrows(IllegalArgumentException.class, () -> run(dir, "packet.arrival.us=0", setting));
     }

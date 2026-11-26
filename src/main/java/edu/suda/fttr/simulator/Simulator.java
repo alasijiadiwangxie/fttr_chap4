@@ -55,7 +55,7 @@ public final class Simulator {
             ponUplink.configureTcont(config.tcontTopology());
         }
         if (config.dbaGiantEnabled()) {
-            mfu.enableGiantDba(config.dbaGiantCompleteEnabled());
+            mfu.enableGiantDba(config.dbaGiantCompleteEnabled(), config.dbaGiantRecoveryEnabled());
         }
         if (config.dbaExecutionEnabled()) {
             ponUplink.enableDbaExecution(mfu, config.dbaMultiGrantEnabled());
