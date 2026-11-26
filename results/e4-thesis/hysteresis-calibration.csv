@@ -1,0 +1,6 @@
+policy,lower_mbps,upper_mbps,training_pairs,largest_constraint_shortfall_pp,mean_final_energy_ratio,mean_switches,selected,constraints_met
+hysteresis-20-42,20,42,9,5.71364422302,1.00422417667,2.77777777778,False,False
+hysteresis-23-39,23,39,9,2.64407341152,1.00172507455,3.66666666667,False,False
+hysteresis-26-36,26,36,9,0,1.00113848854,3.88888888889,False,True
+hysteresis-28-34,28,34,9,0,1.0005956861,5,False,True
+hysteresis-30-32,30,32,9,0,1.00007856192,6.11111111111,True,True

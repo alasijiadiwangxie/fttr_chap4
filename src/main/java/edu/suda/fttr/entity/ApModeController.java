@@ -20,9 +20,19 @@ public final class ApModeController {
     private long previousNs;
     private long previousBytes;
     private double estimateMbps;
+    private ApCapabilityMode hysteresisTarget;
 
     public ApModeController(Settings settings) {
+        this(settings, null);
+    }
+
+    /** 非空初始目标只用于双阈值基线，保留已请求目标直到穿越反向阈值。 */
+    public ApModeController(Settings settings, ApCapabilityMode initialHysteresisTarget) {
+        if (initialHysteresisTarget != null && settings.thresholdBand() == null) {
+            throw new IllegalArgumentException("Hysteresis requires a configured threshold band");
+        }
         this.settings = settings;
+        this.hysteresisTarget = initialHysteresisTarget;
     }
 
     public Decision decide(long nowNs, long downlinkArrivalBytes) {
@@ -40,7 +50,13 @@ public final class ApModeController {
             estimateMbps = ApTrafficObserver.smooth(estimateMbps, rateMbps, settings.alpha());
         }
         ApCapabilityMode target = estimateMbps > settings.thresholdMbps() ? ApCapabilityMode.HCM : ApCapabilityMode.LCM;
-        Decision decision = new Decision(previousNs, nowNs, arrivedBytes, rateMbps, estimateMbps, target);
+        Policy policy = Policy.FIXED_THRESHOLD;
+        if (hysteresisTarget != null) {
+            policy = Policy.HYSTERESIS;
+            hysteresisTarget = settings.thresholdBand().choose(hysteresisTarget, estimateMbps);
+            target = hysteresisTarget;
+        }
+        Decision decision = new Decision(previousNs, nowNs, arrivedBytes, rateMbps, estimateMbps, target, policy);
         previousNs = nowNs;
         previousBytes = downlinkArrivalBytes;
         return decision;
@@ -49,6 +65,7 @@ public final class ApModeController {
     public enum Policy {
         OFF("off", null), ALWAYS_LCM("always-lcm", ApCapabilityMode.LCM),
         ALWAYS_HCM("always-hcm", ApCapabilityMode.HCM), FIXED_THRESHOLD("fixed-threshold", null),
+        HYSTERESIS("hysteresis", null),
         E_AWARE("e-aware", null), EC_AWARE("ec-aware", null),
         ECQ_AWARE("ecq-aware", null), ECQ_SDPS("ecq-sdps", null), ECQ_SDPS_D4("ecq-sdps-d4", null),
         ECQ_SDPS_COMPLETE("ecq-sdps-complete", null), ECQ_SDPS_E1("ecq-sdps-e1", null), ECQ_SDPS_E3("ecq-sdps-e3", null);
@@ -70,7 +87,30 @@ public final class ApModeController {
         public boolean usesFixedCcaHistory() { return this == ECQ_SDPS_E1 || this == ECQ_SDPS_E3; }
         public boolean usesChannel() { return this == EC_AWARE || usesQos(); }
         public boolean usesPrediction() { return this == E_AWARE || usesChannel(); }
-        public boolean dynamic() { return this == FIXED_THRESHOLD || usesPrediction(); }
+        public boolean dynamic() { return usesLoadThreshold() || usesPrediction(); }
+        public boolean usesLoadThreshold() { return this == FIXED_THRESHOLD || this == HYSTERESIS; }
+    }
+
+    public static final class ThresholdBand {
+        private final double lowerMbps, upperMbps;
+
+        public ThresholdBand(double lowerMbps, double upperMbps) {
+            if (!Double.isFinite(lowerMbps) || !Double.isFinite(upperMbps) || lowerMbps < 0 || lowerMbps >= upperMbps) {
+                throw new IllegalArgumentException("Hysteresis requires 0 <= lower < upper in Mb/s");
+            }
+            this.lowerMbps = lowerMbps;
+            this.upperMbps = upperMbps;
+        }
+
+        private ApCapabilityMode choose(ApCapabilityMode currentTarget, double estimateMbps) {
+            if (estimateMbps > upperMbps) {
+                return ApCapabilityMode.HCM;
+            }
+            if (estimateMbps < lowerMbps) {
+                return ApCapabilityMode.LCM;
+            }
+            return currentTarget;
+        }
     }
 
     public static final class PredictionOptions {
@@ -126,6 +166,7 @@ public final class ApModeController {
         private final CompleteFeatures completeFeatures;
         private final PredictionOptions predictionOptions;
         private final RefinementOptions refinementOptions;
+        private final ThresholdBand thresholdBand;
 
         public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps) {
             this(policies, periodNs, alpha, thresholdMbps, DEFAULT_ENERGY_MARGIN_UJ);
@@ -163,6 +204,14 @@ public final class ApModeController {
                         double energyMarginUj, ServiceModel serviceModel, long qosMarginNs, long deferralLimitNs,
                         long minimumResidencyNs, double reverseMarginUj, CompleteFeatures completeFeatures,
                         PredictionOptions predictionOptions, RefinementOptions refinementOptions) {
+            this(policies, periodNs, alpha, thresholdMbps, energyMarginUj, serviceModel, qosMarginNs, deferralLimitNs,
+                    minimumResidencyNs, reverseMarginUj, completeFeatures, predictionOptions, refinementOptions, null);
+        }
+
+        public Settings(Map<Integer, Policy> policies, long periodNs, double alpha, double thresholdMbps,
+                        double energyMarginUj, ServiceModel serviceModel, long qosMarginNs, long deferralLimitNs,
+                        long minimumResidencyNs, double reverseMarginUj, CompleteFeatures completeFeatures,
+                        PredictionOptions predictionOptions, RefinementOptions refinementOptions, ThresholdBand thresholdBand) {
             if (periodNs <= 0 || !(alpha > 0 && alpha <= 1)
                     || !Double.isFinite(thresholdMbps) || thresholdMbps < 0
                     || !Double.isFinite(energyMarginUj) || energyMarginUj < 0 || qosMarginNs < 0 || deferralLimitNs < 0) {
@@ -184,6 +233,7 @@ public final class ApModeController {
             this.completeFeatures = completeFeatures;
             this.predictionOptions = predictionOptions;
             this.refinementOptions = refinementOptions;
+            this.thresholdBand = thresholdBand;
         }
 
         public Map<Integer, Policy> policies() { return policies; }
@@ -198,6 +248,7 @@ public final class ApModeController {
         public CompleteFeatures completeFeatures() { return completeFeatures; }
         public PredictionOptions predictionOptions() { return predictionOptions; }
         public RefinementOptions refinementOptions() { return refinementOptions; }
+        public ThresholdBand thresholdBand() { return thresholdBand; }
 
         public boolean useLoadAwareService(Policy policy) {
             return serviceModel == ServiceModel.LOAD_AWARE || (serviceModel == ServiceModel.AUTO && policy.usesQos());
@@ -223,15 +274,17 @@ public final class ApModeController {
         private final double arrivalMbps;
         private final double estimateMbps;
         private final ApCapabilityMode target;
+        private final Policy policy;
 
         private Decision(long windowStartNs, long timeNs, long arrivedBytes, double arrivalMbps,
-                         double estimateMbps, ApCapabilityMode target) {
+                         double estimateMbps, ApCapabilityMode target, Policy policy) {
             this.windowStartNs = windowStartNs;
             this.timeNs = timeNs;
             this.arrivedBytes = arrivedBytes;
             this.arrivalMbps = arrivalMbps;
             this.estimateMbps = estimateMbps;
             this.target = target;
+            this.policy = policy;
         }
 
         public long windowStartNs() { return windowStartNs; }
@@ -240,5 +293,6 @@ public final class ApModeController {
         public double arrivalMbps() { return arrivalMbps; }
         public double estimateMbps() { return estimateMbps; }
         public ApCapabilityMode target() { return target; }
+        public Policy policy() { return policy; }
     }
 }

@@ -21,7 +21,9 @@ ENDPOINTS = {"DELIVERED", "WIFI_RETRY_LIMIT_DROP", "WIFI_COLLISION_DROP"}
 NETWORK = ("ALL", "BOTH", "ALL")
 
 
-def summarize_packets(keys, packets, delivery, drops, order, cutoff, optical):
+def summarize_packets(keys, packets, delivery, drops, order, cutoff, optical, deadline_ns=None):
+    if deadline_ns is None:
+        deadline_ns = {ac: us * 1000 for ac, us in DEADLINES.items()}
     made = len(keys)
     finished = sorted((p for p in keys if p in delivery), key=order.__getitem__)
     dropped = [p for p in keys if p in drops]
@@ -30,9 +32,9 @@ def summarize_packets(keys, packets, delivery, drops, order, cutoff, optical):
     final_pending = made - len(finished) - len(dropped)
     window_pending = made - len(window) - drop_window
     delays = {p: delivery[p] - packets[p][0] for p in finished}
-    on_time = sum(delays[p] <= DEADLINES[packets[p][2]] * 1000 for p in finished)
-    window_on_time = sum(delays[p] <= DEADLINES[packets[p][2]] * 1000 for p in window)
-    overdue = sum(delivery.get(p, drops.get(p, cutoff + 1)) > cutoff >= packets[p][0] + DEADLINES[packets[p][2]] * 1000
+    on_time = sum(delays[p] <= deadline_ns[packets[p][2]] for p in finished)
+    window_on_time = sum(delays[p] <= deadline_ns[packets[p][2]] for p in window)
+    overdue = sum(delivery.get(p, drops.get(p, cutoff + 1)) > cutoff >= packets[p][0] + deadline_ns[packets[p][2]]
                   for p in keys)
     require(window_pending == len(finished) - len(window) + len(dropped) - drop_window + final_pending,
             "Window and final packet counts do not reconcile")
@@ -91,11 +93,15 @@ def external_busy(rows, initial, cutoff):
     return {sfu: total + (cutoff - last[sfu][0]) * last[sfu][1] for sfu, total in totals.items()}
 
 
-def summarize_run(case, seed, policy, path, signature, representative):
+def summarize_run(case, seed, policy, path, signature, representative, *, fixture=None, cfg=None, rows=None):
     name = f"{case.name}/{seed}/{policy}/{case.window_us}"
-    fixture = arrivals(case, seed)
-    cfg = properties(case, seed, policy, fixture)
-    rows = parse_trace(path.with_suffix(".log").read_text(encoding="utf-8"))
+    if fixture is None:
+        fixture = arrivals(case, seed)
+    if cfg is None:
+        cfg = properties(case, seed, policy, fixture)
+    if rows is None:
+        rows = parse_trace(path.with_suffix(".log").read_text(encoding="utf-8"))
+    deadline_ns = {ac: ns(cfg[f"wifi.ap.qos.{ac}.deadline.us"]) for ac in DEADLINES}
     packets = packet_inputs(rows, cfg)
     expected = {str(p): (us * 1000, size, ac, direction, str(sta), str(case.associations[sta - 1]))
                 for p, (us, direction, sta, ac, size) in enumerate(fixture, 1)}
@@ -109,14 +115,14 @@ def summarize_run(case, seed, policy, path, signature, representative):
     require(set(initial) == {str(sfu) for sfu in range(1, case.sfus + 1)}, f"{name}: missing AP state")
     switches = audit_switches(name, rows, cfg, end)
     audit_deferrals(name, rows)
-    if policy == ECQ:
+    if policy in (ECQ, "ecq-sdps-e3"):
         require(all(a["finish_ns"] < b["start_ns"] for seq in switches.values() for a, b in zip(seq, seq[1:])),
                 f"{name}: immediate mode reversal")
     drained = max([end, *delivery.values(), *drops.values(), *(time_ns(r) for r in events(rows, "WIFI_AP_ACTIVITY_CHANGE"))])
     simulator_end = ns(next(row["simulation_end_us"] for row in rows if "simulation_end_us" in row))
     if unsettled:
         drained = max(drained, simulator_end)
-        require(all(packets[p][0] + DEADLINES[packets[p][2]] * 1000 <= drained for p in unsettled),
+        require(all(packets[p][0] + deadline_ns[packets[p][2]] <= drained for p in unsettled),
                 f"{name}: deadline for an unresolved packet has not elapsed")
     power = energy_account(name, rows, initial, end, drained, switches, cfg)
     cca = external_busy(rows, initial, end)
@@ -152,7 +158,7 @@ def summarize_run(case, seed, policy, path, signature, representative):
     ordering = {p: i for i, p in enumerate(order)}
     result = []
     for (sfu, direction, ac), keys in cells.items():
-        metric = summarize_packets(keys, packets, delivery, drops, ordering, end, optical)
+        metric = summarize_packets(keys, packets, delivery, drops, ordering, end, optical, deadline_ns)
         if sfu != "ALL" and direction != "BOTH":
             actual = [int(qos[sfu, direction, ac][k]) for k in ("arrived", "delivered", "dropped", "incomplete", "overdue", "on_time")]
             require(actual == [metric[k] for k in ("generated", "delivered_window", "dropped_window", "backlog_window",

@@ -121,6 +121,8 @@ public final class ConfigLoader {
     private static final String AP_CONTROL_PERIOD_US = "wifi.ap.control.period.us";
     private static final String AP_CONTROL_ALPHA = "wifi.ap.control.ewma.alpha";
     private static final String AP_CONTROL_THRESHOLD = "wifi.ap.control.threshold.mbps";
+    private static final String AP_HYSTERESIS_LOWER = "wifi.ap.control.hysteresis.lower.mbps";
+    private static final String AP_HYSTERESIS_UPPER = "wifi.ap.control.hysteresis.upper.mbps";
     private static final String AP_CONTROL_MARGIN = "wifi.ap.control.energy.margin.uj";
     private static final String AP_CONTROL_SERVICE_MODEL = "wifi.ap.control.service.model";
     private static final String AP_CONTROL_QOS_MARGIN_US = "wifi.ap.control.qos.margin.us";
@@ -156,6 +158,7 @@ public final class ConfigLoader {
             LCM_POWER + "idle.w", LCM_POWER + "tx.w", LCM_POWER + "rx.w",
             HCM_POWER + "idle.w", HCM_POWER + "tx.w", HCM_POWER + "rx.w",
             AP_CONTROL_POLICY, AP_CONTROL_PERIOD_US, AP_CONTROL_ALPHA, AP_CONTROL_THRESHOLD, AP_CONTROL_MARGIN,
+            AP_HYSTERESIS_LOWER, AP_HYSTERESIS_UPPER,
             AP_CONTROL_SERVICE_MODEL, AP_CONTROL_QOS_MARGIN_US, AP_CONTROL_DEFER_LIMIT_US,
             AP_CONTROL_MIN_RESIDENCY_US, AP_CONTROL_REVERSE_MARGIN, AP_COMPLETE_CHANNEL, AP_COMPLETE_QOS,
             AP_COMPLETE_DELAY, AP_COMPLETE_RESIDENCY, AP_E1_CCA_WINDOW, AP_E1_SLIDING_CCA, AP_E1_URGENT_GUARD,
@@ -785,8 +788,22 @@ public final class ConfigLoader {
                 readCompleteFeature(properties, AP_E1_SLIDING_CCA), readCompleteFeature(properties, AP_E1_URGENT_GUARD));
         var refinement = new ApModeController.RefinementOptions(readCompleteFeature(properties, AP_E3_CAPACITY),
                 readCompleteFeature(properties, AP_E3_ECONOMICS));
+        var band = readHysteresisBand(properties, policies.containsValue(ApModeController.Policy.HYSTERESIS));
         return new ApModeController.Settings(policies, periodNs, alpha, threshold, margin, serviceModel, qosMargin, deferLimit,
-                minimumResidency, reverseMargin, features, prediction, refinement);
+                minimumResidency, reverseMargin, features, prediction, refinement, band);
+    }
+
+    private static ApModeController.ThresholdBand readHysteresisBand(Properties properties, boolean enabled) {
+        if (!enabled && !properties.containsKey(AP_HYSTERESIS_LOWER) && !properties.containsKey(AP_HYSTERESIS_UPPER)) {
+            return null;
+        }
+        String lower = properties.getProperty(AP_HYSTERESIS_LOWER);
+        String upper = properties.getProperty(AP_HYSTERESIS_UPPER);
+        if (lower == null || upper == null) {
+            throw new IllegalArgumentException("Hysteresis requires both lower.mbps and upper.mbps");
+        }
+        return new ApModeController.ThresholdBand(parseNonNegativeDouble(lower.strip(), AP_HYSTERESIS_LOWER),
+                parseNonNegativeDouble(upper.strip(), AP_HYSTERESIS_UPPER));
     }
 
     private static boolean readCompleteFeature(Properties properties, String key) {
@@ -800,7 +817,7 @@ public final class ConfigLoader {
                 return policy;
             }
         }
-        throw new IllegalArgumentException(key + " must be off, always-lcm, always-hcm, fixed-threshold, e-aware, ec-aware, "
+        throw new IllegalArgumentException(key + " must be off, always-lcm, always-hcm, fixed-threshold, hysteresis, e-aware, ec-aware, "
                 + "ecq-aware, ecq-sdps, ecq-sdps-d4, ecq-sdps-complete, ecq-sdps-e1 or ecq-sdps-e3");
     }
 

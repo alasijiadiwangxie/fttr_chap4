@@ -887,7 +887,7 @@ public final class TraceLogger {
                         + "window_start_ns=%d arrival_bytes=%d arrival_mbps=%s ewma_mbps=%s current_mode=%s "
                         + "target_mode=%s action=%s switch_id=%d%n",
                 formatMicroseconds(decision.timeNs()), decision.timeNs(), sfuId,
-                ApModeController.Policy.FIXED_THRESHOLD.key(), decision.windowStartNs(), decision.arrivedBytes(),
+                decision.policy().key(), decision.windowStartNs(), decision.arrivedBytes(),
                 decision.arrivalMbps(), decision.estimateMbps(), current, decision.target(), outcome.action(),
                 outcome.requestId());
     }

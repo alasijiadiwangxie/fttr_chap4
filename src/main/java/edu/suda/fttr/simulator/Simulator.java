@@ -86,7 +86,6 @@ public final class Simulator {
             int sfuId = i + 1;
             ApCapabilityMode mode = config.apCapabilityMode(sfuId);
             ApModeController.Policy control = config.apControl().policyFor(sfuId);
-            boolean fixedThreshold = control == ApModeController.Policy.FIXED_THRESHOLD;
             Map<Integer, Sta> associated = stationsBySfu.get(i);
             WifiLink wifi = legacyWifi;
             if (mode != null) {
@@ -119,8 +118,9 @@ public final class Simulator {
             if (control != ApModeController.Policy.OFF) {
                 context.recordInitialApMode(sfuId, control, mode);
             }
-            if (fixedThreshold) {
-                controllers.put(sfuId, new ApModeController(config.apControl()));
+            if (control.usesLoadThreshold()) {
+                controllers.put(sfuId, new ApModeController(config.apControl(), control == ApModeController.Policy.HYSTERESIS
+                        ? mode : null));
             }
             ApModeSwitch.Settings switching = config.apSwitching();
             if (control.dynamic() || (switching != null && !switching.requestsFor(sfuId).isEmpty())) {

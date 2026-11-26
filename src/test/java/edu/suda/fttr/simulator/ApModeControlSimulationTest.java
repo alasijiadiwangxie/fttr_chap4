@@ -31,6 +31,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ApModeControlSimulationTest {
     private static final String POLICY = "wifi.ap.control.policy=";
     private static final String FIXED = POLICY + "fixed-threshold";
+    private static final String HYSTERESIS = POLICY + "hysteresis";
+    private static final String LOWER = "wifi.ap.control.hysteresis.lower.mbps=";
+    private static final String UPPER = "wifi.ap.control.hysteresis.upper.mbps=";
     private static final String PERIOD = "wifi.ap.control.period.us=";
     private static final String ALPHA = "wifi.ap.control.ewma.alpha=";
     private static final String THRESHOLD = "wifi.ap.control.threshold.mbps=";
@@ -72,6 +75,45 @@ class ApModeControlSimulationTest {
         assertEquals(List.of(461.4375, 220.9375, 461.4375),
                 values(trace, SWITCH + "END", "switch_energy_uj").stream().map(Double::valueOf)
                         .collect(Collectors.toList()));
+    }
+
+    @Test
+    void hysteresisRetainsTargetOnBothEdgesAndInsideTheBand(@TempDir Path directory) throws IOException {
+        var trace = run(directory, HYSTERESIS, LOWER + "26", UPPER + "36", PERIOD + "400", ALPHA + "1", WINDOW + "2100",
+                "packet.arrival.us=1,401,801,1201,1601", "packet.1.bytes=1800", "packet.2.bytes=1850",
+                "packet.3.bytes=1300", "packet.4.bytes=1250", "packet.5.bytes=1600");
+        assertEquals(List.of("36.0", "37.0", "26.0", "25.0", "32.0"), values(trace, DECISION, "ewma_mbps"));
+        assertEquals(List.of("LCM", "HCM", "HCM", "LCM", "LCM"), values(trace, DECISION, "target_mode"));
+        assertEquals(List.of("HCM", "LCM"), values(trace, SWITCH + "END", "to_mode"));
+        assertEquals(List.of("hysteresis", "hysteresis"), values(trace, SWITCH + "END", "policy"));
+    }
+
+    @Test
+    void hysteresisKeepsAWaitingRequestUntilTheFrameExchangeCanFinish(@TempDir Path directory) throws IOException {
+        var trace = run(directory, HYSTERESIS, LOWER + "26", UPPER + "36", PERIOD + "100", ALPHA + "1", WINDOW + "250",
+                "packet.arrival.us=0,0,0,150", "packet.4.bytes=375");
+        assertEquals(List.of("REQUESTED", "PENDING"), values(trace, DECISION, "action"));
+        assertEquals(List.of("HCM", "HCM"), values(trace, DECISION, "target_mode"));
+        assertEquals(ticks(only(trace, "WIFI_AMPDU_BA_END")), ticks(only(trace, SWITCH + "START")));
+        assertEquals(List.of("1", "2", "3", "4"), values(trace, "DELIVERED", "packet_id"));
+    }
+
+    @Test
+    void hysteresisRetainsTheInitialModeIndependentlyPerSfu(@TempDir Path directory) throws IOException {
+        var trace = run(directory, HYSTERESIS, LOWER + "26", UPPER + "36", PERIOD + "400", ALPHA + "1", WINDOW + "500",
+                INITIAL + "HCM", "sfu.count=2", "sta.count=2", "sta.2.sfu.id=2", "packet.bytes=1550",
+                "packet.arrival.us=1,1", "packet.2.sta.id=2");
+        assertEquals(List.of("HCM", "LCM"), values(trace, DECISION, "target_mode"));
+        assertTrue(events(trace, SWITCH + "REQUEST").isEmpty());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"missing", "36", "37", "NaN", "-1"})
+    void hysteresisRequiresACompleteOrderedFiniteBand(String lower, @TempDir Path directory) throws IOException {
+        var path = lower.equals("missing")
+                ? config(directory, HYSTERESIS, "packet.arrival.us=0", UPPER + "36")
+                : config(directory, HYSTERESIS, "packet.arrival.us=0", UPPER + "36", LOWER + lower);
+        assertThrows(IllegalArgumentException.class, () -> ConfigLoader.load(path));
     }
 
     @Test
