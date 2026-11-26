@@ -134,6 +134,8 @@ public final class ConfigLoader {
     private static final String AP_E1_CCA_WINDOW = "wifi.ap.control.e1.cca.window.us";
     private static final String AP_E1_SLIDING_CCA = "wifi.ap.control.e1.cca.enabled";
     private static final String AP_E1_URGENT_GUARD = "wifi.ap.control.e1.urgent.guard.enabled";
+    private static final String AP_E3_CAPACITY = "wifi.ap.control.e3.capacity.enabled";
+    private static final String AP_E3_ECONOMICS = "wifi.ap.control.e3.economics.enabled";
     private static final Set<String> KEYS = Set.of(
             FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", DOWNLINK_PROPAGATION_US,
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
@@ -157,6 +159,7 @@ public final class ConfigLoader {
             AP_CONTROL_SERVICE_MODEL, AP_CONTROL_QOS_MARGIN_US, AP_CONTROL_DEFER_LIMIT_US,
             AP_CONTROL_MIN_RESIDENCY_US, AP_CONTROL_REVERSE_MARGIN, AP_COMPLETE_CHANNEL, AP_COMPLETE_QOS,
             AP_COMPLETE_DELAY, AP_COMPLETE_RESIDENCY, AP_E1_CCA_WINDOW, AP_E1_SLIDING_CCA, AP_E1_URGENT_GUARD,
+            AP_E3_CAPACITY, AP_E3_ECONOMICS,
             AP_SWITCH_ENABLED, LCM_TO_HCM + "delay.us", LCM_TO_HCM + "power.w",
             HCM_TO_LCM + "delay.us", HCM_TO_LCM + "power.w");
     private static final Set<String> PHY_KEYS = Set.of(
@@ -780,8 +783,10 @@ public final class ConfigLoader {
         var prediction = new ApModeController.PredictionOptions(readDurationNs(properties, AP_E1_CCA_WINDOW,
                 Long.toString(ApModeController.DEFAULT_CCA_HISTORY_NS / 1000), true),
                 readCompleteFeature(properties, AP_E1_SLIDING_CCA), readCompleteFeature(properties, AP_E1_URGENT_GUARD));
+        var refinement = new ApModeController.RefinementOptions(readCompleteFeature(properties, AP_E3_CAPACITY),
+                readCompleteFeature(properties, AP_E3_ECONOMICS));
         return new ApModeController.Settings(policies, periodNs, alpha, threshold, margin, serviceModel, qosMargin, deferLimit,
-                minimumResidency, reverseMargin, features, prediction);
+                minimumResidency, reverseMargin, features, prediction, refinement);
     }
 
     private static boolean readCompleteFeature(Properties properties, String key) {
@@ -796,7 +801,7 @@ public final class ConfigLoader {
             }
         }
         throw new IllegalArgumentException(key + " must be off, always-lcm, always-hcm, fixed-threshold, e-aware, ec-aware, "
-                + "ecq-aware, ecq-sdps, ecq-sdps-d4, ecq-sdps-complete or ecq-sdps-e1");
+                + "ecq-aware, ecq-sdps, ecq-sdps-d4, ecq-sdps-complete, ecq-sdps-e1 or ecq-sdps-e3");
     }
 
     private static void validateApControl(ApModeController.Settings control, ApModeSwitch.Settings switching) {

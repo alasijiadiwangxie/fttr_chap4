@@ -173,12 +173,14 @@ public final class ApEnergyModePolicy {
 
     public static final class Candidate {
         public final ServiceForecast forecast;
-        public final Cost expected;
+        public final Cost expected, conservative, optimistic;
         public final double lowerSuccessBits, upperSuccessBits, lowCostUj, highCostUj;
 
         private Candidate(ServiceForecast forecast, Cost expected, Cost conservative, Cost optimistic) {
             this.forecast = forecast;
             this.expected = expected;
+            this.conservative = conservative;
+            this.optimistic = optimistic;
             lowerSuccessBits = Math.min(conservative.successBits, Math.min(optimistic.successBits, expected.successBits));
             upperSuccessBits = Math.max(conservative.successBits, Math.max(optimistic.successBits, expected.successBits));
             lowCostUj = Math.min(optimistic.totalUj, Math.min(conservative.totalUj, expected.totalUj));

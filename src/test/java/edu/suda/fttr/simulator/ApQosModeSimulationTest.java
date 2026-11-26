@@ -34,6 +34,7 @@ final class ApQosModeSimulationTest {
     private static final String D5 = "wifi.ap.control.policy=ecq-sdps-complete";
     private static final String D5_DECISION = "WIFI_AP_D5_DECISION";
     private static final String E1 = "wifi.ap.control.policy=ecq-sdps-e1";
+    private static final String E3 = "wifi.ap.control.policy=ecq-sdps-e3";
     private static final List<String> BASE = List.of("wifi.ap.control.policy=ecq-sdps", "fiber.delay.us=0", "wifi.model=he-su",
             "packet.bytes=1500", "wifi.mac.exchange=data-sifs-ack", "wifi.mac.access=edca-multi-ac",
             "wifi.mac.edca.BE.aifsn=3", "wifi.mac.edca.VO.cwmin=0", "wifi.mac.edca.VI.cwmin=0",
@@ -296,8 +297,40 @@ final class ApQosModeSimulationTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"capacity", "economics"})
+    void e3AblationKeepsOtherRefinementAndImmediateDeadlineRescue(String disabled, @TempDir Path dir) throws IOException {
+        var trace = run(dir, E3, "packet.arrival.us=0", "packet.1.type=VO", "wifi.ap.qos.VO.deadline.us=254.225",
+                "wifi.ap.control.e3." + disabled + ".enabled=false");
+        var e3 = only(trace, "WIFI_AP_E3_DECISION");
+        assertEquals(Boolean.toString(!disabled.equals("capacity")), e3.get("capacity_enabled"));
+        assertEquals(Boolean.toString(!disabled.equals("economics")), e3.get("economics_enabled"));
+        assertEquals("DEADLINE_RESCUE", only(trace, "WIFI_AP_E1_URGENT").get("action_gate"));
+        assertEquals(0, stamp(only(trace, B4 + "REQUEST")));
+        assertTrue(stamp(only(trace, "DELIVERED")) <= 254_225);
+    }
+
+    @Test
+    void e3QueueAndCostEvidenceIgnoreUnseenArrivals(@TempDir Path dir) throws IOException {
+        var first = run(dir, E3, "packet.arrival.us=0", "packet.1.type=VO", "wifi.ap.qos.VO.deadline.us=254.225");
+        var withFuture = run(dir, E3, "packet.arrival.us=0,300,310,320", "packet.1.type=VO", "wifi.ap.qos.VO.deadline.us=254.225");
+        assertEquals(events(first, "WIFI_AP_E3_DECISION").get(0), events(withFuture, "WIFI_AP_E3_DECISION").get(0));
+    }
+
+    @Test
+    void e3UsesAllIngressInTheControlPeriodWithShorterC1Samples(@TempDir Path dir) throws IOException {
+        var trace = run(dir, E3, "wifi.ap.activity.window.us=6000", "wifi.ap.observation.period.us=1000",
+                "packet.arrival.us=250,1250,2250,3250,4250");
+        var decision = events(trace, "WIFI_AP_E3_DECISION").stream()
+                .filter(row -> "PERIODIC".equals(row.get("trigger"))).findFirst().orElseThrow();
+        assertEquals(5_000_000, stamp(decision));
+        assertEquals(12, Double.parseDouble(decision.get("arrived_mbps")), 1e-12);
+        assertEquals(5, events(trace, "DELIVERED").size());
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"wifi.ap.control.defer.max.us=-1", "wifi.ap.control.qos.margin.us=-1",
-            "wifi.ap.control.service.model=unknown", "wifi.ap.control.e1.cca.window.us=0", "wifi.ap.control.e1.cca.window.us=7500"})
+            "wifi.ap.control.service.model=unknown", "wifi.ap.control.e1.cca.window.us=0", "wifi.ap.control.e1.cca.window.us=7500",
+            "wifi.ap.control.e3.capacity.enabled=unknown", "wifi.ap.control.e3.economics.enabled=unknown"})
     void rejectsInvalidOptions(String setting, @TempDir Path dir) {
         assertThrows(IllegalArgumentException.class, () -> run(dir, "packet.arrival.us=0", setting));
     }

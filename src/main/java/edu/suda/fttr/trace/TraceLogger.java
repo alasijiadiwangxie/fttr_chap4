@@ -6,6 +6,7 @@ import edu.suda.fttr.channel.ApChannelObservations.LocalReception;
 import edu.suda.fttr.channel.ChannelReport;
 import edu.suda.fttr.channel.ChannelTruth;
 import edu.suda.fttr.config.ChannelObservationInput;
+import edu.suda.fttr.energy.ApDecisionRefinement;
 import edu.suda.fttr.energy.ApEnergyModePolicy;
 import edu.suda.fttr.energy.ApDeadlineModePolicy;
 import edu.suda.fttr.energy.ApModePredictor;
@@ -1020,6 +1021,34 @@ public final class TraceLogger {
                         + "safe_economic_exit=%b keep_shortfall_mbps=%s change_shortfall_mbps=%s%n",
                 nowNs, sfuId, features.channel, features.qos, features.deferral, features.residency,
                 choice.safeEconomicExit, choice.keepQos.capacityShortfallMbps, choice.changeQos.capacityShortfallMbps);
+    }
+
+    public void recordApRefinement(long nowNs, int sfuId, String trigger, ApDecisionRefinement.ObservationWindow sample,
+                                   ApEnergyModePolicy.Decision plan, ApResidencyModePolicy.Decision choice,
+                                   ApModeSwitch.Outcome outcome) {
+        var mode = plan.readiness.projectedMode;
+        int index = mode == ApCapabilityMode.LCM ? 0 : 1;
+        var keep = plan.candidates.get(index);
+        var change = plan.candidates.get(1 - index);
+        output.printf(Locale.ROOT, "event=WIFI_AP_E3_DECISION t_ns=%d sfu_id=%d trigger=%s current_mode=%s target_mode=%s "
+                        + "reason=%s action=%s capacity_enabled=%b economics_enabled=%b capacity_evidence=%s deficit_windows=%d "
+                        + "backlog_bytes=%d backlog_delta_bytes=%d oldest_ns=%d arrived_mbps=%s delivered_mbps=%s "
+                        + "measured_service_mbps=%s ewma_demand_mbps=%s demand_bits=%s keep_saturated_mbps=%s change_saturated_mbps=%s "
+                        + "keep_success_bits=%s change_success_bits=%s keep_unserved_bits=%s change_unserved_bits=%s "
+                        + "keep_vo_on_time=%s change_vo_on_time=%s keep_vi_on_time=%s change_vi_on_time=%s "
+                        + "keep_qos=%s change_qos=%s nominal_saving_uj=%s robust_saving_uj=%s return_reserve_uj=%s margin_uj=%s "
+                        + "upper_demand_mbps=%s economic_headroom=%b wide_priority_risk=%b%n",
+                nowNs, sfuId, trigger, mode, choice.target, choice.reason, outcome == null ? "DEFERRED" : outcome.action(),
+                sample.options.capacity, sample.options.economics, choice.capacity, sample.deficitWindows,
+                sample.backlogBytes, sample.backlogDeltaBytes, sample.oldestNs, sample.arrivalMbps, sample.deliveredMbps,
+                sample.measuredServiceMbps, keep.forecast.expected.arrivalBits * 1_000 / plan.horizonNs,
+                keep.forecast.expected.demandBits, keep.forecast.saturatedMbps, change.forecast.saturatedMbps,
+                keep.expected.successBits, change.expected.successBits, keep.expected.unservedBits, change.expected.unservedBits,
+                choice.keepQos.classes.get(AccessCategory.VO).expectedOnTime(), choice.changeQos.classes.get(AccessCategory.VO).expectedOnTime(),
+                choice.keepQos.classes.get(AccessCategory.VI).expectedOnTime(), choice.changeQos.classes.get(AccessCategory.VI).expectedOnTime(),
+                choice.keepQos.status, choice.changeQos.status, choice.economicEvidence.expectedSavingUj,
+                choice.economicEvidence.robustSavingUj, choice.economics.returnReserveUj, choice.marginUj,
+                sample.upperDemandMbps, choice.economicEvidence.headroom, sample.widePriorityRisk);
     }
 
     public void recordApCcaForecast(long nowNs, int sfuId, long horizonNs, CcaHistory.Snapshot history,

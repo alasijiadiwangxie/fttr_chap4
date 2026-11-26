@@ -54,6 +54,12 @@ public final class ApResidencyModePolicy {
     public Decision choose(long nowNs, Residence residence, long untilReviewNs, long delayLimitNs, double scanW,
                            ApEnergyModePolicy.Decision energy, ApDeadlineModePolicy.Decision qos, boolean externalBusy,
                            ApModeController.CompleteFeatures features) {
+        return choose(nowNs, residence, untilReviewNs, delayLimitNs, scanW, energy, qos, externalBusy, features, null);
+    }
+
+    public Decision choose(long nowNs, Residence residence, long untilReviewNs, long delayLimitNs, double scanW,
+                           ApEnergyModePolicy.Decision energy, ApDeadlineModePolicy.Decision qos, boolean externalBusy,
+                           ApModeController.CompleteFeatures features, ApDecisionRefinement.ObservationWindow observed) {
         var ready = energy.readiness;
         var current = ready.projectedMode;
         int base = current == ApCapabilityMode.LCM ? 0 : 1;
@@ -69,12 +75,19 @@ public final class ApResidencyModePolicy {
         double marginUj = energy.marginUj + (residence.afterSwitch && economicProtection ? reverseMarginUj : 0);
 
         Economics economics = economics(energy, keep, change, scanW, marginUj, economicProtection);
+        var economicEvidence = ApDecisionRefinement.economics(observed, power, energy, keep, change, scanW,
+                economics.returnReserveUj);
+        var capacity = ApDecisionRefinement.capacity(observed, energy, keep, change, keepQos, changeQos, checkQos);
         long untilRelease = Math.max(0, residence.eligibleAtNs - nowNs);
         Risk risk = checkQos ? risk(keepQos, changeQos, Math.min(untilRelease, untilReviewNs)) : Risk.NONE;
         // D4 只接受可挽救报文带来的明确增益。完整策略也允许 QoS 不退步且仍能承担业务的经济降档。
         boolean safeExit = features != null && current == ApCapabilityMode.HCM && bothRisky && !risk.clearImprovement()
                 && safeEconomicExit(keepQos, changeQos, keep, change);
-        boolean energyLed = keepFeasible && changeFeasible || safeExit;
+        boolean capacityRecovery = capacity == ApDecisionRefinement.Capacity.RECOVER
+                && (!checkQos || bothRisky && !risk.clearImprovement());
+        boolean keepPriorityAccess = capacity == ApDecisionRefinement.Capacity.PRIORITY_CCA
+                && bothRisky && !(risk.clearImprovement() && ApDecisionRefinement.isPriority(risk.ac));
+        boolean energyLed = !capacityRecovery && (keepFeasible && changeFeasible || safeExit);
         boolean exception = untilRelease > 0 && risk.urgent != null && !keepFeasible;
         Reason reason;
         if (ready.activeSwitchNs > 0) {
@@ -83,18 +96,22 @@ public final class ApResidencyModePolicy {
             reason = Reason.SAME_TICK_GUARD;
         } else if (keepFeasible && !changeFeasible) {
             reason = Reason.KEEP_QOS;
-        } else if (bothRisky && !risk.clearImprovement() && !safeExit) {
+        } else if (keepPriorityAccess) {
+            reason = Reason.KEEP_PRIORITY_ACCESS;
+        } else if (bothRisky && !risk.clearImprovement() && !safeExit && !capacityRecovery) {
             reason = Reason.HOLD_UNPROVEN_QOS;
         } else if (energyLed && !(economics.savingUj > marginUj)) {
             reason = residence.afterSwitch && economics.savingUj > energy.marginUj
                     ? Reason.REVERSE_HYSTERESIS : Reason.KEEP_ENERGY;
         } else if (energyLed && !(economicProtection ? economics.covered() : change.expected.transitionFits)) {
             reason = Reason.PAYBACK_BEYOND_FORECAST;
+        } else if (energyLed && !economicEvidence.permits(marginUj)) {
+            reason = Reason.ECONOMIC_UNCERTAINTY;
         } else if (untilRelease > 0 && !exception) {
             reason = Reason.RESIDENCY_HOLD;
         } else {
-            reason = exception ? Reason.URGENT_EXCEPTION : safeExit ? Reason.SAFE_ECONOMIC_EXIT
-                    : energyLed ? Reason.ECONOMICAL_SWITCH : Reason.QOS_IMPROVEMENT;
+            reason = exception ? Reason.URGENT_EXCEPTION : capacityRecovery ? Reason.CAPACITY_RECOVERY
+                    : safeExit ? Reason.SAFE_ECONOMIC_EXIT : energyLed ? Reason.ECONOMICAL_SWITCH : Reason.QOS_IMPROVEMENT;
         }
 
         var target = reason.requestsChange() ? change.forecast.mode : current;
@@ -106,7 +123,7 @@ public final class ApResidencyModePolicy {
         double immediateUj = economics.changeUj + economics.returnReserveUj;
         long delayNs = deferred.costUj + energy.marginUj < immediateUj && Double.isFinite(deferred.costUj) ? allowed : 0;
         return new Decision(target, reason, residence, economics, marginUj, scanW, risk, keepQos, changeQos,
-                allowed, delayNs, immediateUj, deferred, safeExit);
+                allowed, delayNs, immediateUj, deferred, safeExit, capacity, economicEvidence);
     }
 
     /** 紧急事件可重算。只有换档能挽救一包、且等到下次周期会失去机会时才即时提交。 */
@@ -274,10 +291,11 @@ public final class ApResidencyModePolicy {
 
     public enum Reason {
         SWITCH_IN_PROGRESS, SAME_TICK_GUARD, KEEP_QOS, HOLD_UNPROVEN_QOS, REVERSE_HYSTERESIS, KEEP_ENERGY,
-        PAYBACK_BEYOND_FORECAST, RESIDENCY_HOLD, ECONOMICAL_SWITCH, SAFE_ECONOMIC_EXIT, QOS_IMPROVEMENT, URGENT_EXCEPTION;
+        PAYBACK_BEYOND_FORECAST, RESIDENCY_HOLD, ECONOMICAL_SWITCH, SAFE_ECONOMIC_EXIT, QOS_IMPROVEMENT, URGENT_EXCEPTION,
+        CAPACITY_RECOVERY, ECONOMIC_UNCERTAINTY, KEEP_PRIORITY_ACCESS;
 
         boolean requestsChange() {
-            return economic() || this == QOS_IMPROVEMENT || this == URGENT_EXCEPTION;
+            return economic() || this == QOS_IMPROVEMENT || this == URGENT_EXCEPTION || this == CAPACITY_RECOVERY;
         }
 
         private boolean economic() { return this == ECONOMICAL_SWITCH || this == SAFE_ECONOMIC_EXIT; }
@@ -305,11 +323,14 @@ public final class ApResidencyModePolicy {
         public final Risk risk;
         public final Deferred deferred;
         public final boolean safeEconomicExit;
+        public final ApDecisionRefinement.Capacity capacity;
+        public final ApDecisionRefinement.EconomicEvidence economicEvidence;
 
         private Decision(ApCapabilityMode target, Reason reason, Residence residence, Economics economics,
                          double marginUj, double scanW, Risk risk, ApDeadlineModePolicy.Candidate keepQos,
                          ApDeadlineModePolicy.Candidate changeQos, long allowedDelayNs, long delayNs,
-                         double immediateUj, Deferred deferred, boolean safeEconomicExit) {
+                         double immediateUj, Deferred deferred, boolean safeEconomicExit,
+                         ApDecisionRefinement.Capacity capacity, ApDecisionRefinement.EconomicEvidence economicEvidence) {
             this.target = target;
             this.reason = reason;
             this.residence = residence;
@@ -325,6 +346,8 @@ public final class ApResidencyModePolicy {
             this.immediateUj = immediateUj;
             this.deferred = deferred;
             this.safeEconomicExit = safeEconomicExit;
+            this.capacity = capacity;
+            this.economicEvidence = economicEvidence;
         }
     }
 
