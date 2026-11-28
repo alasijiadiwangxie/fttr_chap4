@@ -1,5 +1,6 @@
 package edu.suda.fttr.energy;
 
+import edu.suda.fttr.channel.CcaHistory;
 import edu.suda.fttr.channel.ChannelReport;
 import edu.suda.fttr.entity.AccessCategory;
 import edu.suda.fttr.entity.ApEnergyModel;
@@ -94,8 +95,16 @@ public final class ApModePredictor {
     public List<Forecast> predictRevised(long nowNs, ApCapabilityMode currentMode,
                                          List<ApTrafficObserver.Observation> observations, FeedbackLookup feedback,
                                          double primaryBusy, double wideBusy, Evidence evidence) {
-        return revised.predict(nowNs, currentMode, observations, feedback, primaryBusy, wideBusy, evidence,
+        return revised.predict(nowNs, currentMode, observations, feedback, primaryBusy, wideBusy, null, evidence,
                 opticalDelayNs);
+    }
+
+    /** 预测仅接收已结算的本地占用快照，不查询频段真值。 */
+    public List<Forecast> predictRevised(long nowNs, ApCapabilityMode currentMode,
+                                         List<ApTrafficObserver.Observation> observations, FeedbackLookup feedback,
+                                         CcaHistory.Snapshot occupancy, Evidence evidence) {
+        return revised.predict(nowNs, currentMode, observations, feedback, occupancy.primary.expected(),
+                occupancy.wide.expected(), occupancy, evidence, opticalDelayNs);
     }
 
     /** 采样时刻前已处理的发送事件与 AP 持有的 FIFO。上行没有待发队列。 */

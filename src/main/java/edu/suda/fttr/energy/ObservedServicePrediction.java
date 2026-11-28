@@ -1,5 +1,6 @@
 package edu.suda.fttr.energy;
 
+import edu.suda.fttr.channel.CcaHistory;
 import edu.suda.fttr.channel.ChannelReport;
 import edu.suda.fttr.energy.ApModePredictor.Confidence;
 import edu.suda.fttr.energy.ApModePredictor.Evidence;
@@ -74,7 +75,7 @@ final class ObservedServicePrediction {
     }
 
     List<Forecast> predict(long nowNs, ApCapabilityMode current, List<Observation> observations, FeedbackLookup feedback,
-                           double primaryBusy, double wideBusy, Evidence evidence,
+                           double primaryBusy, double wideBusy, CcaHistory.Snapshot occupancy, Evidence evidence,
                            Map<AccessCategory, Double> opticalDelayNs) {
         // B4 跨越采样窗口时，不能将该窗口的 PHY/MAC 实绩全部归入最终模式。
         if (previousMode == null || previousMode == current) {
@@ -88,9 +89,9 @@ final class ObservedServicePrediction {
             }
         }
         return List.of(predictMode(nowNs, current, ApCapabilityMode.LCM, observations, feedback,
-                        primaryBusy, primaryBusy, queues, opticalDelayNs),
+                        primaryBusy, primaryBusy, occupancy == null ? null : occupancy.primary, queues, opticalDelayNs),
                 predictMode(nowNs, current, ApCapabilityMode.HCM, observations, feedback,
-                        wideBusy, primaryBusy, queues, opticalDelayNs));
+                        wideBusy, primaryBusy, occupancy == null ? null : occupancy.wide, queues, opticalDelayNs));
     }
 
     private void updateHistory(ModeHistory mode, Evidence evidence) {
@@ -121,7 +122,8 @@ final class ObservedServicePrediction {
 
     private Forecast predictMode(long startNs, ApCapabilityMode current, ApCapabilityMode mode,
                                  List<Observation> observations, FeedbackLookup feedback, double busy, double primary,
-                                 Map<AccessCategory, List<Packet>> queues, Map<AccessCategory, Double> paths) {
+                                 CcaHistory.Estimate occupancy, Map<AccessCategory, List<Packet>> queues,
+                                 Map<AccessCategory, Double> paths) {
         long horizon = Math.min(settings.horizonNs(), Long.MAX_VALUE - startNs);
         ApModeSwitch.Profile transition = current == mode || switching == null ? null : switching.profileFrom(current);
         boolean switchUnknown = current != mode && transition == null;
@@ -130,11 +132,11 @@ final class ObservedServicePrediction {
                 : ApEnergyModel.switchEnergyUj(switchNs, transition.powerW()).doubleValue();
 
         Budget expected = budget(startNs, horizon, switchNs, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.EXPECTED);
+                busy, primary, occupancy, Estimate.EXPECTED);
         Budget conservative = budget(startNs, horizon, switchNs, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.CONSERVATIVE);
+                busy, primary, occupancy, Estimate.CONSERVATIVE);
         Budget optimistic = budget(startNs, horizon, switchNs, current, mode, observations, queues, feedback,
-                busy, primary, Estimate.OPTIMISTIC);
+                busy, primary, occupancy, Estimate.OPTIMISTIC);
         List<QosForecast> qos = new ArrayList<>();
         for (int index = 0; index < observations.size(); index++) {
             Observation observation = observations.get(index);
@@ -170,11 +172,15 @@ final class ObservedServicePrediction {
 
     private Budget budget(long startNs, long horizon, long switchNs, ApCapabilityMode current, ApCapabilityMode mode,
                           List<Observation> observations, Map<AccessCategory, List<Packet>> queues,
-                          FeedbackLookup feedback, double busy, double primary, Estimate estimate) {
+                          FeedbackLookup feedback, double busy, double primary, CcaHistory.Estimate occupancy,
+                          Estimate estimate) {
         ModeHistory prior = histories.get(mode);
         ModeHistory measured = histories.get(current);
-        Budget total = new Budget(horizon, (horizon - switchNs) * (1 - busyEstimate(busy, primary, estimate)),
-                busy < 0);
+        // 部分扫描只给出忙时界限。对三个估计使用各自的可用空口比例。
+        double blocked = occupancy == null ? busyEstimate(busy, primary, estimate)
+                : select(estimate, occupancy.expected(), occupancy.conservative(), occupancy.lower());
+        Budget total = new Budget(horizon, (horizon - switchNs) * (1 - blocked),
+                occupancy == null ? busy < 0 : occupancy.incomplete());
         Map<Integer, WirelessPhy> stations = profiles.get(mode);
         for (Observation observation : observations) {
             Flow flow = new Flow(observation, horizon);

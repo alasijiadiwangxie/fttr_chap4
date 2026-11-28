@@ -64,7 +64,8 @@ def read_execution(name: str, settings: dict[str, str], trace: list[dict]) -> li
             groups[row["grant_id"]].append(row)
     queue_rows = events(trace, "TCONT_ENQUEUE")
     queued = {row["packet_id"]: row for row in queue_rows}
-    delivered_rows = events(trace, "DELIVERED")
+    # 共享上行装载只对账在 MFU 交付的报文。双向轨迹还含在 STA 交付的下行数据。
+    delivered_rows = [row for row in events(trace, "DELIVERED") if row["node"] == "MFU"]
     delivered = {row["packet_id"]: row for row in delivered_rows}
     require(len(queued) == len(queue_rows) and len(delivered) == len(delivered_rows),
             f"{name}: duplicate enqueue or delivery")
@@ -76,7 +77,7 @@ def read_execution(name: str, settings: dict[str, str], trace: list[dict]) -> li
     propagation_ns = int(Decimal(settings["fiber.uplink.propagation.us"]) * 1000)
     bwmap_propagation_ns = int(Decimal(settings["fiber.downlink.propagation.us"]) * 1000)
     rate_mbps = Decimal(settings["fiber.uplink.rate.mbps"])
-    pipelined = settings["fiber.uplink.dba.mode"] == "giant-complete"
+    pipelined = settings["fiber.uplink.dba.mode"] in ("giant-complete", "giant-complete-recovery")
     for tx in events(trace, "PON_DBA_BWMAP_TX"):
         grant_id, allocation, frame = (tx[field] for field in ("grant_id", "allocation_id", "target_frame_id"))
         require((allocation, frame) not in accounted_slots, f"{name}: split or duplicate reservation")

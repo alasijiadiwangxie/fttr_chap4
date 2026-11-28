@@ -1,3 +1,0 @@
-scenario_id,config,exit_code,diagnostic
-t1-zero-fixed,configs/t1-zero-fixed.properties,2,Configuration error: Type 1 requires positive fixed SI/AB and zero other SI/AB parameters
-t1-removed,configs/t1-removed.properties,2,"Configuration error: T-CONT mappings must cover VO, VI, BE and BK on SFU 1"

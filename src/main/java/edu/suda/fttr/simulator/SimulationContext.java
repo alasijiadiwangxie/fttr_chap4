@@ -1,6 +1,7 @@
 package edu.suda.fttr.simulator;
 
 import edu.suda.fttr.channel.ApChannelObservations.LocalReception;
+import edu.suda.fttr.channel.CcaHistory;
 import edu.suda.fttr.channel.ExternalInterference;
 import edu.suda.fttr.config.ChannelObservationInput;
 import edu.suda.fttr.config.SimulationConfig;
@@ -317,10 +318,19 @@ public final class SimulationContext {
         trace.recordExternalCca(nowNanoseconds(), sfuId, observedMask, accessMask, busy);
         PredictionTrack track = apPredictors.get(sfuId);
         if (track != null && track.passive) {
-            track.advanceCca(nowNanoseconds());
-            track.accessMask = accessMask;
-            track.busyMask = observedMask & accessMask;
+            if (track.ccaHistory == null) {
+                track.advanceCca(nowNanoseconds());
+                track.accessMask = accessMask;
+                track.busyMask = observedMask & accessMask;
+            } else if (!track.sensingSuspended) {
+                track.ccaHistory.listen(nowNanoseconds(), accessMask, observedMask);
+            }
         }
+    }
+
+    CcaHistory ccaHistory(int sfuId) {
+        PredictionTrack track = apPredictors.get(sfuId);
+        return track == null ? null : track.ccaHistory;
     }
 
     void trackApAnalysis(SimulationConfig config, List<Sfu> sfus) {
@@ -347,7 +357,7 @@ public final class SimulationContext {
                     config.downlinkDecoder() == null ? null : config.downlinkDecoder().observedPerCurve());
             boolean passive = config.channelObservation() != null && config.channelObservation().passive();
             apPredictors.put(sfu.id(), new PredictionTrack(sfu, predictor, passive, mode.bandwidthMhz(),
-                    config.apAnalysis().revisedPrediction()));
+                    config.apAnalysis().revisedPrediction(), config.externalInterference() != null));
         }
     }
 
@@ -595,7 +605,9 @@ public final class SimulationContext {
             PredictionTrack track = apPredictors.get(sfuId);
             if (track != null && endNs < Long.MAX_VALUE) {
                 ApCapabilityMode mode = apActivities.get(sfuId).mode();
-                double[] busy = track.sampleCca(endNs);
+                CcaHistory.Snapshot cca = track.ccaHistory == null ? null : track.ccaHistory.sample(endNs);
+                // 固定 CCA 窗口独立于 C1 采样，重复查询不会将历史清零。
+                double[] busy = cca == null ? track.sampleCca(endNs) : null;
                 List<ApModePredictor.Forecast> forecasts;
                 if (track.mac == null) {
                     forecasts = track.predictor.predict(endNs, mode, sample, track.sfu::candidateChannelReport,
@@ -604,8 +616,14 @@ public final class SimulationContext {
                     ApModePredictor.Evidence evidence = track.mac.snapshot(endNs, observer.waitingDownlinkPackets());
                     trace.recordApMacEvidence(sfuId, endNs, evidence, track.mac.phaseNs(ApPhase.AIFS),
                             track.mac.phaseNs(ApPhase.BACKOFF), track.mac.phaseNs(ApPhase.FROZEN), sample);
-                    forecasts = track.predictor.predictRevised(endNs, mode, sample, track.sfu::candidateChannelReport,
-                            busy[0], busy[1], evidence);
+                    if (cca == null) {
+                        forecasts = track.predictor.predictRevised(endNs, mode, sample, track.sfu::candidateChannelReport,
+                                busy[0], busy[1], evidence);
+                    } else {
+                        trace.recordApCcaHistory(sfuId, endNs, cca);
+                        forecasts = track.predictor.predictRevised(endNs, mode, sample, track.sfu::candidateChannelReport,
+                                cca, evidence);
+                    }
                     track.mac.resetWindow();
                 }
                 latestForecasts.put(sfuId, forecasts);
@@ -681,6 +699,12 @@ public final class SimulationContext {
     }
 
     public void startApModeSwitch(int sfuId, ApCapabilityMode target) {
+        PredictionTrack track = apPredictors.get(sfuId);
+        if (track != null && track.ccaHistory != null) {
+            // 重配置期间无法侦听。该区间仍留在窗口分母中，标记为未知。
+            track.sensingSuspended = true;
+            track.ccaHistory.listen(nowNanoseconds(), 0, 0);
+        }
         ApActivity activity = apActivities.get(sfuId);
         logApActivity(sfuId, activity, activity.beginSwitch(nowTicks, target), null, "SWITCH_START");
     }
@@ -688,6 +712,11 @@ public final class SimulationContext {
     public long finishApModeSwitch(int sfuId, long startNs) {
         ApActivity activity = apActivities.get(sfuId);
         logApActivity(sfuId, activity, activity.endSwitch(nowTicks), null, "SWITCH_END");
+        PredictionTrack track = apPredictors.get(sfuId);
+        if (track != null) {
+            // SFU 随后按新模式重新应用 CCA。
+            track.sensingSuspended = false;
+        }
         return activity.observedDurationNs(startNs, nowTicks);
     }
 
@@ -1056,15 +1085,20 @@ public final class SimulationContext {
         private final ApModePredictor predictor;
         private final boolean passive;
         private final ApMacEvidence mac;
+        private final CcaHistory ccaHistory;
+        private boolean sensingSuspended;
         private long startNs, previousNs, primaryBusyNs, wideBusyNs, wideObservedNs;
         private int accessMask, busyMask;
 
-        private PredictionTrack(Sfu sfu, ApModePredictor predictor, boolean passive, int bandwidthMhz, boolean revised) {
+        private PredictionTrack(Sfu sfu, ApModePredictor predictor, boolean passive, int bandwidthMhz,
+                                boolean revised, boolean externalCca) {
             this.sfu = sfu;
             this.predictor = predictor;
             this.passive = passive;
             this.mac = revised ? new ApMacEvidence() : null;
             accessMask = (1 << (bandwidthMhz / 20)) - 1;
+            ccaHistory = revised && passive && externalCca
+                    ? new CcaHistory(CcaHistory.DEFAULT_WINDOW_NS, accessMask) : null;
         }
 
         private void advanceCca(long timeNs) {

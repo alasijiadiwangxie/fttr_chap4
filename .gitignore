@@ -1,0 +1,6 @@
+# 本地构建和仿真回放产物
+/target/
+/output/
+__pycache__/
+*.class
+*.log

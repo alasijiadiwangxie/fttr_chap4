@@ -6,9 +6,11 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * 按帧规划。经典模式保留第 16 步结果，完整模式增加固定服务、完整的阶段区分与流水预约。
@@ -16,7 +18,8 @@ import java.util.Objects;
  */
 public final class GiantDbaPolicy implements DbaPolicy {
     public enum Reason {
-        INACTIVE, NOT_DUE, UNKNOWN, NO_DEMAND, AWAITING_SETTLEMENT, NO_CAPACITY, GRANTED, PARTIAL_CAPACITY
+        INACTIVE, NOT_DUE, UNKNOWN, NO_DEMAND, AWAITING_SETTLEMENT, NO_CAPACITY, GRANTED, PARTIAL_CAPACITY,
+        RECOVERY_DRAIN, RECOVERY_NEEDS_LARGER_GRANT, RECOVERY_UNSERVICEABLE
     }
 
     private final boolean complete;
@@ -42,30 +45,17 @@ public final class GiantDbaPolicy implements DbaPolicy {
             throw new IllegalArgumentException("GIANT requires consecutive target frames");
         }
 
-        List<Service> services = new ArrayList<>();
-        for (DbaContext.Allocation allocation : context.allocations()) {
-            services.add(new Service(allocation, previous.get(allocation.allocationId()), complete));
-        }
-        services.sort(Comparator.comparingInt((Service service) -> service.profile.type())
-                .thenComparingLong(Service::id));
-
-        FrameBudget frame = new FrameBudget(context);
-        for (Service service : services) {
-            allocate(service, service.fixed, frame);
-        }
-        List<Service> nonAssured = new ArrayList<>();
-        List<Service> bestEffort = new ArrayList<>();
-        for (Service service : services) {
-            allocate(service, service.assured, frame);
-            if (service.nonAssured.interval > 0) {
-                nonAssured.add(service);
-            }
-            if (service.bestEffort.interval > 0) {
-                bestEffort.add(service);
-            }
-        }
-        nonAssuredCursor = allocateSurplus(nonAssured, nonAssuredCursor, frame, false);
-        bestEffortCursor = allocateSurplus(bestEffort, bestEffortCursor, frame, true);
+        Set<Long> withheld = new HashSet<>();
+        FrameBudget frame;
+        List<Service> services;
+        do {
+            services = frameServices(context);
+            frame = allocateFrame(context, services, withheld);
+            // 合并各阶段后才判断整笔是否超过失败下界。取消无效试算并重新分配，其他对象可使用释放的容量。
+            // 每次重算至少移除一个逻辑对象的动态预算，真实计数器和游标只在最终方案发布时更新。
+        } while (withholdFailedSizes(frame, withheld));
+        nonAssuredCursor = frame.nonAssuredCursor;
+        bestEffortCursor = frame.bestEffortCursor;
 
         List<DbaPlan.Grant> grants = new ArrayList<>();
         for (Service service : frame.admitted) {
@@ -81,6 +71,51 @@ public final class GiantDbaPolicy implements DbaPolicy {
         lastFrameId = frameId;
         return new DbaPlan(context.decisionTimeNs(), frameId, grants,
                 grants.isEmpty() ? "GIANT_NO_GRANT" : "GIANT");
+    }
+
+    private List<Service> frameServices(DbaContext context) {
+        List<Service> services = new ArrayList<>();
+        for (DbaContext.Allocation allocation : context.allocations()) {
+            Service service = new Service(allocation, previous.get(allocation.allocationId()), complete);
+            if (allocation.failedBudgetBytes() > 0) {
+                service.recoveryCeiling = service.ceilingBytes(context);
+            }
+            services.add(service);
+        }
+        services.sort(Comparator.comparingInt((Service service) -> service.profile.type())
+                .thenComparingLong(Service::id));
+        return services;
+    }
+
+    private FrameBudget allocateFrame(DbaContext context, List<Service> services, Set<Long> withheld) {
+        FrameBudget frame = new FrameBudget(context, withheld);
+        for (Service service : services) {
+            allocate(service, service.fixed, frame);
+        }
+        List<Service> nonAssured = new ArrayList<>();
+        List<Service> bestEffort = new ArrayList<>();
+        for (Service service : services) {
+            allocate(service, service.assured, frame);
+            if (service.nonAssured.interval > 0) {
+                nonAssured.add(service);
+            }
+            if (service.bestEffort.interval > 0) {
+                bestEffort.add(service);
+            }
+        }
+        frame.nonAssuredCursor = allocateSurplus(nonAssured, nonAssuredCursor, frame, false);
+        frame.bestEffortCursor = allocateSurplus(bestEffort, bestEffortCursor, frame, true);
+        return frame;
+    }
+
+    private static boolean withholdFailedSizes(FrameBudget frame, Set<Long> withheld) {
+        boolean changed = false;
+        for (Service service : frame.admitted) {
+            if (service.budgetBytes > service.fixed.granted && service.budgetBytes <= service.allocation.failedBudgetBytes()) {
+                changed |= withheld.add(service.id());
+            }
+        }
+        return changed;
     }
 
     public List<Decision> lastDecisions() {
@@ -134,6 +169,20 @@ public final class GiantDbaPolicy implements DbaPolicy {
                 phase.reason = Reason.UNKNOWN;
                 return;
             }
+            if (allocation.failedBudgetBytes() > 0) {
+                if (allocation.recoveryWaiting()) {
+                    phase.reason = Reason.RECOVERY_DRAIN;
+                    return;
+                }
+                if (service.recoveryCeiling <= allocation.failedBudgetBytes()) {
+                    phase.reason = Reason.RECOVERY_UNSERVICEABLE;
+                    return;
+                }
+                if (frame.withheld.contains(service.id())) {
+                    phase.reason = Reason.RECOVERY_NEEDS_LARGER_GRANT;
+                    return;
+                }
+            }
             phase.wanted = Math.min(phase.quota, Math.max(0, allocation.knownDemandBytes() - service.budgetBytes));
             if (phase.wanted == 0) {
                 phase.reason = Reason.NO_DEMAND;
@@ -162,12 +211,16 @@ public final class GiantDbaPolicy implements DbaPolicy {
 
     private static final class FrameBudget {
         private final DbaContext context;
+        private final Set<Long> withheld;
         private final List<Service> admitted = new ArrayList<>();
         private long remainingNs;
         private int phaseOrder;
+        private long nonAssuredCursor;
+        private long bestEffortCursor;
 
-        private FrameBudget(DbaContext context) {
+        private FrameBudget(DbaContext context, Set<Long> withheld) {
             this.context = context;
+            this.withheld = withheld;
             remainingNs = context.availableNs();
         }
     }
@@ -207,6 +260,7 @@ public final class GiantDbaPolicy implements DbaPolicy {
         private final Phase bestEffort;
         private long budgetBytes;
         private long durationNs;
+        private long recoveryCeiling;
 
         private Service(DbaContext.Allocation allocation, Service prior, boolean complete) {
             this.allocation = allocation;
@@ -234,6 +288,12 @@ public final class GiantDbaPolicy implements DbaPolicy {
         private long id() {
             return allocation.allocationId();
         }
+
+        private long ceilingBytes(DbaContext context) {
+            BigInteger quotas = BigInteger.valueOf(fixed.quota).add(BigInteger.valueOf(assured.quota))
+                    .add(BigInteger.valueOf(nonAssured.quota)).add(BigInteger.valueOf(bestEffort.quota));
+            return quotas.min(context.capacityBytes(context.framePeriodNs())).min(BigInteger.valueOf(Long.MAX_VALUE)).longValueExact();
+        }
     }
 
     /** 每帧创建新 Service，已发布快照不再修改。记录阶段决策顺序与额度，供验收复核。 */
@@ -252,6 +312,7 @@ public final class GiantDbaPolicy implements DbaPolicy {
 
         public boolean complete() { return complete; }
         public DbaContext.Allocation allocation() { return service.allocation; }
+        public long recoveryCeiling() { return service.recoveryCeiling; }
         public int siMaxBefore() { return service.assured.before; }
         public int siMaxAfter() { return service.assured.after(); }
         public int siMinBefore() { return minPhase().before; }

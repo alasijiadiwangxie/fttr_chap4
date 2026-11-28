@@ -1,5 +1,7 @@
 # FTTR 仿真基础版
 
+`codex/ca-sdps` 从 D1（`3ce93c2`）签出，提供静态模式、按流量切换的对照策略和只读信道预测。验收结果、保留数据与复现命令见 [CA-SDPS 底座说明](docs/energy/CA_SDPS_Base.md)。
+
 本项目使用 Java 和离散事件模拟 FTTR 的上下行单播。下行由 MFU 按目的 STA 选择 SFU，上行由 STA 经关联 SFU 发往 MFU。拓扑可配置为一个 MFU、多台 SFU 和多台 STA。
 
 ## 模型范围与假设
@@ -14,9 +16,9 @@
 
 ### 光侧 PON 与 DBA 冻结基线
 
-`fiber.uplink.tcont.enabled=true` 可在 `rr`、`rr-multi`、`giant` 和 `giant-complete` 模式下为同一 SFU 配置多个 Alloc-ID。各对象按 VO/VI/BE/BK 映射维护独立的光侧 FIFO、REPORT、需求账本、预算和结算，并共享上行发送资源。默认使用每 SFU 一个 FIFO 和 `allocationId = 2 × sfuId`。
+`fiber.uplink.tcont.enabled=true` 可在 `rr`、`rr-multi`、`giant`、`giant-complete` 和 `giant-complete-recovery` 模式下为同一 SFU 配置多个 Alloc-ID。各对象按 VO/VI/BE/BK 映射维护独立的光侧 FIFO、REPORT、需求账本、预算和结算，并共享上行发送资源。默认使用每 SFU 一个 FIFO 和 `allocationId = 2 × sfuId`。
 
-下行可采用 `fixed` 或 `pon-shared`，上行可采用 `fixed`、`pon-shared` 或 `pon-framed`。分帧模式可以选用 FCFS、旁路影子 RR、单授权 RR、多授权 RR 和 GIANT。基础 `giant` 执行 Type 2–4 的保障与剩余带宽，`giant-complete` 扩展到 Type 1 固定服务和 Type 5 组合服务，并执行同帧最坏固定/保障额度的准入校验。
+下行可采用 `fixed` 或 `pon-shared`，上行可采用 `fixed`、`pon-shared` 或 `pon-framed`。分帧模式可以选用 FCFS、旁路影子 RR、单授权 RR、多授权 RR 和 GIANT。基础 `giant` 执行 Type 2–4 的保障与剩余带宽，`giant-complete` 扩展到 Type 1 固定服务和 Type 5 组合服务，并执行同帧最坏固定/保障额度的准入校验。`giant-complete-recovery` 处理在途预约导致的重复不足额授权。
 
 完整参数表、逻辑控制事件、统计口径和性能结论见 [光侧建模报告](docs/pon/PON_DBA_Model.md) 与 [最终验收记录](docs/pon/PON_DBA_Final_Review.md)。
 
@@ -342,21 +344,13 @@ DATA 的 Duration 在发送开始时确定，覆盖本次 SIFS 和 ACK。TXOP �
 
 设备须同时满足物理 CCA 为 `IDLE`、NAV 已到期、ACK 等待已结束，才能开始完整 AIFS 并继续退避。NAV 生效时保留剩余退避计数，既有 ACK 响应仍按 SIFS 调度。实际无线占用由帧交换和 TXOP 决定，NAV 只约束设备何时竞争。回归测试独立构造了物理信道空闲但 NAV 有效的场景，以核对冻结和恢复时序。
 
-Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。各场景的预期结果见[仿真验收用例](docs/04-validation-cases.md)。
+Java 代码按职责分为入口 `App`、配置 `config`、事件执行 `simulator`、设备与报文 `entity`、链路 `link` 和轨迹 `trace`。基础版的自动化验收覆盖单包时序、同一 SFU 串行发送、多 STA 转发、多 SFU 并行及报文和字节守恒。断言和预期时序见 [JUnit 用例](src/test/java/edu/suda/fttr)。
 
-EDCA 综合验收见 [测试报告](docs/05-edca-acceptance.md)。构建后运行 `python tools/validate_edca.py`，可复现多 STA 双向业务的三档负载、五个种子和两档 TXOP 对照，输出各 AC 的时延、吞吐量、碰撞、重传、丢包及占用统计。该工具从逐事件轨迹合并上下行，分别计算纯排队与队首接入时延，并核对生成、交付、丢弃和信道忙时。
+EDCA 综合验收见 [验收结果](results/edca-acceptance)。构建后运行 `python tools/validate_edca.py`，可复现多 STA 双向业务的三档负载、五个种子和两档 TXOP 对照，输出各 AC 的时延、吞吐量、碰撞、重传、丢包及占用统计。该工具从逐事件轨迹合并上下行，分别计算纯排队与队首接入时延，并核对生成、交付、丢弃和信道忙时。
 
-## 后续研究计划
+## CA-SDPS 研究方向
 
-第四章计划研究在业务负载、无线信道条件和业务时延约束变化时，AP 如何在低容量模式（LCM）与高容量模式（HCM）之间选择，并用总能耗、吞吐量、时延和超期比例评估策略。
-
-| 阶段 | 模块和核对项 |
-| --- | --- |
-| 2. AP 能耗 | 加入 LCM/HCM 和无线状态，核对状态时长、能耗分项及手算结果 |
-| 3. 信道与干扰 | 加入次信道占用、带宽回落、误包与重传，区分等待和重传的代价 |
-| 4. QoS 与切换 | 先检查截止时间，再比较预测能耗与切换代价，记录决策原因 |
-| 5. 信道观测 | 比较关闭信道信息、仅用历史、历史加按需探测三种方式 |
-| 6. 实验与结果 | 扫描负载与次信道占用，对比固定模式、阈值和 ECQ-SDPS |
+第四章研究干扰如何改变静态 LCM/HCM 的功率交叉，以及 AP 如何根据本地业务量和信道观测选择模式。下一步先独立验证两档的预计服务容量、成功交付和完整结算能耗，再接入容量保护和回本判断。
 
 ## 实验文件
 

@@ -170,8 +170,18 @@ final class ChannelObservationRuntime {
             return;
         }
         scheduleManagement(scan.endNs(), EventType.WIFI_CHANNEL_MANAGEMENT_END, scan.sfuId(), () -> {
-            long busy = interference == null ? 0 : interference.apBusyDurationNs(
-                    scan.sfuId(), scan.subchannel(), scan.startNs(), scan.endNs());
+            var history = context.ccaHistory(scan.sfuId());
+            long busy;
+            if (history != null) {
+                // 仅在完成事件读取所扫子信道的过去忙时片段，未扫描范围保持未知。
+                var intervals = interference.apBusyIntervals(
+                        scan.sfuId(), scan.subchannel(), scan.startNs(), scan.endNs());
+                history.completeScan(scan.subchannel(), scan.startNs(), scan.endNs(), scan.expiresNs(), intervals);
+                busy = intervals.stream().mapToLong(interval -> interval.endNs - interval.fromNs).sum();
+            } else {
+                busy = interference == null ? 0 : interference.apBusyDurationNs(
+                        scan.sfuId(), scan.subchannel(), scan.startNs(), scan.endNs());
+            }
             sfu.completeAuxScan(scan.subchannel(), scan.startNs(), scan.endNs(), busy, scan.expiresNs());
             ObservationStats observation = stats.get(scan.sfuId() - 1);
             observation.scanNs += scan.endNs() - scan.startNs();

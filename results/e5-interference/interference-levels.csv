@@ -1,0 +1,4 @@
+level,ap_dbm,sta_dbm,sinr_db,cca_threshold_dbm,cca_busy_when_overlapping_band
+weak,-85,-87,21.3610796586,-82,False
+strong,-74,-81,15.8304571072,-82,True
+medium,-81,-84,18.6680438001,-82,True

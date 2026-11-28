@@ -9,6 +9,7 @@ import edu.suda.fttr.dba.DbaPlan;
 import edu.suda.fttr.dba.DbaPlanValidator;
 import edu.suda.fttr.dba.DbaPolicy;
 import edu.suda.fttr.dba.GiantDbaPolicy;
+import edu.suda.fttr.link.PonGrantPacketFiller.FillReason;
 import edu.suda.fttr.dba.RoundRobinDbaPolicy;
 import edu.suda.fttr.dba.MultiGrantRoundRobinDbaPolicy;
 import edu.suda.fttr.dba.TcontProfile;
@@ -35,6 +36,7 @@ public final class Mfu {
     private DbaPolicy executionPolicy = new RoundRobinDbaPolicy();
     private boolean multiGrantEnabled;
     private boolean giantCompleteEnabled;
+    private boolean giantRecoveryEnabled;
     private TcontTopology tcontTopology;
 
     public Mfu(List<Integer> staSfuIds) {
@@ -209,13 +211,21 @@ public final class Mfu {
     }
 
     public void enableGiantDba(boolean complete) {
+        enableGiantDba(complete, false);
+    }
+
+    public void enableGiantDba(boolean complete, boolean recovery) {
         if (tcontTopology == null) {
             throw new IllegalStateException("GIANT DBA requires configured T-CONT profiles");
+        }
+        if (recovery && !complete) {
+            throw new IllegalArgumentException("Pipelined recovery requires GIANT Complete");
         }
         if (!(executionPolicy instanceof GiantDbaPolicy)) {
             executionPolicy = new GiantDbaPolicy(complete);
             multiGrantEnabled = true;
             giantCompleteEnabled = complete;
+            giantRecoveryEnabled = recovery;
         }
     }
 
@@ -242,7 +252,8 @@ public final class Mfu {
                         estimate.known() ? estimate.report().report().frameId() : null,
                         estimate.known() ? estimate.reportAgeNs() : null,
                         demandLedger.hasOutstandingAllocationBudget(profile.allocationId(), simulation.nowTicks()),
-                        profile));
+                        profile, demandLedger.failedBudgetBytes(profile.allocationId()),
+                        demandLedger.awaitingRecoverySettlement(profile.allocationId(), simulation.nowTicks())));
             }
         }
         DbaContext input = new DbaContext(simulation.nowTicks(), targetFrameId, rateMbps, periodNs,
@@ -286,9 +297,14 @@ public final class Mfu {
             throw new IllegalArgumentException("DATA budget exceeds configured fixed bandwidth quota");
         }
         if (!demandLedger.hasAllocationBudget(grant.allocationId(), grant.id())
-                && grant.budgetBytes() > grant.fixedBytes()
-                && (!before.known() || grant.budgetBytes() > before.effectiveKnownBytes())) {
-            throw new IllegalArgumentException("DATA budget exceeds MFU known effective demand");
+                && grant.budgetBytes() > grant.fixedBytes()) {
+            if (!before.known() || grant.budgetBytes() > before.effectiveKnownBytes()) {
+                throw new IllegalArgumentException("DATA budget exceeds MFU known effective demand");
+            }
+            if (grant.budgetBytes() <= demandLedger.failedBudgetBytes(grant.allocationId())
+                    || demandLedger.awaitingRecoverySettlement(grant.allocationId(), context.nowTicks())) {
+                throw new IllegalArgumentException("DATA budget conflicts with allocation recovery");
+            }
         }
         boolean created = giantCompleteEnabled
                 ? demandLedger.recordPipelinedAllocationBudgetGrant(grant.allocationId(), grant.sfuId(), grant.id(),
@@ -312,8 +328,13 @@ public final class Mfu {
             throw new IllegalStateException("Invalid DATA execution settlement at MFU");
         }
         PonDemandLedger.Estimate before = estimateAllocationDemand(grant.allocationId(), context.nowTicks());
+        // MFU 只使用到达的结算结果和 REPORT。判断失败不读取 SFU 队列或装载器的逐包清单。
+        boolean headBlocked = giantRecoveryEnabled && grant.actualBytes() == 0 && grant.report().pendingBytes() > 0
+                && grant.result().fillReason() == FillReason.HEAD_BYTES_EXCEED_BUDGET;
+        long allocationId = grant.allocationId();
+        long oldFailure = demandLedger.failedBudgetBytes(allocationId);
         if (!demandLedger.settleAllocationBudgetGrant(grant.allocationId(), grant.sfuId(), grant.id(),
-                context.nowTicks(), grant.actualBytes())) {
+                context.nowTicks(), grant.actualBytes(), headBlocked)) {
             return; // 重复反馈不再收报告、不再累计字节或更新账本。
         }
         boolean applied = acceptUplinkReport(grant.report(), context.nowTicks());
@@ -326,7 +347,9 @@ public final class Mfu {
                         + " pending_bytes=" + grant.report().pendingBytes() + " report_applied=" + applied
                         + " effective_before=" + (before.known() ? before.effectiveKnownBytes() : -1)
                         + " effective_after=" + (after.known() ? after.effectiveKnownBytes() : -1)
-                        + " released_unused_bytes=" + grant.unusedBytes());
+                        + " released_unused_bytes=" + grant.unusedBytes()
+                        + (giantRecoveryEnabled ? " head_blocked=" + headBlocked + " recovery_failed_before=" + oldFailure
+                        + " recovery_failed_after=" + demandLedger.failedBudgetBytes(allocationId) : ""));
         recordGrantDemand(grant, "DBA_SETTLED", context);
     }
 

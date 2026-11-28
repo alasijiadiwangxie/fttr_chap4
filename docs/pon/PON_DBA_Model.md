@@ -71,6 +71,7 @@ sequenceDiagram
 | `rr-multi` | 按轮转顺序遍历对象，每个对象至多一笔。每生成一笔扣除其向上取整后的真实纳秒，再分给下一对象。 |
 | `giant` | Type 2/3/4 基线。执行保障、非保证、尽力而为服务，允许同帧多个对象，但本对象有未结算预算时跳过动态授权。 |
 | `giant-complete` | 多对象真实执行，支持 Type 1–5、四个阶段、保障准入及不同目标帧的流水预算。 |
+| `giant-complete-recovery` | 完整 GIANT 的授权恢复配置。在途预算导致已知需求缩小并遇到整包装载瓶颈时，等待相关授权结算和报告更新后恢复调度。 |
 
 RR 以 SFU、Alloc-ID 升序形成固定环。对 `UNKNOWN`、已知零需求和有未结算真实预算的对象跳过。预算取已知有效需求与剩余帧容量较小者，字节容量为 `floor(remainingNs × R / 8000)`。`rr` 获得一笔后推进到下一对象，`rr-multi` 移至本轮最后获预算对象的下一位，无预算则不移动。RR 使用同一组队列与授权流程，T-CONT 的 SI/AB 参数不改变 RR 的分配次序或预算。 [单预算 RR](../../src/main/java/edu/suda/fttr/dba/RoundRobinDbaPolicy.java) · [多预算 RR](../../src/main/java/edu/suda/fttr/dba/MultiGrantRoundRobinDbaPolicy.java)
 
@@ -86,7 +87,7 @@ RR 以 SFU、Alloc-ID 升序形成固定环。对 `UNKNOWN`、已知零需求和
 
 每项业务阶段从配置 SI 开始独立计数。`0` 为未启用，`>1` 时本帧递减，`1` 表示本轮可服务。固定和保障阶段到期后恢复到配置 SI，非保证与尽力而为阶段只有本轮获得正预算才恢复周期，其余保留到期状态。固定阶段按配置额度预约，即使当时为 `UNKNOWN` 或 FIFO 为空。保障、非保证、尽力而为按阶段顺序分配，后一阶段扣除本轮同对象已分配额度，并继续受 MFU 已知净需求与帧剩余容量限制。固定与保障按类型、Alloc-ID 定序。两个剩余阶段独立轮转，`giant-complete` 遇容量受限时，下轮从本轮首个获正预算对象之后开始。
 
-同一对象的阶段额度合并为一笔正预算，追加 `ΔB` 字节时只消耗 `T(B + ΔB) − T(B)` 纳秒。计划中的窗口按对象首次获正预算的顺序排列，阶段优先级是预算决策顺序。保守 SLA 准入将全部固定与保障额度视为同帧到期，求和 `Σ T(AB-fixed + ABmin_assured) + T(pollBytes)`，超过帧长即拒绝启动。准入通过表示预约容量可行，实际业务还受报告可见性、整包装载、输入和时窗限制。流水预算允许同一 Alloc-ID 在不同且不重叠的未来窗口有多笔未结算授权，已知净需求继续扣相关预约。Type 5 四组件和流水账本是项目扩展。所采用的 GIANT 与 X-GIANT 参考规则、算法差异及逐事件证据见 [GIANT 策略](../../src/main/java/edu/suda/fttr/dba/GiantDbaPolicy.java) 和 [第 18 步完整策略](18-giant-completion-test.md)。
+同一对象的阶段额度合并为一笔正预算，追加 `ΔB` 字节时只消耗 `T(B + ΔB) − T(B)` 纳秒。计划中的窗口按对象首次获正预算的顺序排列，阶段优先级是预算决策顺序。保守 SLA 准入将全部固定与保障额度视为同帧到期，求和 `Σ T(AB-fixed + ABmin_assured) + T(pollBytes)`，超过帧长即拒绝启动。准入通过表示预约容量可行，实际业务还受报告可见性、整包装载、输入和时窗限制。流水预算允许同一 Alloc-ID 在不同且不重叠的未来窗口有多笔未结算授权，已知净需求继续扣相关预约。Type 5 四组件和流水账本是项目扩展。所采用的 GIANT 与 X-GIANT 参考规则及逐事件证据见 [GIANT 策略](../../src/main/java/edu/suda/fttr/dba/GiantDbaPolicy.java) 和 `3ce93c2` 中的 `docs/pon/18-giant-completion-test.md`。
 
 `DbaContext` 只包含当前决策时刻、目标帧、速率、帧周期、控制预留及各对象的拓扑、报告与账本状态。`DbaPlanValidator` 校验归属、同帧对象唯一、字节与时长、已知需求、固定额度、帧容量和窗口重叠，返回只读窗口。动态授权在计划校验后才由上行执行层物化成真实 BWmap。 [上下文](../../src/main/java/edu/suda/fttr/dba/DbaContext.java) · [计划校验](../../src/main/java/edu/suda/fttr/dba/DbaPlanValidator.java)
 
@@ -112,7 +113,7 @@ RR 以 SFU、Alloc-ID 升序形成固定环。对 `UNKNOWN`、已知零需求和
 | `fiber.uplink.poll.interval.frames` | `1` | 启用轮询时生效，正整数帧数。首次决策边界是帧 1。 |
 | `fiber.uplink.poll.end.us` | 启用轮询时必填 | 正 μs，严格大于帧周期。只有边界时刻小于该值才创建轮询或真实 DBA 预算，已授权数据可在该时刻之后完成。普通 FCFS 的 DATA 可按积压继续。 |
 | `fiber.uplink.dba.mode` | `fcfs` | 其余模式均要求 `pon-framed`、REPORT、BWmap、账本与有限轮询。 |
-| `fiber.uplink.tcont.enabled` | `false` | 要求真实 `rr`、`rr-multi`、`giant` 或 `giant-complete`。两个 GIANT 模式都必须开启 T-CONT。真实 DBA 超过 2 台 SFU 时必须开启。 |
+| `fiber.uplink.tcont.enabled` | `false` | 要求真实 `rr`、`rr-multi`、`giant`、`giant-complete` 或 `giant-complete-recovery`。GIANT 各模式和超过 2 台 SFU 的真实 DBA 均要求启用。 |
 | `fiber.uplink.tcont.alloc.ids` | 开启 T-CONT 时必填 | 逗号分隔的全网唯一正整数 Alloc-ID。每个条目均有对应属性。 |
 
 拓扑、业务输入和光无线交接的配置如下。表中的 `<源>` 在下行取 `traffic.sfu.<id>`，在上行取 `traffic.sta.<id>`，可用 `<源>.class.<AC>` 为某类业务单独指定速率和包长。`<AC>` 为 VO、VI、BE、BK。
@@ -134,7 +135,7 @@ RR 以 SFU、Alloc-ID 升序形成固定环。对 `UNKNOWN`、已知零需求和
 | `wifi.model`、`wifi.delay.us` | 有时延键时推导为 `fixed`，否则为 `he-su` | 固定模型需提供非负整数 μs。HE SU 的 PHY 参数由无线侧配置。 |
 | `wifi.mac.access`、`wifi.mac.exchange` | `fixed-priority`、`data-only` | 决定无线争用和 DATA 交换时序。成功的上行 DATA 完整到达 SFU 后进入光侧。 |
 
-可执行配置见 [双向 Type 1–5](../../configs/pon-final-dba.properties)、[共享下行](../../configs/pon-shared-downlink.properties)、[共享上行](../../configs/pon-shared-uplink.properties) 和 [完整 GIANT QoS](18-giant-completion-test.md)。完整的无线 PHY 和 EDCA 参数见 [README](../../README.md)。
+可执行配置见 [双向 Type 1–5](../../configs/pon-final-dba.properties)、[共享下行](../../configs/pon-shared-downlink.properties) 和 [共享上行](../../configs/pon-shared-uplink.properties)。完整的无线 PHY 和 EDCA 参数见 [README](../../README.md)。
 
 每个 Alloc-ID 的键置于 `fiber.uplink.tcont.alloc.<id>.` 下。
 
@@ -174,4 +175,4 @@ SI 为整数帧数，AB 为整数字节。SImax 与 SImin 分别对应不同的�
 
 ![PON 与 DBA 既有实验关键结果](../../results/pon-final/pon-performance-summary.svg)
 
-专项数据和复现步骤见 [完整 GIANT QoS](18-giant-completion-test.md)、[原 RR/GIANT 性能对照](dba-qos-comparison.md)、[T2 保障额度分析](t2-delay-analysis.md)、[T2 时延与报告诊断](t2-tail-delay-diagnosis.md) 和 [多 SFU 过载对照](multi-sfu-overload-test.md)。
+此前的 GIANT QoS、RR 对照、T2 时延诊断和多 SFU 过载数据及复现步骤保存在 `3ce93c2` 的 `docs/pon` 与 `results` 中。

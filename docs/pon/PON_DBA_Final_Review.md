@@ -23,7 +23,7 @@
 | RR、GIANT 与 Type 1–5 | 真实 `rr`、`rr-multi`、`giant`、`giant-complete` 四种短场景各交付上行 10 包和下行 2 包，真实 DATA 预算均与结算一一对应。完整 GIANT 不可行配置仍以退出码 2 拒绝，诊断字节与清理前一致。 |
 | 多 SFU、多 STA 与无线交接 | 保留无线和跨模块 JUnit。短场景包含 2 SFU、4 STA。既有实验在 4/8 SFU、每 SFU 2 STA 下完成 60 组实际运行，并逐事件校验输入、上行时隙、报文守恒及结算。 |
 
-[短场景指纹和计数](../../results/pon-final/smoke-summary.csv) · [可直接运行的 Type 1–5 配置](../../configs/pon-final-dba.properties) · [多 SFU 已有实验](multi-sfu-overload-test.md)
+[短场景指纹和计数](../../results/pon-final/smoke-summary.csv) · [可直接运行的 Type 1–5 配置](../../configs/pon-final-dba.properties)。原多 SFU 专项报告见 `3ce93c2` 的 `docs/pon/multi-sfu-overload-test.md`。
 
 ## 已知边界和后续修改位置
 
@@ -51,5 +51,4 @@
 mvn -o clean verify
 python -B tools/verify_pon_final.py
 java -jar target/fttr-chap4-0.1.0-SNAPSHOT.jar configs/pon-final-dba.properties
-python -B tools/plot_pon_final_summary.py
 ```

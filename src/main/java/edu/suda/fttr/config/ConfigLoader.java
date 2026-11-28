@@ -121,6 +121,8 @@ public final class ConfigLoader {
     private static final String AP_CONTROL_PERIOD_US = "wifi.ap.control.period.us";
     private static final String AP_CONTROL_ALPHA = "wifi.ap.control.ewma.alpha";
     private static final String AP_CONTROL_THRESHOLD = "wifi.ap.control.threshold.mbps";
+    private static final String AP_HYSTERESIS_LOWER = "wifi.ap.control.hysteresis.lower.mbps";
+    private static final String AP_HYSTERESIS_UPPER = "wifi.ap.control.hysteresis.upper.mbps";
     private static final Set<String> KEYS = Set.of(
             FIBER_DELAY_US, FIBER_DOWNLINK + "mode", FIBER_DOWNLINK + "rate.mbps", DOWNLINK_PROPAGATION_US,
             FIBER_UPLINK + "mode", FIBER_UPLINK + "rate.mbps", FIBER_UPLINK + "propagation.us", UPLINK_FRAME_PERIOD_US,
@@ -141,6 +143,7 @@ public final class ConfigLoader {
             LCM_POWER + "idle.w", LCM_POWER + "tx.w", LCM_POWER + "rx.w",
             HCM_POWER + "idle.w", HCM_POWER + "tx.w", HCM_POWER + "rx.w",
             AP_CONTROL_POLICY, AP_CONTROL_PERIOD_US, AP_CONTROL_ALPHA, AP_CONTROL_THRESHOLD,
+            AP_HYSTERESIS_LOWER, AP_HYSTERESIS_UPPER,
             AP_SWITCH_ENABLED, LCM_TO_HCM + "delay.us", LCM_TO_HCM + "power.w",
             HCM_TO_LCM + "delay.us", HCM_TO_LCM + "power.w");
     private static final Set<String> PHY_KEYS = Set.of(
@@ -219,7 +222,8 @@ public final class ConfigLoader {
         boolean demandLedgerEnabled = readDemandLedgerEnabled(properties, ponUplink);
         String dbaMode = readDbaMode(properties, ponUplink, demandLedgerEnabled);
         boolean dbaShadowEnabled = dbaMode.equals("shadow-rr");
-        boolean dbaGiantCompleteEnabled = dbaMode.equals("giant-complete");
+        boolean dbaGiantRecoveryEnabled = dbaMode.equals("giant-complete-recovery");
+        boolean dbaGiantCompleteEnabled = dbaMode.equals("giant-complete") || dbaGiantRecoveryEnabled;
         boolean dbaGiantEnabled = dbaMode.equals("giant") || dbaGiantCompleteEnabled;
         boolean dbaMultiGrantEnabled = dbaMode.equals("rr-multi") || dbaGiantEnabled;
         boolean dbaExecutionEnabled = dbaMode.equals("rr") || dbaMultiGrantEnabled;
@@ -249,7 +253,7 @@ public final class ConfigLoader {
         long apActivityWindowNs = properties.containsKey(AP_ACTIVITY_WINDOW_US)
                 ? readDurationNs(properties, AP_ACTIVITY_WINDOW_US, "0", true) : -1;
         // 控制器复用 C1 的下行入口账本，决策周期独立于 C1 的统计采样周期。
-        long apObservationPeriodNs = readApObservationPeriod(properties, apControl.hasFixedThreshold());
+        long apObservationPeriodNs = readApObservationPeriod(properties, apControl.hasLoadThreshold());
         double apObservationAlpha = readApObservationAlpha(properties);
         ChannelTruth channelTruth = readChannelTruth(properties, staSfuIds);
         ChannelObservationInput channelObservation = readChannelObservation(properties, sfuCount, staSfuIds, channelTruth);
@@ -301,7 +305,7 @@ public final class ConfigLoader {
                 frameExchange, edcaParameters, accessMode, retryPolicy, ampduConfig, downlinkDecoder, externalInterference,
                 downlink.windowsUs, uplink.windowsUs,
                 directionMode.allows(Packet.Direction.UL), demandLedgerEnabled, dbaShadowEnabled, dbaExecutionEnabled,
-                dbaMultiGrantEnabled, dbaGiantEnabled, dbaGiantCompleteEnabled, tcontTopology);
+                dbaMultiGrantEnabled, dbaGiantEnabled, dbaGiantCompleteEnabled, dbaGiantRecoveryEnabled, tcontTopology);
     }
 
     private static TcontTopology readTcontTopology(Properties properties, int sfuCount, boolean dbaExecutionEnabled) {
@@ -319,7 +323,8 @@ public final class ConfigLoader {
         }
         // 真实 DBA 路径依赖 pon-framed、BWmap、REPORT、账本和有限轮询。
         if (!dbaExecutionEnabled) {
-            throw new IllegalArgumentException(TCONT_ENABLED + " requires fiber.uplink.dba.mode=rr, rr-multi, giant or giant-complete");
+            throw new IllegalArgumentException(TCONT_ENABLED
+                    + " requires fiber.uplink.dba.mode=rr, rr-multi, giant, giant-complete or giant-complete-recovery");
         }
         Set<Long> allocationIds = new HashSet<>();
         List<TcontProfile> profiles = new ArrayList<>();
@@ -400,8 +405,9 @@ public final class ConfigLoader {
             return mode;
         }
         if (!mode.equals("shadow-rr") && !mode.equals("rr") && !mode.equals("rr-multi")
-                && !mode.equals("giant") && !mode.equals("giant-complete")) {
-            throw new IllegalArgumentException(UPLINK_DBA_MODE + " must be fcfs, shadow-rr, rr, rr-multi, giant or giant-complete");
+                && !mode.equals("giant") && !mode.equals("giant-complete") && !mode.equals("giant-complete-recovery")) {
+            throw new IllegalArgumentException(UPLINK_DBA_MODE
+                    + " must be fcfs, shadow-rr, rr, rr-multi, giant, giant-complete or giant-complete-recovery");
         }
         if (uplink == null || uplink.framePeriodNs() == 0 || uplink.bwmapPropagationNs() < 0
                 || !uplink.reportEnabled() || !demandLedgerEnabled || uplink.polling() == null) {
@@ -734,7 +740,20 @@ public final class ConfigLoader {
         }
         double threshold = parseNonNegativeDouble(properties.getProperty(AP_CONTROL_THRESHOLD,
                 Double.toString(ApModeController.DEFAULT_THRESHOLD_MBPS)), AP_CONTROL_THRESHOLD);
-        return new ApModeController.Settings(policies, periodNs, alpha, threshold);
+        return new ApModeController.Settings(policies, periodNs, alpha, threshold, readApHysteresisBand(properties));
+    }
+
+    private static ApModeController.ThresholdBand readApHysteresisBand(Properties properties) {
+        String lower = properties.getProperty(AP_HYSTERESIS_LOWER);
+        String upper = properties.getProperty(AP_HYSTERESIS_UPPER);
+        if (lower == null && upper == null) {
+            return ApModeController.DEFAULT_HYSTERESIS_BAND;
+        }
+        if (lower == null || upper == null) {
+            throw new IllegalArgumentException("Hysteresis overrides require both lower.mbps and upper.mbps");
+        }
+        return new ApModeController.ThresholdBand(parseNonNegativeDouble(lower, AP_HYSTERESIS_LOWER),
+                parseNonNegativeDouble(upper, AP_HYSTERESIS_UPPER));
     }
 
     private static ApModeController.Policy readApPolicy(Properties properties, String key, String fallback) {
@@ -744,13 +763,13 @@ public final class ConfigLoader {
                 return policy;
             }
         }
-        throw new IllegalArgumentException(key + " must be off, always-lcm, always-hcm or fixed-threshold");
+        throw new IllegalArgumentException(key + " must be off, always-lcm, always-hcm, fixed-threshold or hysteresis");
     }
 
     private static void validateApControl(ApModeController.Settings control, ApModeSwitch.Settings switching) {
-        if (control.hasFixedThreshold() && (switching == null || switching.profileFrom(ApCapabilityMode.LCM) == null
+        if (control.hasLoadThreshold() && (switching == null || switching.profileFrom(ApCapabilityMode.LCM) == null
                 || switching.profileFrom(ApCapabilityMode.HCM) == null)) {
-            throw new IllegalArgumentException("fixed-threshold requires enabled B4 switching and both direction profiles");
+            throw new IllegalArgumentException("fixed-threshold and hysteresis require B4 switching and both direction profiles");
         }
         if (switching != null) {
             for (int sfuId : control.policies().keySet()) {
@@ -1232,7 +1251,7 @@ public final class ConfigLoader {
             }
             // 带宽和空间流数分别取两端的能力交集；同一模型用于 STA 的两个 DATA 方向。
             stationPhys.put(staId, buildStationPhy(properties, mode, maxBandwidthMhz, maxNss));
-            if (predictBoth || control.policyFor(sfuId) == ApModeController.Policy.FIXED_THRESHOLD
+            if (predictBoth || control.policyFor(sfuId).usesLoadThreshold()
                     || (switching != null && !switching.requestsFor(sfuId).isEmpty())) {
                 alternateStationPhys.put(staId, buildStationPhy(properties, ApModeSwitch.otherMode(mode),
                         maxBandwidthMhz, maxNss));

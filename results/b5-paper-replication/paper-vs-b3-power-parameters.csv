@@ -1,7 +1,0 @@
-mode,state,paper_current_a,paper_voltage_v,paper_power_w,b3_power_w,paper_minus_b3_w
-LCM,idle,0.58,12,6.96,7.38,-0.42
-LCM,tx,1.08,12,12.96,9.20,3.76
-LCM,rx,0.66,12,7.92,8.20,-0.28
-HCM,idle,0.66,12,7.92,7.62,0.30
-HCM,tx,1.25,12,15.00,10.50,4.50
-HCM,rx,1.00,12,12.00,8.70,3.30

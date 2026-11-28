@@ -67,6 +67,10 @@ public final class DbaPlanValidator {
                 if (!complete && grant.plannedBytes() > 0 && allocation.budgetOutstanding()) {
                     throw new IllegalArgumentException("Allocation already has an unsettled DATA budget");
                 }
+                if (grant.plannedBytes() > grant.fixedBytes()
+                        && (allocation.recoveryWaiting() || grant.plannedBytes() <= allocation.failedBudgetBytes())) {
+                    throw new IllegalArgumentException("DATA budget conflicts with allocation recovery");
+                }
                 long expectedNs = grant.plannedBytes() == 0 ? 0
                         : PonLinkTiming.serializationNs(grant.plannedBytes(), context.rateMbps());
                 if (grant.plannedDurationNs() != expectedNs) {

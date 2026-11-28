@@ -242,7 +242,7 @@ public final class Sfu {
     }
 
     public void applyModeDecision(ApModeController.Decision decision, SimulationContext context) {
-        ApModeSwitch.Outcome outcome = modeSwitch.requestOnline(decision.target(), context);
+        ApModeSwitch.Outcome outcome = modeSwitch.requestOnline(decision.target(), decision.policy(), context);
         context.recordApModeDecision(id, modeSwitch.mode(), decision, outcome);
         tryStartModeSwitch(context);
     }

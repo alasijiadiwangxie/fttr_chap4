@@ -1,6 +1,7 @@
 package edu.suda.fttr.trace;
 
 import edu.suda.fttr.channel.ApChannelObservations.LocalReception;
+import edu.suda.fttr.channel.CcaHistory;
 import edu.suda.fttr.channel.ChannelReport;
 import edu.suda.fttr.channel.ChannelTruth;
 import edu.suda.fttr.config.ChannelObservationInput;
@@ -390,7 +391,17 @@ public final class TraceLogger {
                 allocation.known() ? "KNOWN" : "UNKNOWN", allocation.known() ? allocation.knownDemandBytes() : -1,
                 allocation.budgetOutstanding(), allocation.reportFrameId() == null ? -1 : allocation.reportFrameId(),
                 allocation.reportAgeNs() == null ? -1 : allocation.reportAgeNs(), input.controlReservedNs(),
-                decision.complete() ? completeGiantDetails(profile, decision) : "");
+                decision.complete() ? completeGiantDetails(profile, decision) + recoveryDetails(decision) : "");
+    }
+
+    private static String recoveryDetails(GiantDbaPolicy.Decision decision) {
+        DbaContext.Allocation allocation = decision.allocation();
+        if (allocation.failedBudgetBytes() == 0) {
+            return "";
+        }
+        return " recovery_failed_bytes=" + allocation.failedBudgetBytes() + " recovery_ceiling_bytes="
+                + decision.recoveryCeiling() + " recovery_waiting=" + allocation.recoveryWaiting()
+                + " recovery_limit=" + (decision.recoveryCeiling() <= allocation.failedBudgetBytes());
     }
 
     private static String completeGiantDetails(TcontProfile profile, GiantDbaPolicy.Decision decision) {
@@ -780,6 +791,21 @@ public final class TraceLogger {
                 event.awaitingConfirmPackets());
     }
 
+    public void recordApCcaHistory(int sfuId, long timeNs, CcaHistory.Snapshot snapshot) {
+        recordApCcaBand(sfuId, timeNs, snapshot.fromNs, "PRIMARY", snapshot.primary);
+        recordApCcaBand(sfuId, timeNs, snapshot.fromNs, "WIDE", snapshot.wide);
+    }
+
+    private void recordApCcaBand(int sfuId, long timeNs, long fromNs, String band, CcaHistory.Estimate estimate) {
+        output.printf(Locale.ROOT, "event=WIFI_AP_CCA_HISTORY t_ns=%d sfu_id=%d band=%s from_ns=%d window_ns=%d "
+                        + "busy_ns=%d known_ns=%d fully_sensed_ns=%d age_ns=%d oldest_band_age_ns=%d "
+                        + "lower=%.12g expected=%.12g conservative=%.12g upper=%.12g current=%s "
+                        + "ongoing_busy_ns=%d longest_busy_ns=%d%n",
+                timeNs, sfuId, band, fromNs, estimate.windowNs, estimate.busyNs, estimate.knownNs,
+                estimate.fullySensedNs, estimate.ageNs, estimate.oldestBandAgeNs, estimate.lower(), estimate.expected(),
+                estimate.conservative(), estimate.upper(), estimate.current, estimate.ongoingBusyNs, estimate.longestBusyNs);
+    }
+
     public void recordApPrediction(int sfuId, ApModePredictor.Forecast forecast) {
         String revised = forecast.revised ? String.format(Locale.ROOT,
                 " prediction_model=revised phy_mbps=%.12g mac_mbps=%.12g conservative_mbps=%.12g"
@@ -870,7 +896,7 @@ public final class TraceLogger {
                         + "window_start_ns=%d arrival_bytes=%d arrival_mbps=%s ewma_mbps=%s current_mode=%s "
                         + "target_mode=%s action=%s switch_id=%d%n",
                 formatMicroseconds(decision.timeNs()), decision.timeNs(), sfuId,
-                ApModeController.Policy.FIXED_THRESHOLD.key(), decision.windowStartNs(), decision.arrivedBytes(),
+                decision.policy().key(), decision.windowStartNs(), decision.arrivedBytes(),
                 decision.arrivalMbps(), decision.estimateMbps(), current, decision.target(), outcome.action(),
                 outcome.requestId());
     }
@@ -883,8 +909,8 @@ public final class TraceLogger {
         String accounting = energyUj == null ? "" : " observed_ns=" + observedNs
                 + " switch_energy_uj=" + energyUj.toPlainString();
         String online = "";
-        if (request.online()) {
-            online = " policy=fixed-threshold";
+        if (request.policy() != null) {
+            online = " policy=" + request.policy().key();
             if (startNs >= 0) {
                 online += " switch_start_ns=" + startNs + " wait_ns=" + (startNs - request.timeNs());
             }

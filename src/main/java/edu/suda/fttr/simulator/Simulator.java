@@ -55,7 +55,7 @@ public final class Simulator {
             ponUplink.configureTcont(config.tcontTopology());
         }
         if (config.dbaGiantEnabled()) {
-            mfu.enableGiantDba(config.dbaGiantCompleteEnabled());
+            mfu.enableGiantDba(config.dbaGiantCompleteEnabled(), config.dbaGiantRecoveryEnabled());
         }
         if (config.dbaExecutionEnabled()) {
             ponUplink.enableDbaExecution(mfu, config.dbaMultiGrantEnabled());
@@ -86,7 +86,6 @@ public final class Simulator {
             int sfuId = i + 1;
             ApCapabilityMode mode = config.apCapabilityMode(sfuId);
             ApModeController.Policy control = config.apControl().policyFor(sfuId);
-            boolean fixedThreshold = control == ApModeController.Policy.FIXED_THRESHOLD;
             Map<Integer, Sta> associated = stationsBySfu.get(i);
             WifiLink wifi = legacyWifi;
             if (mode != null) {
@@ -119,11 +118,12 @@ public final class Simulator {
             if (control != ApModeController.Policy.OFF) {
                 context.recordInitialApMode(sfuId, control, mode);
             }
-            if (fixedThreshold) {
-                controllers.put(sfuId, new ApModeController(config.apControl()));
+            if (control.usesLoadThreshold()) {
+                ApCapabilityMode hysteresisInitialMode = control == ApModeController.Policy.HYSTERESIS ? mode : null;
+                controllers.put(sfuId, new ApModeController(config.apControl(), hysteresisInitialMode));
             }
             ApModeSwitch.Settings switching = config.apSwitching();
-            if (fixedThreshold || (switching != null && !switching.requestsFor(sfuId).isEmpty())) {
+            if (control.usesLoadThreshold() || (switching != null && !switching.requestsFor(sfuId).isEmpty())) {
                 Map<Integer, WirelessPhy> alternatePhys = new HashMap<>();
                 for (int staId : associated.keySet()) {
                     alternatePhys.put(staId, config.alternateWirelessPhyForSta(staId));

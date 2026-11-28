@@ -1,0 +1,11 @@
+power_profile,rf,policy,plateau,max_tested_offered_mbps,observed_peak_mbps,goodput_at_max_mbps,unserved_at_max_pct,plateau_n,plateau_mean,plateau_sd,plateau_ci95_low,plateau_ci95_high
+paper,clear,always-lcm,True,100,70.464,70.464,29.8828033967,10,70.424,0.08347987116,70.364282102,70.483717898
+paper,clear,always-hcm,False,100,100.4376,100.4376,0.0743307638767,,,,,
+paper,primary,always-lcm,True,100,47.9784,47.9784,52.2586574576,10,47.9368,0.120174687666,47.8508322134,48.0227677866
+paper,primary,always-hcm,False,100,100.3512,100.3512,0.159382774207,,,,,
+paper,secondary,always-lcm,True,100,70.464,70.464,29.8828033967,10,70.424,0.08347987116,70.364282102,70.483717898
+paper,secondary,always-hcm,False,100,100.3512,100.3512,0.159382774207,,,,,
+paper,wide,always-lcm,True,100,47.9784,47.9784,52.2586574576,10,47.9368,0.120174687666,47.8508322134,48.0227677866
+paper,wide,always-hcm,False,100,100.3512,100.3512,0.159382774207,,,,,
+B3,clear,always-lcm,False,37,37.3632,37.3632,0.191920959446,,,,,
+B3,clear,always-hcm,False,37,37.4184,37.4184,0.0453978410513,,,,,
